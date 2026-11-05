@@ -1,0 +1,47 @@
+[package]
+name = "tessera-app"
+version = "0.1.0"
+description = "Tessera: see what fills your disk, and clean it up"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/4zuma/tessera"
+publish = false
+
+# Standalone until the scan core lands; then the root workspace lists this crate
+# (members = ["crates/*", "app/src-tauri"]) and this table goes away.
+[workspace]
+
+[lib]
+name = "tessera_app"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "tessera-app"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.5", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-version = "0.1"
+windows = { version = "0.62", features = [
+  "UI_ViewManagement",
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_Threading",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

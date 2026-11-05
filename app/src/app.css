@@ -1,0 +1,190 @@
+/* Windows 11 base styles. Colour tokens are written onto <html> by lib/theme.ts. */
+
+:root {
+  --font: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
+  --r-ctl: 4px;
+  --r-card: 8px;
+  --ease-decel: cubic-bezier(0, 0, 0, 1);
+  --ease-fast: cubic-bezier(0.1, 0.9, 0.2, 1);
+  --ease-accel: cubic-bezier(0.7, 0, 1, 0.5);
+  --t-fast: 167ms;
+  --t-norm: 250ms;
+  --t-slow: 333ms;
+  /* fallback tokens until the script applies the theme */
+  --solid-base: #f3f3f3;
+  --text: rgba(0, 0, 0, 0.896);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font: 14px/20px var(--font);
+  color: var(--text);
+  /* transparent until the script knows whether Mica is behind the WebView */
+  background: transparent;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Rust applied Mica to the window: let it show through. */
+html[data-backdrop="mica"] body {
+  background: transparent;
+}
+/* No Mica (Windows 10, or a browser preview): paint a calm, Mica-like base. */
+html[data-backdrop="none"] body {
+  background: linear-gradient(135deg, var(--mica-a), var(--mica-b));
+}
+
+#app {
+  height: 100%;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: default;
+}
+
+:focus {
+  outline: none;
+}
+:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
+  border-radius: var(--r-ctl);
+}
+
+kbd {
+  font: inherit;
+}
+
+/* ------------------------------------------------------------ controls */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--r-ctl);
+  border: 1px solid var(--ctl-stroke);
+  border-bottom-color: var(--ctl-stroke-2);
+  background: var(--ctl);
+  white-space: nowrap;
+  transition: background var(--t-fast) linear;
+}
+.btn:hover:not(:disabled) {
+  background: var(--ctl-hover);
+}
+.btn:active:not(:disabled) {
+  background: var(--ctl-press);
+  color: var(--text-2);
+  border-bottom-color: var(--ctl-stroke);
+}
+.btn:disabled {
+  color: var(--text-dis);
+}
+.btn.accent {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: transparent;
+  border-bottom-color: rgba(0, 0, 0, 0.2);
+}
+.btn.accent:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.btn.accent:active:not(:disabled) {
+  background: var(--accent-press);
+  color: var(--on-accent);
+}
+.btn.danger {
+  background: var(--critical);
+  color: var(--on-critical);
+  border-color: transparent;
+}
+.btn.danger:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+.btn.danger:disabled {
+  background: var(--ctl);
+  color: var(--text-dis);
+  border-color: var(--ctl-stroke);
+}
+
+/* subtle buttons: command bars, icon buttons */
+.sbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 32px;
+  min-width: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--r-ctl);
+  background: transparent;
+  white-space: nowrap;
+  transition: background var(--t-fast) linear;
+}
+.sbtn:hover:not(:disabled) {
+  background: var(--subtle-hover);
+}
+.sbtn:active:not(:disabled) {
+  background: var(--subtle-press);
+  color: var(--text-2);
+}
+.sbtn:disabled {
+  color: var(--text-dis);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--card-stroke);
+  border-radius: var(--r-card);
+}
+
+/* acrylic surfaces: menus, flyouts, tooltips, toasts */
+.acrylic {
+  background: var(--acrylic);
+  -webkit-backdrop-filter: blur(30px) saturate(1.25);
+  backdrop-filter: blur(30px) saturate(1.25);
+  border: 1px solid var(--ctl-stroke);
+  box-shadow: var(--shadow);
+}
+
+.caption {
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+  }
+}

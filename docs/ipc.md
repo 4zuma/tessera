@@ -1,0 +1,162 @@
+# Tessera IPC contract (v1)
+
+The full file tree lives in Rust. The WebView only ever receives
+
+1. **layout buffers**: the rectangles that are visible right now, as one binary blob, and
+2. **small JSON records** about a single node (details, breadcrumbs, delete results).
+
+Everything here is shaped as Tauri 2 commands and events. The frontend has a mock
+implementation of the same contract (`app/src/lib/backend/mock/`), so the UI can be built
+and tested without the scan core, and the real core can replace it 1:1.
+
+All sizes are bytes. All ids are `u32` node indices into the core's arena unless noted.
+
+## Commands
+
+| Command | Args | Returns |
+| --- | --- | --- |
+| `platform_info` | – | `{ elevated: bool, backdrop: "mica" \| "none", accent: { light, dark } \| null, version: string, core: bool }` |
+| `list_volumes` | – | `Volume[]` |
+| `scan_start` | `{ root: string }` | `{ scanId: u32, rootId: u32 }` – cancels any running scan |
+| `scan_cancel` | – | `()` |
+| `layout` | `{ req: LayoutRequest }` | **raw bytes** (`tauri::ipc::Response`), see below |
+| `details` | `{ id: u32, view: u32, sizeMode }` | `Details \| null` (null when the id no longer exists) |
+| `nav` | `{ id: u32 }` | `{ crumbs: {id, name}[], up: u32 \| null }` |
+| `cat_stats` | `{ view: u32, sizeMode }` | `{ cat: u8, bytes: u64 }[]`, largest first |
+| `recycle` | `{ ids: u32[] }` | `DeleteResult` (with `undo` token) |
+| `restore` | `{ token: u32 }` | `DeleteResult` – undo of a `recycle` |
+| `purge` | `{ ids: u32[] }` | `DeleteResult` |
+| `empty_recycle_bin` | `{ root: string }` | `DeleteResult` |
+| `reveal` | `{ id: u32 }` | `()` – `explorer.exe /select,"<path>"` |
+| `relaunch_elevated` | – | `()` – restarts with `runas`, keeps the window position |
+
+```ts
+type SizeMode = "disk" | "logical";        // allocated size (default) | file length
+
+interface Volume { root: string; label: string; fs: string; capacity: number; free: number; }
+
+interface LayoutRequest {
+  view: u32;            // node id to show as the root of the map
+  width: f32; height: f32;   // CSS px of the canvas
+  sizeMode: SizeMode;
+  style: {
+    outer: f32;         // margin around the whole map (6)
+    pad: f32;           // inner padding of a folder (3)
+    gap: f32;           // gap between siblings (2), each rect is inset by gap/2
+    header: f32;        // folder header band height (21)
+    minHeaderW: f32;    // a folder narrower than this gets no header (60)
+    minArea: f32;       // px²; smaller siblings are merged into one group (110)
+    recurse: f32;       // a folder opens only if area > minArea * recurse (3)
+    maxDepth: u8;       // (14)
+    maxPerDir: u32;     // at most this many tiles per folder, the rest are grouped (400)
+    labelMinW: f32;     // names are sent only for rects at least this big (44 × 20),
+    labelMinH: f32;     //   and for every folder that gets a header
+  };
+}
+
+interface Details {
+  id: u32; kind: "file" | "dir" | "group" | "free" | "unscanned";
+  name: string; path: string;
+  size: u64;            // in the requested size mode
+  disk: u64; logical: u64;
+  share: f64;           // size / parent size
+  files: u32; dirs: u32;  // for folders, recursive
+  modified: f64 | null; // unix ms, read on demand (one GetFileAttributesExW)
+  cat: u8; flags: u8;   // same as in the layout record
+  lockReason: string | null;  // why delete is disabled, user-facing text
+  hint: string | null;        // e.g. "powercfg /h off" for hiberfil.sys
+}
+
+interface DeleteResult {
+  ok: u32[];                          // ids that were removed from the tree
+  failed: { id: u32; reason: string }[];
+  bytes: u64;                         // bytes moved / freed
+  undo: u32 | null;                   // token for `restore`, recycle only
+  rev: u32;                           // tree revision after the change
+}
+```
+
+## Events (Rust → WebView)
+
+| Event | Payload | When |
+| --- | --- | --- |
+| `scan-progress` | `{ scanId, files, dirs, scanned, used, elapsedMs, done, rev, errors }` | every 100 ms while scanning, and once with `done: true` |
+| `tree-changed` | `{ rev, bytesDelta }` | live updates from the watcher, at most every 500 ms |
+
+`scanned` is bytes found so far, `used` is the volume's used bytes (known up front from
+`GetDiskFreeSpaceExW`), so `scanned / used` is the progress and `used - scanned` is the
+"not scanned yet" tile. The frontend asks for a new layout after each event, with at most
+one `layout` call in flight; there is no polling and no timer when nothing changes.
+
+## Layout buffer
+
+Little-endian. A 32-byte header, `count` records of 52 bytes, then the UTF-8 name pool.
+
+```
+header (32 bytes)
+  0  u32  magic       0x4C525354 ("TSRL")
+  4  u16  version     1
+  6  u16  headerSize  32
+  8  u32  count       number of records
+ 12  u32  recordSize  52
+ 16  u32  namesLen    bytes in the name pool
+ 20  u32  view        echo of the request
+ 24  u32  rev         tree revision this layout was computed from
+ 28  f32  bytesPerPx  bytes represented by one px² at this view
+
+record (52 bytes)
+  0  u32  id          node id, or a special id (below)
+  4  u32  parent      id of the enclosing rect, NONE at the top level
+  8  u32  target      what a double-click zooms into: the deepest folder of a folded
+                      chain, the folder of a group, or the id itself
+ 12  u32  count       GROUP: how many items were merged; otherwise 0
+ 16  f32  x           CSS px, relative to the canvas
+ 20  f32  y
+ 24  f32  w
+ 28  f32  h
+ 32  u32  sizeLo      size in the requested mode
+ 36  u32  sizeHi
+ 40  u32  nameOff     offset into the name pool
+ 44  u16  nameLen     0 = no name sent (ask `details` on hover)
+ 46  u8   depth       1 = direct child of the view
+ 47  u8   kind        0 FILE, 1 DIR (open: its children follow), 2 DIR_LEAF (folder drawn
+                      solid), 3 GROUP, 4 FREE, 5 UNSCANNED
+ 48  u8   cat         file category, 255 = none (folders; groups made only of folders)
+ 49  u8   flags       bit0 PROTECTED, bit1 NO_ACCESS, bit2 IN_USE, bit3 CLOUD,
+                      bit4 HARDLINK, bit5 RECYCLE_BIN, bit6 REPARSE, bit7 SCANNING
+ 50  u8   header      header band height in px, 0 = none
+ 51  u8   reserved
+```
+
+Records are in paint order: a folder always comes before its children.
+
+Special ids: `NONE = 0xFFFFFFFF`, `FREE = 0xFFFFFFFE`, `UNSCANNED = 0xFFFFFFFD`.
+A group's id is `0x80000000 | folderId`, so it stays stable between layouts and the frontend
+can tween it. Real node ids must therefore stay below `0x80000000`.
+
+### Categories (`cat`)
+
+`0 other, 1 video, 2 image, 3 audio, 4 archive, 5 vdisk, 6 app, 7 game, 8 doc, 9 dev,
+10 cache, 11 system`. The core maps file extensions with the table in
+`app/src/lib/backend/categories.ts` (the same table is used by the mock).
+
+### Layout rules the core implements
+
+These are what make the map calm while it changes, and they were tuned in the prototypes.
+
+1. Children with size 0 are skipped. Siblings are sorted by size, with **25 % hysteresis**:
+   each node remembers the size it was ranked at, and only re-ranks when its size moved by
+   more than 25 %. A growing scan therefore does not reshuffle the map on every update.
+2. Siblings whose area would be below `minArea`, or beyond the first `maxPerDir`, are merged
+   into one GROUP tile; its `cat` is the category with the most bytes among them.
+3. Squarified treemap (Bruls et al. 2000) into the parent's inner box. Every rect is inset
+   by `gap / 2`; rects smaller than 1 px in either direction are dropped.
+4. **Folded chains**: a folder whose only visible child is a folder is merged with it into
+   one tile named `a › b › c`; `target` is the deepest folder. `nav().up` skips such
+   folders too, so "back" never lands on a view with a single tile.
+5. A folder opens (kind DIR) when `depth < maxDepth` and its area is above
+   `minArea * recurse`. It gets a header band of `header` px when it is at least
+   `header * 2.2` tall and `minHeaderW` wide; the inner box is inset by `pad` (by `header`
+   at the top). If the inner box is smaller than 3 × 3 px it stays DIR_LEAF.
+6. At the volume root, two pseudo children are added: UNSCANNED (`used - scanned`, while
+   scanning and above 64 MiB) ranked first, and FREE (the volume's free bytes) ranked last.

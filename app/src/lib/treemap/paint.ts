@@ -1,0 +1,392 @@
+/**
+ * Fluent painter for the treemap canvas.
+ *
+ * Rules from the design review:
+ * - hover and selection only change fill, stroke and brightness, never position,
+ *   size, corner radius or padding;
+ * - a tile that cannot hold a whole line of text gets no label (the tooltip has it);
+ * - folder depth stays readable: header bands, nested translucent fills that build up
+ *   with depth, and an outline whose contrast steps down with depth.
+ */
+import { Flag, Kind } from '../backend/codec';
+import { CAT_COUNT } from '../backend/categories';
+import { fmtBytes } from '../format';
+import { rgba } from '../theme';
+import type { Item, Painter, PaintState } from './engine';
+
+export const UI_FONT = '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", "Noto Sans SC", system-ui, sans-serif';
+const F_REG = `400 12px ${UI_FONT}`;
+const F_SEMI = `600 12px ${UI_FONT}`;
+
+const LABEL_MIN_W = 44;
+const LINE = 16;
+const RADIUS = 3;
+const FOLDER_RADIUS = 4;
+
+class TextFit {
+  private w = new Map<string, number>();
+  measure(ctx: CanvasRenderingContext2D, s: string) {
+    const k = ctx.font + '\u0001' + s;
+    let v = this.w.get(k);
+    if (v === undefined) {
+      v = ctx.measureText(s).width;
+      if (this.w.size > 40000) this.w.clear();
+      this.w.set(k, v);
+    }
+    return v;
+  }
+  /** the longest prefix (with an ellipsis) that fits, or '' if not even 2 characters do */
+  fit(ctx: CanvasRenderingContext2D, s: string, maxW: number) {
+    if (maxW < 12 || !s) return '';
+    const full = this.measure(ctx, s);
+    if (full <= maxW) return s;
+    let n = Math.min(s.length - 1, Math.floor((s.length * maxW) / full));
+    while (n >= 2) {
+      const t = s.slice(0, n) + '…';
+      if (this.measure(ctx, t) <= maxW) return t;
+      n--;
+    }
+    return '';
+  }
+  clear() {
+    this.w.clear();
+  }
+}
+
+export const textFit = new TextFit();
+
+type Pat = { pat: CanvasPattern; size: number };
+
+export class FluentPainter implements Painter {
+  private pats = new Map<string, Pat>();
+  private batches = new Map<string, Path2D>();
+
+  reset() {
+    this.pats.clear();
+    textFit.clear();
+  }
+
+  private pattern(ctx: CanvasRenderingContext2D, key: string, size: number, dpr: number, paint: (g: CanvasRenderingContext2D, s: number) => void): Pat {
+    const k = key + '|' + dpr;
+    let p = this.pats.get(k);
+    if (p) return p;
+    const c = document.createElement('canvas');
+    c.width = c.height = Math.round(size * dpr);
+    const g = c.getContext('2d')!;
+    g.scale(dpr, dpr);
+    paint(g, size);
+    p = { pat: ctx.createPattern(c, 'repeat')!, size };
+    this.pats.set(k, p);
+    return p;
+  }
+
+  private usePattern(p: Pat, dpr: number, ox = 0, oy = 0) {
+    p.pat.setTransform(new DOMMatrix().translate(ox, oy).scale(1 / dpr));
+    return p.pat;
+  }
+
+  draw(ctx: CanvasRenderingContext2D, list: readonly Item[], S: PaintState) {
+    const th = S.theme;
+    const t = th.tok;
+    const dark = th.scheme === 'dark';
+    const dpr = S.dpr;
+    const snap = (v: number) => Math.round(v * dpr) / dpr;
+    ctx.clearRect(0, 0, S.W, S.H);
+    ctx.textBaseline = 'alphabetic';
+    ctx.globalAlpha = 1;
+
+    const leafFill = (it: Item) => {
+      const c = it.r.cat;
+      return c < CAT_COUNT ? th.fill[c] : t['tm-leafdir'];
+    };
+    const leafInk = (it: Item) => {
+      const c = it.r.cat;
+      return c < CAT_COUNT ? th.ink[c] : t['tm-leafdir-ink'];
+    };
+    const box = (it: Item) => {
+      const x0 = snap(it.x);
+      const y0 = snap(it.y);
+      return { x: x0, y: y0, w: snap(it.x + it.w) - x0, h: snap(it.y + it.h) - y0 };
+    };
+
+    /* ---------- pass 1: open folders (containers), shallow to deep ---------- */
+    for (const it of list) {
+      const r = it.r;
+      if (r.kind !== Kind.Dir || it.va <= 0.004 || it.w < 2 || it.h < 2) continue;
+      const b = box(it);
+      ctx.globalAlpha = it.va;
+      ctx.beginPath();
+      ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, FOLDER_RADIUS);
+      ctx.fillStyle = t['tm-folder'];
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = dark ? `rgba(255,255,255,${Math.max(0.05, 0.13 - r.depth * 0.012)})` : `rgba(0,0,0,${Math.max(0.055, 0.15 - r.depth * 0.016)})`;
+      ctx.stroke();
+      if (r.header && b.h > r.header + 2) {
+        ctx.beginPath();
+        ctx.roundRect(b.x + 1, b.y + 1, b.w - 2, r.header - 1, [FOLDER_RADIUS - 1, FOLDER_RADIUS - 1, 0, 0]);
+        ctx.fillStyle = t['tm-folder-head'];
+        ctx.fill();
+        this.header(ctx, it, b, S);
+      }
+    }
+
+    /* ---------- pass 2: tiles; steady ones batched by colour ---------- */
+    const batches = this.batches;
+    batches.clear();
+    const outlines = new Path2D();
+    let hasOutlines = false;
+    const loose: Item[] = [];
+    const overlays: Item[] = [];
+    for (const it of list) {
+      const r = it.r;
+      if (r.kind === Kind.Dir || it.va <= 0.004 || it.w < 0.6 || it.h < 0.6) continue;
+      if (r.kind === Kind.Free || r.kind === Kind.Unscanned || it.va < 0.995 || r.flags & Flag.Cloud) {
+        loose.push(it);
+        continue;
+      }
+      const b = box(it);
+      const col = leafFill(it);
+      let p = batches.get(col);
+      if (!p) batches.set(col, (p = new Path2D()));
+      if (b.w < 5 || b.h < 5) p.rect(b.x, b.y, b.w, b.h);
+      else p.roundRect(b.x, b.y, b.w, b.h, RADIUS);
+      if (r.cat >= CAT_COUNT && b.w > 3 && b.h > 3) {
+        // a closed folder: outlined like the open ones, so it never reads as a file type
+        outlines.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, Math.min(RADIUS, b.w / 2, b.h / 2));
+        hasOutlines = true;
+      }
+      if (r.kind === Kind.Group || r.flags & (Flag.NoAccess | Flag.InUse)) overlays.push(it);
+    }
+    ctx.globalAlpha = 1;
+    for (const [col, p] of batches) {
+      ctx.fillStyle = col;
+      ctx.fill(p);
+    }
+    if (hasOutlines) {
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = t['tm-leafdir-stroke'];
+      ctx.stroke(outlines);
+    }
+    for (const it of loose) {
+      const r = it.r;
+      const b = box(it);
+      if (r.kind === Kind.Free || r.kind === Kind.Unscanned) {
+        this.special(ctx, it, b, S);
+        continue;
+      }
+      ctx.globalAlpha = it.va * (r.flags & Flag.Cloud ? 0.55 : 1);
+      ctx.beginPath();
+      if (b.w < 5 || b.h < 5) ctx.rect(b.x, b.y, b.w, b.h);
+      else ctx.roundRect(b.x, b.y, b.w, b.h, RADIUS);
+      ctx.fillStyle = leafFill(it);
+      ctx.fill();
+      if (r.cat >= CAT_COUNT && b.w > 3 && b.h > 3) {
+        ctx.beginPath();
+        ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, Math.min(RADIUS, b.w / 2, b.h / 2));
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = t['tm-leafdir-stroke'];
+        ctx.stroke();
+      }
+      if (r.kind === Kind.Group || r.flags & (Flag.NoAccess | Flag.InUse)) overlays.push(it);
+    }
+
+    /* ---------- pass 3: texture overlays (merged items, locked files) ---------- */
+    for (const it of overlays) {
+      const r = it.r;
+      const b = box(it);
+      ctx.globalAlpha = it.va;
+      ctx.beginPath();
+      ctx.roundRect(b.x, b.y, b.w, b.h, Math.min(RADIUS, b.w / 2, b.h / 2));
+      if (r.kind === Kind.Group) {
+        const p = this.pattern(ctx, 'dots' + th.scheme, 6, dpr, g => {
+          g.fillStyle = t['tm-dots'];
+          g.fillRect(2, 2, 1.5, 1.5);
+        });
+        ctx.fillStyle = this.usePattern(p, dpr);
+        ctx.fill();
+      } else {
+        const p = this.pattern(ctx, 'hatch' + th.scheme, 8, dpr, stripes(t['tm-hatch'], 8, 2));
+        ctx.fillStyle = this.usePattern(p, dpr);
+        ctx.fill();
+      }
+    }
+
+    /* ---------- pass 4: labels ---------- */
+    for (const it of list) {
+      const r = it.r;
+      if (r.kind === Kind.Dir || r.kind === Kind.Free || r.kind === Kind.Unscanned || it.va < 0.25) continue;
+      if (it.w < LABEL_MIN_W || it.h < 20) continue;
+      const name = r.kind === Kind.Group ? `${r.count} 个小项` : r.name;
+      if (!name) continue;
+      const b = box(it);
+      ctx.globalAlpha = it.va * (r.flags & Flag.Cloud ? 0.8 : 1);
+      const ink = leafInk(it);
+      this.label(ctx, name, fmtBytes(r.size), b, ink, ink);
+    }
+
+    /* ---------- pass 5: hover and selection (paint only, geometry untouched) ---------- */
+    for (const it of list) {
+      if (it.hv <= 0.01 && !S.sel.has(it.id)) continue;
+      const r = it.r;
+      const b = box(it);
+      if (it.hv > 0.01) {
+        ctx.globalAlpha = it.va * it.hv;
+        ctx.beginPath();
+        if (r.kind === Kind.Dir) {
+          ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, FOLDER_RADIUS);
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = t['ctl-strong'];
+          ctx.stroke();
+        } else {
+          ctx.roundRect(b.x, b.y, b.w, b.h, Math.min(RADIUS, b.w / 2, b.h / 2));
+          ctx.fillStyle = t['tm-hover'];
+          ctx.fill();
+        }
+      }
+      if (S.sel.has(it.id) && b.w > 3 && b.h > 3) {
+        const rad = r.kind === Kind.Dir ? FOLDER_RADIUS : RADIUS;
+        ctx.globalAlpha = it.va;
+        ctx.beginPath();
+        ctx.roundRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2, Math.max(0, Math.min(rad, b.w / 2 - 1, b.h / 2 - 1)));
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = t.accent;
+        ctx.stroke();
+        if (b.w > 8 && b.h > 8) {
+          ctx.beginPath();
+          ctx.roundRect(b.x + 2.5, b.y + 2.5, b.w - 5, b.h - 5, Math.max(0, Math.min(rad - 1.5, b.w / 2 - 3, b.h / 2 - 3)));
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = dark ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.9)';
+          ctx.stroke();
+        }
+      }
+    }
+
+    /* ---------- pass 6: pointer light on nearby tile edges ---------- */
+    if (S.mouse.in) {
+      const mx = S.mouse.x;
+      const my = S.mouse.y;
+      const R = 90;
+      const g = ctx.createRadialGradient(mx, my, 0, mx, my, R);
+      g.addColorStop(0, t['tm-reveal']);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      for (const it of list) {
+        if (it.rm || it.r.kind === Kind.Dir || it.w < 4 || it.h < 4) continue;
+        if (it.x > mx + R || it.x + it.w < mx - R || it.y > my + R || it.y + it.h < my - R) continue;
+        const b = box(it);
+        ctx.rect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
+      }
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = g;
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  private header(ctx: CanvasRenderingContext2D, it: Item, b: { x: number; y: number; w: number; h: number }, S: PaintState) {
+    const r = it.r;
+    const t = S.theme.tok;
+    if (b.w < 30 || !r.name) return;
+    let x = b.x + 8;
+    const base = b.y + Math.round(r.header / 2 + 4.5);
+    if (r.flags & (Flag.Protected | Flag.NoAccess) && b.w > 80) {
+      lockGlyph(ctx, x, b.y + r.header / 2 - 5.5, t['text-3']);
+      x += 15;
+    }
+    ctx.font = F_REG;
+    const sz = fmtBytes(r.size);
+    const sw = textFit.measure(ctx, sz);
+    const showSize = b.w > sw + 96;
+    ctx.font = F_SEMI;
+    const nm = textFit.fit(ctx, r.name, b.x + b.w - x - 8 - (showSize ? sw + 10 : 0));
+    if (nm) {
+      ctx.fillStyle = t['tm-folder-text'];
+      ctx.fillText(nm, x, base);
+    }
+    if (showSize) {
+      ctx.font = F_REG;
+      ctx.fillStyle = t['text-3'];
+      ctx.fillText(sz, b.x + b.w - sw - 8, base);
+    }
+  }
+
+  private label(ctx: CanvasRenderingContext2D, name: string, size: string, b: { x: number; y: number; w: number; h: number }, ink: string, ink2: string) {
+    const px = 7;
+    ctx.font = F_REG;
+    const nm = textFit.fit(ctx, name, b.w - px * 2);
+    if (!nm) return;
+    ctx.fillStyle = ink;
+    ctx.fillText(nm, b.x + px, b.y + 16);
+    if (b.h >= 16 + LINE + 6) {
+      ctx.font = F_SEMI;
+      const s = textFit.fit(ctx, size, b.w - px * 2);
+      if (s) {
+        ctx.fillStyle = ink2;
+        ctx.fillText(s, b.x + px, b.y + 16 + LINE);
+      }
+    }
+  }
+
+  private special(ctx: CanvasRenderingContext2D, it: Item, b: { x: number; y: number; w: number; h: number }, S: PaintState) {
+    const t = S.theme.tok;
+    const free = it.r.kind === Kind.Free;
+    ctx.globalAlpha = it.va;
+    ctx.beginPath();
+    ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, FOLDER_RADIUS);
+    if (free) {
+      ctx.fillStyle = rgba(t.accent, S.theme.scheme === 'dark' ? 0.08 : 0.06);
+      ctx.fill();
+    } else {
+      const p = this.pattern(ctx, 'unscanned' + S.theme.scheme, 12, S.dpr, stripes(t['tm-stripe'], 12, 4));
+      ctx.fillStyle = this.usePattern(p, S.dpr, S.scanning ? (S.now / 40) % 12 : 0, 0);
+      ctx.fill();
+    }
+    ctx.setLineDash([4, 3]);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = free ? t.accent : t['ctl-strong'];
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (b.w >= 60 && b.h >= 22) {
+      const name = free ? '可用空间' : '尚未扫描';
+      ctx.font = F_SEMI;
+      const nm = textFit.fit(ctx, name, b.w - 16);
+      if (!nm) return;
+      ctx.fillStyle = free ? t.accent : t['text-2'];
+      ctx.fillText(nm, b.x + 8, b.y + 17);
+      if (b.h >= 40) {
+        ctx.font = F_REG;
+        ctx.fillStyle = t['text-3'];
+        ctx.fillText(textFit.fit(ctx, fmtBytes(it.r.size), b.w - 16), b.x + 8, b.y + 17 + LINE);
+      }
+    }
+  }
+}
+
+function stripes(color: string, size: number, width: number) {
+  return (g: CanvasRenderingContext2D, s: number) => {
+    g.strokeStyle = color;
+    g.lineWidth = width;
+    g.beginPath();
+    for (let i = -s; i <= s * 2; i += size) {
+      g.moveTo(i, s);
+      g.lineTo(i + s, 0);
+    }
+    g.stroke();
+  };
+}
+
+function lockGlyph(ctx: CanvasRenderingContext2D, x: number, y: number, color: string) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.roundRect(x + 1, y + 5, 9, 6.5, 1.2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(x + 5.5, y + 5, 2.8, Math.PI, 0);
+  ctx.stroke();
+  ctx.restore();
+}

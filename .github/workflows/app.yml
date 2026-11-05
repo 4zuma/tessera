@@ -1,0 +1,63 @@
+name: app
+
+on:
+  push:
+    branches: [main]
+    paths: ["app/**", "docs/ipc.md", ".github/workflows/app.yml"]
+  pull_request:
+    paths: ["app/**", "docs/ipc.md", ".github/workflows/app.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ui:
+    name: UI (type check, tests, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+
+  windows:
+    name: Windows exe
+    needs: ui
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      - run: npm ci
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+      - name: Build (tauri build, no installer)
+        run: npx tauri build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tessera-app-windows-x64
+          path: app/src-tauri/target/release/tessera-app.exe
+          if-no-files-found: error
