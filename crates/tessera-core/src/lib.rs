@@ -11,6 +11,7 @@
 //! Hard rule from the architecture doc: the full tree stays in Rust. The UI
 //! only ever receives the rectangles currently on screen.
 
+pub mod category;
 pub mod delete;
 mod error;
 pub mod layout;
