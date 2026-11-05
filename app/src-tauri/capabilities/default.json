@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the Tessera window may call: core events plus Tessera's own commands.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

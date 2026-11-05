@@ -15,12 +15,12 @@ All sizes are bytes. All ids are `u32` node indices into the core's arena unless
 
 | Command | Args | Returns |
 | --- | --- | --- |
-| `platform_info` | – | `{ elevated: bool, backdrop: "mica" \| "none", accent: string \| null, version: string }` |
+| `platform_info` | – | `{ elevated: bool, backdrop: "mica" \| "none", accent: { light, dark } \| null, version: string, core: bool }` |
 | `list_volumes` | – | `Volume[]` |
 | `scan_start` | `{ root: string }` | `{ scanId: u32, rootId: u32 }` – cancels any running scan |
 | `scan_cancel` | – | `()` |
 | `layout` | `{ req: LayoutRequest }` | **raw bytes** (`tauri::ipc::Response`), see below |
-| `details` | `{ id: u32, view: u32 }` | `Details` |
+| `details` | `{ id: u32, view: u32, sizeMode }` | `Details \| null` (null when the id no longer exists) |
 | `nav` | `{ id: u32 }` | `{ crumbs: {id, name}[], up: u32 \| null }` |
 | `cat_stats` | `{ view: u32, sizeMode }` | `{ cat: u8, bytes: u64 }[]`, largest first |
 | `recycle` | `{ ids: u32[] }` | `DeleteResult` (with `undo` token) |
@@ -121,7 +121,7 @@ record (52 bytes)
  46  u8   depth       1 = direct child of the view
  47  u8   kind        0 FILE, 1 DIR (open: its children follow), 2 DIR_LEAF (folder drawn
                       solid), 3 GROUP, 4 FREE, 5 UNSCANNED
- 48  u8   cat         file category, 255 = none (folders may carry their dominant category)
+ 48  u8   cat         file category, 255 = none (folders; groups made only of folders)
  49  u8   flags       bit0 PROTECTED, bit1 NO_ACCESS, bit2 IN_USE, bit3 CLOUD,
                       bit4 HARDLINK, bit5 RECYCLE_BIN, bit6 REPARSE, bit7 SCANNING
  50  u8   header      header band height in px, 0 = none

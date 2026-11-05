@@ -1,0 +1,288 @@
+<script lang="ts">
+  import { app } from '../lib/app.svelte';
+  import { fmtBytes } from '../lib/format';
+  import Icon from './Icon.svelte';
+
+  let { paneOpen, canTogglePane, onTogglePane }: { paneOpen: boolean; canTogglePane: boolean; onTogglePane: () => void } = $props();
+
+  let drivesOpen = $state(false);
+
+  const progress = $derived(app.scan && app.scan.used ? Math.min(1, app.scan.scanned / app.scan.used) : 0);
+
+  function pickDrive(root: string) {
+    drivesOpen = false;
+    void app.startScan(root);
+  }
+  function onDocDown(e: PointerEvent) {
+    if (drivesOpen && !(e.target as HTMLElement).closest('.drives-fly, .drive-btn')) drivesOpen = false;
+  }
+</script>
+
+<svelte:document onpointerdown={onDocDown} />
+
+<div class="cmd">
+  <div class="drive-wrap">
+    <button
+      class="sbtn drive-btn"
+      aria-haspopup="menu"
+      aria-expanded={drivesOpen}
+      onclick={() => (drivesOpen = !drivesOpen)}
+      title="选择磁盘"
+    >
+      <Icon name="drive" />
+      <span>{app.volume?.root.slice(0, 2) ?? '磁盘'}</span>
+      <Icon name="chevDown" size={12} />
+    </button>
+    {#if drivesOpen}
+      <div class="drives-fly acrylic" role="menu">
+        {#each app.volumes as v (v.root)}
+          <button class="mi" role="menuitem" onclick={() => pickDrive(v.root)}>
+            <Icon name="drive" />
+            <span class="mi-l">{v.label} ({v.root.slice(0, 2)})</span>
+            <span class="mi-k caption tabular">{fmtBytes(v.free)} 可用</span>
+          </button>
+        {/each}
+        <div class="ms" role="separator"></div>
+        <button class="mi" role="menuitem" onclick={() => { drivesOpen = false; app.phase = 'pick'; }}>
+          <Icon name="more" /><span class="mi-l">全部磁盘…</span>
+        </button>
+      </div>
+    {/if}
+  </div>
+
+  <button class="sbtn" onclick={() => app.zoomOut()} disabled={app.up == null} title="上一级 (Backspace)" aria-label="上一级">
+    <Icon name="up" />
+  </button>
+
+  <nav class="crumbs" aria-label="路径">
+    {#each app.crumbs as c, i (c.id)}
+      {#if i > 0}<span class="sep" aria-hidden="true"><Icon name="chev" size={12} /></span>{/if}
+      <button class="crumb" class:cur={i === app.crumbs.length - 1} onclick={() => app.zoomTo(c.id)} aria-current={i === app.crumbs.length - 1 ? 'location' : undefined}>
+        {c.name}
+      </button>
+    {/each}
+  </nav>
+
+  <span class="sp"></span>
+
+  {#if app.scanning}
+    <button class="btn" onclick={() => app.cancelScan()}><Icon name="stop" /><span class="lbl">停止</span></button>
+  {:else}
+    <button class="btn" onclick={() => app.rescan()} title="重新扫描 (F5)"><Icon name="refresh" /><span class="lbl">重新扫描</span></button>
+  {/if}
+
+  <div class="seg" role="radiogroup" aria-label="大小口径">
+    <button role="radio" aria-checked={app.sizeMode === 'disk'} class:on={app.sizeMode === 'disk'} onclick={() => app.setSizeMode('disk')} title="文件在磁盘上实际占用的空间">占用空间</button>
+    <button role="radio" aria-checked={app.sizeMode === 'logical'} class:on={app.sizeMode === 'logical'} onclick={() => app.setSizeMode('logical')} title="文件内容的字节数">实际大小</button>
+  </div>
+
+  {#if app.platform && !app.platform.elevated}
+    <button class="sbtn admin" onclick={() => app.relaunchElevated()} title="以管理员身份重启，直接读取 MFT 扫描更快" aria-label="以管理员身份重启">
+      <Icon name="shield" />
+    </button>
+  {/if}
+  {#if canTogglePane}
+    <button class="sbtn" onclick={onTogglePane} aria-pressed={paneOpen} title={paneOpen ? '隐藏详情栏' : '显示详情栏'} aria-label="详情栏">
+      <Icon name="pane" />
+    </button>
+  {/if}
+</div>
+<div class="prog" class:active={app.scanning} role="progressbar" aria-label="扫描进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(progress * 100)}>
+  <i style:transform="scaleX({progress})"></i>
+</div>
+
+<style>
+  .cmd {
+    flex: none;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 10px 0 8px;
+    min-width: 0;
+  }
+  .drive-wrap {
+    position: relative;
+  }
+  .drive-btn {
+    gap: 6px;
+    font-weight: 600;
+  }
+  .drives-fly {
+    position: absolute;
+    z-index: 30;
+    top: 38px;
+    left: 0;
+    min-width: 260px;
+    padding: 4px;
+    border-radius: var(--r-card);
+    animation: fly-in var(--t-norm) var(--ease-decel);
+  }
+  @keyframes fly-in {
+    from {
+      opacity: 0;
+      transform: translateY(-8px);
+    }
+  }
+  .mi {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    height: 34px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: var(--r-ctl);
+    background: none;
+    text-align: left;
+  }
+  .mi:hover {
+    background: var(--subtle-hover);
+  }
+  .mi-l {
+    flex: 1;
+    white-space: nowrap;
+  }
+  .mi-k {
+    color: var(--text-3);
+  }
+  .ms {
+    height: 1px;
+    margin: 4px -4px;
+    background: var(--divider);
+  }
+  .crumbs {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    margin-left: 4px;
+  }
+  .crumb {
+    flex: 0 1 auto;
+    min-width: 24px;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    border: 0;
+    background: none;
+    padding: 4px 6px;
+    border-radius: var(--r-ctl);
+    color: var(--text-2);
+    font: 600 14px/20px var(--font);
+  }
+  .crumb:hover {
+    background: var(--subtle-hover);
+    color: var(--text);
+  }
+  .crumb.cur {
+    flex-shrink: 0;
+    max-width: 320px;
+    color: var(--text);
+  }
+  .sep {
+    flex: none;
+    display: inline-flex;
+    color: var(--text-3);
+    margin: 0 1px;
+  }
+  .sp {
+    flex: 1;
+    min-width: 8px;
+  }
+  .seg {
+    display: inline-flex;
+    flex: none;
+    padding: 2px;
+    margin: 0 4px 0 6px;
+    border-radius: 6px;
+    background: var(--subtle-press);
+    border: 1px solid var(--ctl-stroke);
+  }
+  .seg button {
+    position: relative;
+    height: 26px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: var(--r-ctl);
+    background: transparent;
+    color: var(--text-2);
+    white-space: nowrap;
+    transition: background var(--t-fast) linear, color var(--t-fast) linear;
+  }
+  .seg button:hover:not(.on) {
+    color: var(--text);
+    background: var(--subtle-hover);
+  }
+  .seg button.on {
+    background: var(--ctl);
+    color: var(--text);
+    box-shadow: 0 0 0 1px var(--ctl-stroke), 0 1px 1px var(--ctl-stroke-2);
+  }
+  .seg button.on::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    bottom: 1px;
+    width: 14px;
+    height: 3px;
+    margin-left: -7px;
+    border-radius: 2px;
+    background: var(--accent);
+    animation: pill var(--t-slow) var(--ease-fast);
+  }
+  @keyframes pill {
+    from {
+      width: 0;
+      margin-left: 0;
+    }
+  }
+  .sbtn[aria-pressed='true'] {
+    color: var(--accent);
+  }
+  .prog {
+    flex: none;
+    height: 3px;
+    margin: -3px 16px 0;
+    position: relative;
+    opacity: 0;
+    transition: opacity var(--t-slow) linear 0.4s;
+  }
+  .prog.active {
+    opacity: 1;
+    transition-delay: 0s;
+  }
+  .prog::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 1px;
+    height: 1px;
+    background: var(--ctl-strong);
+    opacity: 0.5;
+  }
+  .prog i {
+    position: absolute;
+    inset: 0;
+    border-radius: 2px;
+    background: var(--accent);
+    transform-origin: left center;
+    transition: transform var(--t-slow) var(--ease-decel);
+  }
+  @media (max-width: 760px) {
+    .lbl {
+      display: none;
+    }
+  }
+  @media (max-width: 520px) {
+    .admin {
+      display: none;
+    }
+    .seg button {
+      padding: 0 8px;
+    }
+  }
+</style>
