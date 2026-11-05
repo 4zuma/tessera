@@ -51,7 +51,15 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
+      - name: Install NTFS tools (MFT parser tests on real NTFS images)
+        run: sudo apt-get update -q && sudo apt-get install -y -q ntfs-3g
       - name: Test portable code
         run: cargo test --workspace
+      - name: MFT image tests (must not skip)
+        # They build volumes with mkntfs and fill them through an ntfs-3g
+        # mount (via sudo -n); this run fails instead of skipping.
+        env:
+          TESSERA_REQUIRE_NTFS_IMAGES: "1"
+        run: cargo test -p tessera-core image_tests -- --nocapture
       - name: Type-check for Windows
         run: cargo check --workspace --all-targets --target x86_64-pc-windows-msvc
