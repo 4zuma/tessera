@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  windows:
+    name: Windows (build, test, smoke scan)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+      - name: Admin tests (MFT, USN journal)
+        # GitHub's Windows runners are elevated, so the ignored MFT and USN
+        # tests can run here. Benchmarks stay ignored.
+        env:
+          TESSERA_ADMIN_TESTS: "1"
+        run: cargo test -p tessera-core --test mft --test watch -- --include-ignored
+      - name: Build release
+        run: cargo build --release -p tessera-cli
+      - name: Smoke scan (walk)
+        run: target\release\tessera.exe scan C:\ --mode walk --top 5
+      - name: Smoke scan (MFT)
+        run: target\release\tessera.exe scan C:\ --mode mft --top 5
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tessera-windows-x64
+          path: target/release/tessera.exe
+
+  ntfs-images:
+    # The only Linux job: it builds real NTFS images with ntfs-3g (hard links,
+    # compression, sparse files, a fragmented MFT...) and checks the MFT
+    # parser against a mounted walk of each. Everything else runs on Windows.
+    name: MFT parser on NTFS images (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install NTFS tools
+        run: sudo apt-get update -q && sudo apt-get install -y -q ntfs-3g
+      - name: MFT image tests (must not skip)
+        # They build volumes with mkntfs and fill them through an ntfs-3g
+        # mount (via sudo -n); this run fails instead of skipping.
+        env:
+          TESSERA_REQUIRE_NTFS_IMAGES: "1"
+        run: cargo test -p tessera-core --lib image_tests -- --nocapture
