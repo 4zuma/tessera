@@ -464,7 +464,7 @@ export class App implements EngineHost {
     const parent = r.parent !== NONE ? this.rectOf(r.parent) : null;
     const viewSize = this.viewTotal || null;
     const kind =
-      r.kind === Kind.Dir || r.kind === Kind.DirLeaf ? '文件夹' : r.kind === Kind.Group ? '合并显示的小项' : r.kind === Kind.Free ? '可用空间' : r.kind === Kind.Unscanned ? '扫描中' : (CAT_NAMES[r.cat] ?? '文件');
+      r.kind === Kind.DirLeaf && r.cat < CAT_NAMES.length ? `文件夹 · 多为${CAT_NAMES[r.cat]}` : r.kind === Kind.Dir || r.kind === Kind.DirLeaf ? '文件夹' : r.kind === Kind.Group ? '合并显示的小项' : r.kind === Kind.Free ? '可用空间' : r.kind === Kind.Unscanned ? '扫描中' : (CAT_NAMES[r.cat] ?? '文件');
     const name =
       r.kind === Kind.Group ? `${r.count} 个小项` : r.kind === Kind.Free ? '可用空间' : r.kind === Kind.Unscanned ? '尚未扫描' : r.name || this.nameCache.get(id) || '';
     this.tip = { x, y, id, name, size: r.size, kind, share: parent ? r.size / Math.max(1, parent.size) : r.kind === Kind.Free ? null : viewSize ? r.size / viewSize : null };

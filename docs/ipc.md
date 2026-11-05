@@ -122,7 +122,9 @@ record (52 bytes)
  46  u8   depth       1 = direct child of the view
  47  u8   kind        0 FILE, 1 DIR (open: its children follow), 2 DIR_LEAF (folder drawn
                       solid), 3 GROUP, 4 FREE, 5 UNSCANNED
- 48  u8   cat         file category, 255 = none (folders; groups made only of folders)
+ 48  u8   cat         file category, 255 = none. FILE: its own; GROUP and DIR_LEAF: the
+                      category with the most bytes in it (rules 2, 6); 255 for open
+                      folders, pseudo tiles, and groups or closed folders without files
  49  u8   flags       bit0 PROTECTED, bit1 NO_ACCESS, bit2 IN_USE, bit3 CLOUD,
                       bit4 HARDLINK, bit5 RECYCLE_BIN, bit6 REPARSE, bit7 SCANNING
  50  u8   header      header band height in px, 0 = none
@@ -164,5 +166,8 @@ These are what make the map calm while it changes, and they were tuned in the pr
    one; smaller folders stay DIR_LEAF tiles that show their name and size. The inner box
    is inset by `pad` (by `header` at the top). If the inner box is smaller than 3 × 3 px
    it stays DIR_LEAF.
-6. At the volume root, two pseudo children are added: UNSCANNED (`used - scanned`, while
+6. A DIR_LEAF's `cat` is the category with the most bytes among all files below it (lower
+   category on a tie), so the UI can tint closed folders by what fills them. The core
+   caches it per folder and walks the folder again only when its size moved by over 1/8.
+7. At the volume root, two pseudo children are added: UNSCANNED (`used - scanned`, while
    scanning and above 64 MiB) ranked first, and FREE (the volume's free bytes) ranked last.

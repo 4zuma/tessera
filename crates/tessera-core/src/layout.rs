@@ -45,7 +45,13 @@
 //!    The inner box is the tile inset by `pad`, by `header` at the top when
 //!    it has a header. If the inner box is smaller than 3 x 3 px, or no
 //!    child ends up visible, the folder is a DIR_LEAF (drawn solid).
-//! 6. When the view is the tree root, two pseudo tiles can be added from
+//! 6. A DIR_LEAF's `cat` is the category with the most bytes among all the
+//!    files below it (on a tie, the lower category), or 255 when it has
+//!    none, so a closed folder can be tinted by what fills it. The engine
+//!    walks a closed folder's subtree once and remembers the answer with
+//!    the folder's size; it walks it again only when that size has moved
+//!    by more than 1/8, so steady layouts cost nothing extra.
+//! 7. When the view is the tree root, two pseudo tiles can be added from
 //!    numbers the caller passes in [`RootExtras`]: UNSCANNED (`used -
 //!    scanned` while scanning, only above 64 MiB), ranked first, and FREE
 //!    (the volume's free bytes), ranked last.
@@ -88,7 +94,9 @@
 //!  44  u16  nameLen     0 = no name sent
 //!  46  u8   depth       1 = direct child of the view
 //!  47  u8   kind        see [`kind`]
-//!  48  u8   cat         see [`crate::category`]; 255 for folders and pseudo tiles
+//!  48  u8   cat         see [`crate::category`]; for DIR_LEAF and GROUP the
+//!                       category with the most bytes (rules 2, 6); 255 for
+//!                       open folders, pseudo tiles and anything without files
 //!  49  u8   flags       see [`flags`]
 //!  50  u8   header      header band height in px, 0 = none
 //!  51  u8   reserved    0
@@ -118,7 +126,7 @@ pub const RECORD_SIZE: usize = 52;
 /// sane styles (a 4K canvas holds at most ~75,000 tiles of 110 px²).
 /// `maxPerDir` is clamped to `MAX_RECORDS - 3` so the top level fits too.
 pub const MAX_RECORDS: usize = 100_000;
-/// Pseudo tile threshold for UNSCANNED (rule 6).
+/// Pseudo tile threshold for UNSCANNED (rule 7).
 pub const UNSCANNED_MIN: u64 = 64 << 20;
 
 /// Special ids in records.
@@ -266,7 +274,7 @@ impl LayoutRequest {
     }
 }
 
-/// Pseudo tiles for the volume root (rule 6), used only when the view is
+/// Pseudo tiles for the volume root (rule 7), used only when the view is
 /// the tree root.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RootExtras {
@@ -280,6 +288,8 @@ pub struct RootExtras {
 #[derive(Default)]
 pub struct LayoutEngine {
     ranks: HashMap<u32, Rank, BuildHasherDefault<IdHasher>>,
+    /// Main category of closed folders (rule 6), by folder id.
+    tints: HashMap<u32, Tint, BuildHasherDefault<IdHasher>>,
     generation: u32,
     /// Category per node id, [`CAT_UNKNOWN`] until first needed.
     cats: Vec<u8>,
@@ -298,6 +308,15 @@ struct Rank {
     used: u32,
 }
 
+/// A closed folder's main category, and the size it was found at.
+#[derive(Clone, Copy)]
+struct Tint {
+    size: u64,
+    mode: SizeMode,
+    cat: u8,
+    used: u32,
+}
+
 impl LayoutEngine {
     pub fn new() -> Self {
         Self::default()
@@ -306,6 +325,7 @@ impl LayoutEngine {
     /// Forgets all state; call when a new scan starts.
     pub fn reset(&mut self) {
         self.ranks.clear();
+        self.tints.clear();
         self.cats.clear();
         self.protected = None;
     }
@@ -333,6 +353,7 @@ impl LayoutEngine {
             mode: req.size_mode,
             st: Style::new(&req.style),
             ranks: &mut self.ranks,
+            tints: &mut self.tints,
             generation: self.generation,
             cats: &mut self.cats,
             protected: &protected,
@@ -346,9 +367,12 @@ impl LayoutEngine {
         self.scratch = run.s;
         self.protected = Some((tree.len(), protected));
         // Keep the hysteresis state bounded by what is actually laid out.
+        let g = self.generation;
         if self.ranks.len() > 4 * touched + 4096 {
-            let g = self.generation;
             self.ranks.retain(|_, r| g.wrapping_sub(r.used) < RANK_TTL);
+        }
+        if self.tints.len() > 4 * touched + 4096 {
+            self.tints.retain(|_, t| g.wrapping_sub(t.used) < RANK_TTL);
         }
         buf
     }
@@ -530,6 +554,7 @@ struct Scratch {
     cells: Vec<(Item, BoxF)>,
     recs: Vec<Rec>,
     heap: BinaryHeap<Pending>,
+    stack: Vec<NodeId>,
 }
 
 /// One layout in progress.
@@ -538,6 +563,7 @@ struct Run<'a> {
     mode: SizeMode,
     st: Style,
     ranks: &'a mut HashMap<u32, Rank, BuildHasherDefault<IdHasher>>,
+    tints: &'a mut HashMap<u32, Tint, BuildHasherDefault<IdHasher>>,
     generation: u32,
     cats: &'a mut [u8],
     protected: &'a [u32],
@@ -595,6 +621,15 @@ impl Run<'_> {
                     self.s.recs[q.rec].kind = kind::DIR_LEAF;
                 }
                 break;
+            }
+        }
+        // Rule 6. Closed folders never contain each other, so this walks
+        // each node at most once.
+        for i in 0..self.s.recs.len() {
+            let r = &self.s.recs[i];
+            if r.kind == kind::DIR_LEAF {
+                let (id, size) = (NodeId(r.id), r.size);
+                self.s.recs[i].cat = self.tint(id, size);
             }
         }
         total as f64 / area
@@ -670,8 +705,55 @@ impl Run<'_> {
         }
     }
 
+    /// The category with the most bytes below a closed folder of `size`
+    /// (rule 6), from the cache while the size stays within 1/8 of the size
+    /// it was found at.
+    fn tint(&mut self, dir: NodeId, size: u64) -> u8 {
+        let (mode, generation) = (self.mode, self.generation);
+        if let Some(t) = self.tints.get_mut(&dir.0)
+            && t.mode == mode
+            && size.abs_diff(t.size) <= t.size / 8
+        {
+            t.used = generation;
+            return t.cat;
+        }
+        let tree = self.tree;
+        let mut tally = [0u64; category::COUNT];
+        let stack = &mut self.s.stack;
+        stack.clear();
+        stack.push(dir);
+        while let Some(d) = stack.pop() {
+            let mut c = tree.node(d).first_child;
+            while !c.is_none() {
+                let n = tree.node(c);
+                if !n.is_deleted() {
+                    if n.is_dir() {
+                        stack.push(c);
+                    } else {
+                        let cat = Self::cat(self.cats, tree, c, n);
+                        if let Some(t) = tally.get_mut(cat as usize) {
+                            *t += mode.of(n);
+                        }
+                    }
+                }
+                c = n.next_sibling;
+            }
+        }
+        let cat = main_category(&tally);
+        self.tints.insert(
+            dir.0,
+            Tint {
+                size,
+                mode,
+                cat,
+                used: generation,
+            },
+        );
+        cat
+    }
+
     /// Fills `s.items` with what `folder` shows in a box of `area` px², in
-    /// paint order (rules 1, 2, 6). Returns the total size.
+    /// paint order (rules 1, 2, 7). Returns the total size.
     fn collect(&mut self, folder: NodeId, area: f64, unscanned: u64, free: u64) -> u64 {
         let tree = self.tree;
         let mode = self.mode;
@@ -762,20 +844,10 @@ impl Run<'_> {
             size: k.size,
         }));
         if small_n > 0 {
-            // Most bytes wins; on a tie, the lower category.
-            let (best, bytes) =
-                tally.iter().enumerate().fold(
-                    (0, 0u64),
-                    |acc, (i, &b)| if b > acc.1 { (i, b) } else { acc },
-                );
             items.push(Item {
                 kind: ItemKind::Group {
                     count: small_n,
-                    cat: if bytes > 0 {
-                        best as u8
-                    } else {
-                        category::NONE
-                    },
+                    cat: main_category(&tally),
                 },
                 node: folder,
                 size: small_sum,
@@ -952,6 +1024,21 @@ impl Run<'_> {
         out[16..20].copy_from_slice(&(names.len() as u32).to_le_bytes());
         out.extend_from_slice(&names);
         out
+    }
+}
+
+/// The category with the most bytes in `tally`; on a tie, the lower
+/// category; [`category::NONE`] when it is all zero.
+fn main_category(tally: &[u64; category::COUNT]) -> u8 {
+    let (best, bytes) =
+        tally.iter().enumerate().fold(
+            (0, 0u64),
+            |acc, (i, &b)| if b > acc.1 { (i, b) } else { acc },
+        );
+    if bytes > 0 {
+        best as u8
+    } else {
+        category::NONE
     }
 }
 

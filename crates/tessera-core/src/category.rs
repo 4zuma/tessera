@@ -110,15 +110,52 @@ const LISTS: [(u8, &str); COUNT - 1] = [
 /// Longest extension in the table.
 const MAX_EXT: usize = 12;
 
-fn table() -> &'static [(&'static str, u8)] {
-    static TABLE: OnceLock<Vec<(&'static str, u8)>> = OnceLock::new();
+/// An extension (at most [`MAX_EXT`] bytes, none of them 0) packed into
+/// one integer, so the table lookup compares integers, not strings.
+#[inline]
+fn pack(ext: &[u8]) -> u128 {
+    ext.iter().fold(0, |k, &b| k << 8 | b as u128)
+}
+
+fn table() -> &'static [(u128, u8)] {
+    static TABLE: OnceLock<Vec<(u128, u8)>> = OnceLock::new();
     TABLE.get_or_init(|| {
-        let mut t: Vec<(&'static str, u8)> = LISTS
+        let mut t: Vec<(u128, u8)> = LISTS
             .iter()
-            .flat_map(|&(cat, list)| list.split_ascii_whitespace().map(move |e| (e, cat)))
+            .flat_map(|&(cat, list)| {
+                list.split_ascii_whitespace()
+                    .map(move |e| (pack(e.as_bytes()), cat))
+            })
             .collect();
         t.sort_unstable();
         t
+    })
+}
+
+/// Slots in the open-addressing lookup table (a power of two, at least
+/// four times the number of extensions).
+const SLOTS: usize = 2048;
+
+#[inline]
+fn slot(key: u128) -> usize {
+    let h = (key as u64 ^ (key >> 64) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    (h >> (64 - SLOTS.trailing_zeros())) as usize
+}
+
+/// [`table`] as a hash table with linear probing; empty slots hold key 0,
+/// which no extension packs to.
+fn slots() -> &'static [(u128, u8); SLOTS] {
+    static SLOTS_TABLE: OnceLock<Box<[(u128, u8); SLOTS]>> = OnceLock::new();
+    SLOTS_TABLE.get_or_init(|| {
+        let mut s = Box::new([(0u128, OTHER); SLOTS]);
+        for &(k, cat) in table() {
+            let mut i = slot(k);
+            while s[i].0 != 0 {
+                i = (i + 1) & (SLOTS - 1);
+            }
+            s[i] = (k, cat);
+        }
+        s
     })
 }
 
@@ -131,17 +168,21 @@ pub fn of_name(name: &[u8]) -> u8 {
     if ext.is_empty() || ext.len() > MAX_EXT {
         return OTHER;
     }
-    let mut buf = [0u8; MAX_EXT];
-    for (d, &s) in buf.iter_mut().zip(ext) {
-        if !s.is_ascii() {
+    let mut key = 0u128;
+    for &b in ext {
+        if !b.is_ascii() || b == 0 {
             return OTHER;
         }
-        *d = s.to_ascii_lowercase();
+        key = key << 8 | b.to_ascii_lowercase() as u128;
     }
-    let key = &buf[..ext.len()];
-    match table().binary_search_by(|(e, _)| e.as_bytes().cmp(key)) {
-        Ok(i) => table()[i].1,
-        Err(_) => OTHER,
+    let s = slots();
+    let mut i = slot(key);
+    loop {
+        match s[i] {
+            (k, cat) if k == key => return cat,
+            (0, _) => return OTHER,
+            _ => i = (i + 1) & (SLOTS - 1),
+        }
     }
 }
 
@@ -180,15 +221,17 @@ mod tests {
     fn table_is_unique_and_short() {
         let t = table();
         for w in t.windows(2) {
-            assert!(w[0].0 != w[1].0, "{} listed twice", w[0].0);
+            assert!(w[0].0 != w[1].0, "{:x} listed twice", w[0].0);
         }
-        for (e, _) in t {
-            assert!(
-                e.len() <= MAX_EXT
-                    && e.bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
-                "{e}"
-            );
+        for (_, list) in LISTS {
+            for e in list.split_ascii_whitespace() {
+                assert!(
+                    e.len() <= MAX_EXT
+                        && e.bytes()
+                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+                    "{e}"
+                );
+            }
         }
         assert!(t.len() > 250);
     }

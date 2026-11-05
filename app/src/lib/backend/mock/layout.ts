@@ -3,6 +3,7 @@
  * implements"). This is the reference the Rust layout module follows.
  */
 import { CAT_NONE, FREE, Flag, Kind, NONE, UNSCANNED, groupId, type Rect } from '../codec';
+import { CAT_COUNT } from '../categories';
 import type { LayoutStyle, SizeMode } from '../types';
 import type { Drive, MNode } from './drive';
 
@@ -36,6 +37,22 @@ export function visibleKids(drive: Drive, n: MNode, mode: SizeMode): MNode[] {
     if (m.seen && sizeOf(m, mode) > 0) out.push(m);
   }
   return out;
+}
+
+/** the category with the most bytes below a folder (lower category on a tie), CAT_NONE if none */
+export function mainCat(drive: Drive, n: MNode, mode: SizeMode): number {
+  const bytes = new Array<number>(CAT_COUNT).fill(0);
+  const stack = [n];
+  while (stack.length) {
+    for (const k of visibleKids(drive, stack.pop()!, mode)) {
+      if (k.kids) stack.push(k);
+      else if (k.cat < CAT_COUNT) bytes[k.cat] += sizeOf(k, mode);
+    }
+  }
+  let best = CAT_NONE;
+  let bb = 0;
+  for (let c = 0; c < bytes.length; c++) if (bytes[c] > bb) { bb = bytes[c]; best = c; }
+  return best;
 }
 
 export function flagsOf(drive: Drive, n: MNode): number {
@@ -203,6 +220,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
           place(deep, kidsOf.map(m => ({ n: m, s: sizeOf(m, sizeMode), rk: 0 })), ix, iy, iw, ih, depth + 1, n.id);
         }
       }
+      if (r.kind === Kind.DirLeaf) r.cat = mainCat(drive, n, sizeMode);
       if (r.header || named(rw, rh)) r.name = name;
     }
   }
