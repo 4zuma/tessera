@@ -4,12 +4,14 @@ The window and everything you see. The file tree itself lives in the Rust scan c
 this side only receives the rectangles that are on screen (see [`docs/ipc.md`](../docs/ipc.md)).
 
 - `src/lib/backend/` – the IPC contract in TypeScript: the binary layout codec, the Tauri
-  backend, and a mock backend with a realistic sample C: and D: (used until the core is
-  wired in, and for the browser preview).
+  backend, and a mock backend with a realistic sample C: and D: (for the browser preview
+  and the tests).
 - `src/lib/treemap/` – the canvas engine: one tweened item per rect id, camera zoom,
   hit-testing, and a frame loop that stops when nothing moves (0 fps when idle).
 - `src/components/` – Fluent (Windows 11) UI in Svelte 5.
-- `src-tauri/` – the Tauri 2 crate: Mica backdrop, system accent colour, elevation.
+- `src-tauri/` – the Tauri 2 crate: the commands and events of the contract on top of
+  `tessera-core` (`src/backend.rs`), the drive list, Mica backdrop, system accent colour,
+  elevation. It is a member of the root Cargo workspace, so it builds into `../target`.
 
 ## Run
 
@@ -19,7 +21,7 @@ npm run dev          # browser preview with the mock disk, http://localhost:1420
 npm test             # codec + mock backend tests
 npm run check        # svelte-check / TypeScript
 npx tauri dev        # the real window (Windows; needs Rust and WebView2)
-npx tauri build      # src-tauri/target/release/tessera-app.exe
+npx tauri build      # ../target/release/tessera-app.exe
 ```
 
 Keyboard: arrows move the selection, Enter zooms in, Backspace goes up, Delete moves to

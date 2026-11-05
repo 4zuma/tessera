@@ -23,10 +23,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all -- --check
+      # tessera-app embeds the built UI (app/dist), so it is checked by
+      # .github/workflows/app.yml after the frontend build.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude tessera-app --all-targets -- -D warnings
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --exclude tessera-app
       - name: Admin tests (MFT, USN journal)
         # GitHub's Windows runners are elevated, so the ignored MFT and USN
         # tests can run here. Benchmarks stay ignored.

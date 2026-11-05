@@ -121,7 +121,7 @@ class Builder {
   }
   D = (p: MNode | null, name: string, o: { lock?: Lock; lockDeep?: Lock } = {}) => this.mk(p, name, true, o);
   F(p: MNode, name: string, bytes: number, o: { cat?: number; age?: number; compress?: number; cloud?: boolean; lock?: Lock } = {}) {
-    const n = this.mk(p, name, false, { ...o, cat: o.cat ?? categoryOf(name) });
+    const n = this.mk(p, name, false, { ...o, cat: o.cat ?? categoryOf(name, bytes) });
     const round4k = (b: number) => Math.ceil(b / 4096) * 4096;
     n.logical = Math.round(bytes);
     n.disk = o.cloud ? 4096 : o.compress ? round4k(bytes * o.compress) : round4k(bytes);

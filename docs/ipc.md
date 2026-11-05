@@ -138,7 +138,8 @@ can tween it. Real node ids must therefore stay below `0x80000000`.
 
 `0 other, 1 video, 2 image, 3 audio, 4 archive, 5 vdisk, 6 app, 7 game, 8 doc, 9 dev,
 10 cache, 11 system`. The core maps file extensions with the table in
-`app/src/lib/backend/categories.ts` (the same table is used by the mock).
+`crates/tessera-core/src/category.rs`; `app/src/lib/backend/categories.ts` is a copy of it
+for the mock. A `.ts` file under 1 MiB is `dev` (TypeScript), otherwise `video`.
 
 ### Layout rules the core implements
 

@@ -6,9 +6,9 @@ import type { Backend, PlatformInfo } from './types';
 export const inTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 /**
- * Inside the Tauri window, ask Rust what it supports. Until the scan core is wired in
- * (`core: false`) the tree comes from the mock, while the window itself (Mica, accent
- * colour) is already real. In a plain browser everything is mocked.
+ * Inside the Tauri window, ask Rust what it supports: on Windows the scan core serves
+ * every command (`core: true`); a non-Windows dev build falls back to the mock tree
+ * while the window itself is real. In a plain browser everything is mocked.
  */
 export async function createBackend(): Promise<Backend> {
   if (inTauri()) {

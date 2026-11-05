@@ -3,9 +3,9 @@ name: app
 on:
   push:
     branches: [main]
-    paths: ["app/**", "docs/ipc.md", ".github/workflows/app.yml"]
+    paths: ["app/**", "crates/tessera-core/**", "Cargo.toml", "Cargo.lock", "docs/ipc.md", ".github/workflows/app.yml"]
   pull_request:
-    paths: ["app/**", "docs/ipc.md", ".github/workflows/app.yml"]
+    paths: ["app/**", "crates/tessera-core/**", "Cargo.toml", "Cargo.lock", "docs/ipc.md", ".github/workflows/app.yml"]
   workflow_dispatch:
 
 concurrency:
@@ -50,14 +50,19 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: app/src-tauri
+          key: app
       - run: npm ci
+      # the app crate embeds app/dist, so build the UI first
+      - run: npm run build
       - name: Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+        run: cargo clippy -p tessera-app --all-targets -- -D warnings
+      - name: Test
+        run: cargo test -p tessera-app
       - name: Build (tauri build, no installer)
         run: npx tauri build
       - uses: actions/upload-artifact@v4
         with:
           name: tessera-app-windows-x64
-          path: app/src-tauri/target/release/tessera-app.exe
+          # the crate is a member of the root workspace, so it builds into ./target
+          path: target/release/tessera-app.exe
           if-no-files-found: error

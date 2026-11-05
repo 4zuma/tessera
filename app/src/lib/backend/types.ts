@@ -13,7 +13,7 @@ export interface PlatformInfo {
   /** system accent colour, tuned per theme as Windows does (AccentDark1 / AccentLight2) */
   accent: { light: string; dark: string } | null;
   version: string;
-  /** false while the scan core is not wired into the app, the mock tree is used then */
+  /** true when tessera-core serves the commands; false means the mock tree is used */
   core: boolean;
   /** the UI runs inside the Tauri window (not a plain browser preview) */
   native: boolean;
