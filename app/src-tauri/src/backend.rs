@@ -447,6 +447,11 @@ fn run_scan(app: AppHandle, s: Arc<Session>) {
 /// Runs on the watcher's thread after each batch that changed the tree.
 fn on_batch(app: &AppHandle, s: &Weak<Session>, rep: &BatchReport) {
     let Some(s) = s.upgrade() else { return };
+    // a batch can still be in flight while a new scan replaces this session;
+    // its delta belongs to the old drive
+    if !app.state::<Core>().is_current(s.id) {
+        return;
+    }
     let rev = s.rev.fetch_add(1, Relaxed) + 1;
     let root = s.root_size();
     let before = s.last_root.swap(root, Relaxed);
@@ -476,8 +481,10 @@ fn on_batch(app: &AppHandle, s: &Weak<Session>, rep: &BatchReport) {
 #[tauri::command]
 pub async fn layout(core: State<'_, Core>, req: LayoutReq) -> Result<Response, String> {
     let s = core.current()?;
-    let req = LayoutRequest::from(&req);
+    let mut req = LayoutRequest::from(&req);
     let t = s.tree();
+    // the layout echoes the view it drew, so the UI follows when it falls back
+    req.view = live_view(&t, req.view);
     let extras = if s.is_volume && req.view == NodeId::ROOT {
         RootExtras {
             free: Some(s.free.load(Relaxed)),
@@ -493,6 +500,19 @@ pub async fn layout(core: State<'_, Core>, req: LayoutReq) -> Result<Response, S
     let rev = s.rev.load(Relaxed);
     let buf = lock(&core.engine).layout(&t, &req, extras, rev);
     Ok(Response::new(buf))
+}
+
+/// The folder to show for a requested view: itself, or its nearest live
+/// folder ancestor when it was deleted meanwhile (e.g. in Explorer) or is
+/// not a folder.
+fn live_view(t: &Tree, v: NodeId) -> NodeId {
+    if v.index() >= t.len() {
+        return NodeId::ROOT;
+    }
+    std::iter::once(v)
+        .chain(t.ancestors(v))
+        .find(|&n| !t.is_deleted(n) && t.node(n).is_dir())
+        .unwrap_or(NodeId::ROOT)
 }
 
 #[tauri::command]
@@ -1013,6 +1033,26 @@ mod tests {
         // Users holds only "me", so it is folded away (rule 4)
         assert_eq!(names, ["C:", "me", "Docs"]);
         assert_eq!(n.up, Some(id_of(&s, &[b"Users", b"me"]).0));
+    }
+
+    #[test]
+    fn deleted_view_falls_back_to_a_live_folder() {
+        let s = sample();
+        let me = id_of(&s, &[b"Users", b"me"]);
+        let docs = id_of(&s, &[b"Users", b"me", b"Docs"]);
+        let a = id_of(&s, &[b"Users", b"me", b"a.mp4"]);
+        let mut t = s.tree.write().unwrap();
+        assert_eq!(live_view(&t, docs), docs);
+        assert_eq!(live_view(&t, a), me, "a file is not a view");
+        assert!(t.mark_deleted(docs));
+        assert_eq!(live_view(&t, docs), me);
+        assert!(t.mark_deleted(me));
+        assert_eq!(live_view(&t, docs), id_of_root_child(&t, b"Users"));
+        assert_eq!(live_view(&t, NodeId(9999)), NodeId::ROOT);
+    }
+
+    fn id_of_root_child(t: &Tree, name: &[u8]) -> NodeId {
+        t.find_child(NodeId::ROOT, name).unwrap()
     }
 
     #[test]
