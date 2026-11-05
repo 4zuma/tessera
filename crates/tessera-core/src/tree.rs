@@ -219,6 +219,7 @@ impl<T> ChunkedVec<T> {
         self.chunks.iter().flat_map(|c| c.iter())
     }
 
+    #[allow(dead_code)] // for bulk builders (MFT)
     pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.chunks.iter_mut().flat_map(|c| c.iter_mut())
     }
