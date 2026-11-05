@@ -30,4 +30,9 @@ features = [
     "Win32_UI_Shell_Common",
 ]
 
+# The `windows` crate's own core crate (same release): its `#[implement]`
+# macro, used for IFileOperationProgressSink, expands to `::windows_core` paths.
+[target.'cfg(windows)'.dependencies.windows-core]
+version = "0.62"
+
 [dev-dependencies]
