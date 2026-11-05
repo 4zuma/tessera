@@ -1,0 +1,31 @@
+/** Line icons in the Fluent System Icons spirit (24-unit grid, 1.5 stroke). */
+export const ICONS = {
+  drive: 'M3.5 13.5h17v5h-17z M6.5 16h.01 M5 13.5 7.4 6.2A1 1 0 0 1 8.35 5.5h7.3a1 1 0 0 1 .95.7l2.4 7.3',
+  folder: 'M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z',
+  file: 'M6 3.5h7.5l4.5 4.5v12.5H6z M13.5 3.5V8H18',
+  refresh: 'M19.5 12a7.5 7.5 0 1 1-2.2-5.3 M19.5 4.5v4h-4',
+  stop: 'M7 7h10v10H7z',
+  up: 'M12 19V6 M6.5 11.5 12 6l5.5 5.5',
+  back: 'M19 12H6 M11.5 6.5 6 12l5.5 5.5',
+  trash: 'M4 7h16 M9.5 11v6 M14.5 11v6 M6 7l1 13h10l1-13 M9 7V4h6v3',
+  purge: 'M4 7h16 M6 7l1 13h10l1-13 M9 7V4h6v3 M10 11.5l4 5 M14 11.5l-4 5',
+  sweep: 'M4 7h16 M6 7l1 13h10l1-13 M9 7V4h6v3 M9.5 14.5h5',
+  copy: 'M8.5 8.5h11v11h-11z M5 15.5H4.5v-11h11V5',
+  reveal: 'M14 4h6v6 M20 4l-8.5 8.5 M18 14v6H4V6h6',
+  zoom: 'M10.5 4a6.5 6.5 0 1 1 0 13a6.5 6.5 0 0 1 0-13z M20 20l-4.8-4.8 M10.5 8v5 M8 10.5h5',
+  lock: 'M6 11h12v9H6z M9 11V8a3 3 0 0 1 6 0v3',
+  undo: 'M9 14 4 9l5-5 M4 9h10.5a5.5 5.5 0 0 1 0 11H11',
+  chev: 'M9 6l6 6-6 6',
+  chevDown: 'M6 9l6 6 6-6',
+  check: 'M5 12.5l4.5 4.5L19 7.5',
+  cloud: 'M7 18a4 4 0 0 1-.5-8A6 6 0 0 1 18 9.5a4.3 4.3 0 0 1-.5 8.5z',
+  warn: 'M12 4 2.5 20h19z M12 10v4.5 M12 17.5h.01',
+  info: 'M12 3.5a8.5 8.5 0 1 1 0 17a8.5 8.5 0 0 1 0-17z M12 11v5.5 M12 7.75h.01',
+  shield: 'M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z M9 12l2 2 4-4',
+  pane: 'M3.5 5.5h17v13h-17z M14.5 5.5v13',
+  dismiss: 'M6 6l12 12 M18 6 6 18',
+  more: 'M5.5 12h.01 M12 12h.01 M18.5 12h.01',
+  download: 'M12 4v11 M7 10.5l5 5 5-5 M5 20h14',
+} as const;
+
+export type IconName = keyof typeof ICONS;
