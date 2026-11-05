@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use tessera_core::layout::{LayoutEngine, LayoutRequest, RootExtras};
 use tessera_core::scan::{self, ScanMode, ScanOptions, ScanProgress, ScanSummary};
 use tessera_core::watch::{BatchReport, WatchOptions, Watcher};
 use tessera_core::{NodeId, SharedTree, Tree};
@@ -30,9 +31,9 @@ usage:
   tessera watch <PATH> [--mode auto|walk|mft] [--secs N]
 
 scan   scans PATH once and prints totals, memory and the largest items
-bench  scans PATH several times, then keeps the last tree and measures idle
-       CPU for SECS seconds (with --watch: with live updates running);
-       prints one JSON object
+bench  scans PATH several times, times treemap layouts of the last tree,
+       then keeps it and measures idle CPU for SECS seconds (with --watch:
+       with live updates running); prints one JSON object
 watch  scans PATH, then prints every batch of live updates (for N seconds,
        or until Ctrl+C)
 ";
@@ -300,6 +301,11 @@ fn cmd_bench(args: &Args) -> Result<(), String> {
     let (tree, mut summary) = last.expect("at least one run");
     let after_scan = sys::memory();
 
+    // Treemap layout of the whole volume, as the GUI would ask for it. The
+    // engine stays alive through the idle phase, like in the app.
+    let mut engine = LayoutEngine::new();
+    let layout = time_layouts(&tree, &mut engine)?;
+
     // Idle: keep the tree alive (and, with --watch, live updates running)
     // and do nothing else; any CPU time is overhead.
     let batches = Arc::new(AtomicUsize::new(0));
@@ -348,6 +354,10 @@ fn cmd_bench(args: &Args) -> Result<(), String> {
     j.num("working_set_after_scan", after_scan.working_set);
     j.num("private_bytes_after_scan", after_scan.private_bytes);
     j.num("peak_working_set", after_scan.peak_working_set);
+    j.float("layout_first_ms", layout.first_ms);
+    j.float("layout_1080p_ms", layout.fhd_ms);
+    j.float("layout_4k_ms", layout.uhd_ms);
+    j.num("layout_1080p_bytes", layout.fhd_bytes as u64);
     j.num("working_set_idle", idle_mem.working_set);
     j.str("watcher", backend.as_deref().unwrap_or("off"));
     j.num("watch_batches", batches.load(Ordering::Relaxed) as u64);
@@ -356,8 +366,46 @@ fn cmd_bench(args: &Args) -> Result<(), String> {
         "idle_cpu_percent_of_one_core",
         100.0 * idle_cpu.as_secs_f64() / idle_wall.as_secs_f64(),
     );
+    drop(engine);
     println!("{}", j.finish());
     Ok(())
+}
+
+struct LayoutTimes {
+    /// First layout of the root with a fresh engine (fills its caches).
+    first_ms: f64,
+    /// Median of repeated root layouts at 1920x1080 and 3840x2160.
+    fhd_ms: f64,
+    uhd_ms: f64,
+    fhd_bytes: usize,
+}
+
+fn time_layouts(tree: &SharedTree, engine: &mut LayoutEngine) -> Result<LayoutTimes, String> {
+    const RUNS: usize = 15;
+    let t = tree.read().map_err(|_| "tree lock poisoned")?;
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    let mut rev = 0;
+    let mut run = |engine: &mut LayoutEngine, w: f32, h: f32| {
+        rev += 1;
+        let req = LayoutRequest::new(NodeId::ROOT, w, h);
+        let start = Instant::now();
+        let buf = engine.layout(&t, &req, RootExtras::default(), rev);
+        (start.elapsed(), buf.len())
+    };
+    let (first, fhd_bytes) = run(engine, 1920.0, 1080.0);
+    let mut median = |w: f32, h: f32| {
+        let mut v: Vec<Duration> = (0..RUNS).map(|_| run(engine, w, h).0).collect();
+        v.sort();
+        ms(v[RUNS / 2])
+    };
+    let fhd_ms = median(1920.0, 1080.0);
+    let uhd_ms = median(3840.0, 2160.0);
+    Ok(LayoutTimes {
+        first_ms: ms(first),
+        fhd_ms,
+        uhd_ms,
+        fhd_bytes,
+    })
 }
 
 fn cmd_watch(args: &Args) -> Result<(), String> {

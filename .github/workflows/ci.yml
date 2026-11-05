@@ -26,10 +26,13 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
-        # GitHub's Windows runners are elevated, so the MFT and USN tests run too.
+        run: cargo test --workspace
+      - name: Admin tests (MFT, USN journal)
+        # GitHub's Windows runners are elevated, so the ignored MFT and USN
+        # tests can run here. Benchmarks stay ignored.
         env:
           TESSERA_ADMIN_TESTS: "1"
-        run: cargo test --workspace -- --include-ignored
+        run: cargo test -p tessera-core --test mft --test watch -- --include-ignored
       - name: Build release
         run: cargo build --release -p tessera-cli
       - name: Smoke scan (walk)

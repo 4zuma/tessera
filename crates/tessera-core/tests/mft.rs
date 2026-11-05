@@ -1,6 +1,8 @@
-//! MFT scan of the real system volume. Needs an elevated process, so it
-//! only runs with `TESSERA_ADMIN_TESTS=1` (set in CI, whose Windows
-//! runners are elevated).
+//! MFT scan of the real system volume. Needs an elevated process, so these
+//! tests are `#[ignore]`d and also check `TESSERA_ADMIN_TESTS=1`. Run them
+//! from an elevated prompt with
+//! `TESSERA_ADMIN_TESTS=1 cargo test -p tessera-core --test mft -- --include-ignored`
+//! (CI does, since its Windows runners are elevated).
 #![cfg(windows)]
 
 use std::fs;
@@ -69,6 +71,7 @@ fn write(path: &Path, len: usize) {
 }
 
 #[test]
+#[ignore = "needs an elevated prompt: set TESSERA_ADMIN_TESTS=1 and pass --include-ignored"]
 fn mft_scan_of_the_system_volume() {
     if !enabled() {
         return;
@@ -188,6 +191,7 @@ fn mft_scan_of_the_system_volume() {
 }
 
 #[test]
+#[ignore = "needs an elevated prompt: set TESSERA_ADMIN_TESTS=1 and pass --include-ignored"]
 fn cancelled_mft_scan() {
     if !enabled() {
         return;

@@ -176,6 +176,14 @@ impl ReadAt for Synth {
 }
 
 /// Peak resident memory of the process so far (Linux).
+/// Peak resident set size; only known on Linux (`n/a` elsewhere).
+fn rss(bytes: Option<u64>) -> String {
+    bytes.map_or_else(
+        || "n/a".to_owned(),
+        |b| format!("{:.1} MiB", b as f64 / 1048576.0),
+    )
+}
+
 fn peak_rss() -> Option<u64> {
     let s = std::fs::read_to_string("/proc/self/status").ok()?;
     let line = s.lines().find(|l| l.starts_with("VmHWM:"))?;
@@ -227,7 +235,7 @@ fn synthetic_mft() {
     eprintln!(
         "synthetic MFT: {n} records -> {} nodes in {elapsed:?} ({:.0} records/s, {} threads)\n\
          tree {:.1} MiB (nodes {:.1}, names {:.1}) = {:.1} B/node; FRN index {:.1} MiB\n\
-         peak RSS {:.1} MiB (before scan {:.1} MiB)",
+         peak RSS {} (before scan {})",
         t.len(),
         n as f64 / elapsed.as_secs_f64(),
         rayon::current_num_threads(),
@@ -236,8 +244,8 @@ fn synthetic_mft() {
         mib(mem.names as u64),
         mem.total() as f64 / t.len() as f64,
         mib(b.frn.heap_bytes() as u64),
-        mib(peak.unwrap_or(0)),
-        mib(before.unwrap_or(0)),
+        rss(peak),
+        rss(before),
     );
     assert_eq!(
         t.len() as u64,
