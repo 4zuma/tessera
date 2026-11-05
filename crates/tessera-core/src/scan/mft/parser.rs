@@ -121,6 +121,9 @@ pub(crate) struct RecFacts {
     pub size: u64,
     /// Logical length of the unnamed `$DATA` stream.
     pub logical: u64,
+    /// Last write time from `$STANDARD_INFORMATION` ([`crate::Node::mtime`]
+    /// units; 0 if absent, e.g. in extension records).
+    pub mtime: u32,
 }
 
 /// One non-DOS `$FILE_NAME` of a record.
@@ -628,6 +631,7 @@ pub(crate) fn parse_record(rec_no: u32, rec: &mut [u8], out: &mut ParsedBatch) {
         }
     }
     let (mut size, mut logical) = (0u64, 0u64);
+    let mut mtime = 0u32;
     let mut extra = ExtraFacts {
         rec: target,
         ..ExtraFacts::default()
@@ -636,8 +640,14 @@ pub(crate) fn parse_record(rec_no: u32, rec: &mut [u8], out: &mut ParsedBatch) {
     for attr in attributes(rec, &h) {
         match attr.type_code {
             AT_STANDARD_INFORMATION => {
-                if let Some(a) = attr.resident_value().and_then(|v| u32_at(v, 0x20)) {
-                    flags |= standard_info_flags(a);
+                if let Some(v) = attr.resident_value() {
+                    if let Some(a) = u32_at(v, 0x20) {
+                        flags |= standard_info_flags(a);
+                    }
+                    // Offset 0x08: last modification (write) time, a FILETIME.
+                    if let Some(t) = u64_at(v, 0x08) {
+                        mtime = crate::tree::mtime_from_filetime(t);
+                    }
                 }
             }
             AT_FILE_NAME => {
@@ -730,6 +740,7 @@ pub(crate) fn parse_record(rec_no: u32, rec: &mut [u8], out: &mut ParsedBatch) {
         flags,
         size,
         logical,
+        mtime,
     });
 }
 
@@ -826,6 +837,7 @@ mod tests {
                 flags: F_IN_USE | F_HIDDEN | F_SYSTEM | F_HAS_NAME,
                 size: 12288,
                 logical: 10_000,
+                mtime: 0,
             }]
         );
         let names: Vec<(&[u8], u32, u16)> = out

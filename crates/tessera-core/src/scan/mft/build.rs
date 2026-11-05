@@ -46,6 +46,8 @@ pub(crate) struct Accum {
     logical: Vec<u64>,
     /// Sequence number (low 16 bits) and parser flags (high 16 bits).
     meta: Vec<u32>,
+    /// Last write time per record ([`crate::Node::mtime`] units).
+    mtime: Vec<u32>,
     entries: Vec<Entry>,
     extras: HashMap<u32, Extra>,
     corrupt: u64,
@@ -75,6 +77,7 @@ impl Accum {
             size: vec![0; records],
             logical: vec![0; records],
             meta: vec![0; records],
+            mtime: vec![0; records],
             // Headroom for hard links (WinSxS has many); capacity that is
             // never touched is never resident.
             entries: Vec::with_capacity(expected_names + expected_names / 4 + 16),
@@ -107,6 +110,9 @@ impl Accum {
             self.meta[i] = m | (u32::from(r.flags) << 16);
             self.size[i] = self.size[i].wrapping_add(r.size);
             self.logical[i] = self.logical[i].wrapping_add(r.logical);
+            if r.mtime != 0 {
+                self.mtime[i] = r.mtime;
+            }
             bytes = bytes.wrapping_add(r.size);
         }
         for nf in &b.names {
@@ -160,8 +166,8 @@ impl Tree {
     /// Record 5 (the root directory) becomes node 0 and keeps the scanned
     /// root's name. Every directory's children are appended in one go, so
     /// sibling lists are runs of consecutive ids. While a node waits in
-    /// the queue (the arena itself is the queue), its `child_count` holds
-    /// its record number. A record reached through a second name becomes a
+    /// the queue (the arena itself is the queue), its `mtime` field holds
+    /// its record number; the real time replaces it when it is dequeued. A record reached through a second name becomes a
     /// `HARDLINK` node with zero sizes (or is skipped if it is a directory,
     /// which can only happen on a corrupt volume), so every record is
     /// counted once and cycles cannot be entered. Records never reached
@@ -173,6 +179,7 @@ impl Tree {
             size,
             logical,
             meta,
+            mtime,
             mut entries,
             extras,
             corrupt,
@@ -196,7 +203,7 @@ impl Tree {
             name_off: 0,
             name_len: root_name.len() as u16,
             flags: NodeFlags::DIR,
-            child_count: RECORD_ROOT,
+            mtime: RECORD_ROOT,
         });
         let mut frn = vec![u32::MAX; records];
         if (RECORD_ROOT as usize) < records {
@@ -207,12 +214,12 @@ impl Tree {
         let mut i = 0usize;
         while i < tree.nodes.len() {
             let node = *tree.nodes.get(i);
-            let rec = node.child_count;
+            let rec = node.mtime;
+            tree.nodes.get_mut(i).mtime = mtime.get(rec as usize).copied().unwrap_or(0);
             let expandable = node.is_dir()
                 && !node.flags.contains(NodeFlags::HARDLINK)
                 && (rec as usize) < records;
             if !expandable {
-                tree.nodes.get_mut(i).child_count = 0;
                 i += 1;
                 continue;
             }
@@ -280,23 +287,21 @@ impl Tree {
                     name_off: e.name_off,
                     name_len: e.name_len,
                     flags,
-                    child_count: stash,
+                    mtime: stash,
                 });
             }
             let last = tree.nodes.len();
             let p = tree.nodes.get_mut(i);
             if last > first {
                 p.first_child = NodeId(first as u32);
-                p.child_count = (last - first) as u32;
                 tree.nodes.get_mut(last - 1).next_sibling = NodeId::NONE;
-            } else {
-                p.child_count = 0;
             }
             i += 1;
         }
         drop(entries);
         drop(size);
         drop(logical);
+        drop(mtime);
         drop(extras);
 
         // Parents precede children, so one reverse pass sums every directory.

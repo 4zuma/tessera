@@ -281,8 +281,17 @@ fn walk_matches_what_was_built() {
     assert_eq!(logical("sub1"), 128_456);
     assert!(t.node(node(&t, "sub1/deep")).is_dir());
     assert!(t.node(node(&t, "empty dir")).is_dir());
-    assert_eq!(t.node(node(&t, "empty dir")).child_count, 0);
+    assert_eq!(t.child_count(node(&t, "empty dir")), 0);
     assert!(!t.node(node(&t, "a.txt")).is_dir());
+    // Last write time comes from the directory listing (no extra I/O).
+    let now_min = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        + 11_644_473_600)
+        / 60;
+    let mt = t.node(node(&t, "a.txt")).mtime as i64;
+    assert!((now_min - mt).abs() <= 60, "mtime {mt} vs now {now_min}");
     assert!(t.node(node(&t, "a.txt")).size >= 1000 || wine);
 
     // Unicode names survive exactly.
@@ -334,7 +343,11 @@ fn walk_matches_what_was_built() {
             "{:?}",
             j.flags
         );
-        assert_eq!(j.child_count, 0, "a junction must not be followed");
+        assert_eq!(
+            t.child_count(node(&t, "junction")),
+            0,
+            "a junction must not be followed"
+        );
         assert_eq!(j.logical, 0);
     } else {
         assert!(wine, "mklink /J failed on Windows");
@@ -354,7 +367,7 @@ fn walk_matches_what_was_built() {
     let d = t.node(node(&t, "denied"));
     if denied {
         assert!(d.flags.contains(NodeFlags::INACCESSIBLE), "{:?}", d.flags);
-        assert_eq!(d.child_count, 0);
+        assert_eq!(t.child_count(node(&t, "denied")), 0);
         assert_eq!(summary.inaccessible, 1);
     } else {
         assert!(wine, "icacls /deny had no effect on Windows");
@@ -445,7 +458,7 @@ fn scan_into_fills_a_subdirectory() {
     let sub = tree
         .write()
         .unwrap()
-        .add_child(NodeId::ROOT, b"sub", 0, 0, NodeFlags::DIR);
+        .add_child(NodeId::ROOT, b"sub", 0, 0, NodeFlags::DIR, 0);
     let progress = ScanProgress::new();
     let summary = walk::scan_into(&tree, sub, &root.join("sub"), &opts(0), &progress).unwrap();
     assert_eq!(
@@ -469,7 +482,7 @@ fn scan_into_fills_a_subdirectory() {
     let leaf = tree
         .write()
         .unwrap()
-        .add_child(inner_id, b"new", 0, 0, NodeFlags::DIR);
+        .add_child(inner_id, b"new", 0, 0, NodeFlags::DIR, 0);
     std::fs::create_dir(root.join("sub/inner/new")).unwrap();
     write_file(&root.join("sub/inner/new/z.bin"), 7);
     let s = walk::scan_into(

@@ -281,6 +281,7 @@ fn entries_are_classified() {
                 name: &name,
                 attributes,
                 logical,
+                last_write: 0,
                 allocated,
                 file_id,
                 reparse_tag,

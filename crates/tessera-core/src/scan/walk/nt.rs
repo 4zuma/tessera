@@ -130,6 +130,8 @@ pub(super) struct Entry<'a> {
     pub attributes: u32,
     /// `EndOfFile`: the logical length.
     pub logical: u64,
+    /// `LastWriteTime`, a FILETIME (0 if unknown).
+    pub last_write: u64,
     /// `AllocationSize`: bytes on disk, if the query reports it.
     pub allocated: Option<u64>,
     /// File id (NTFS: file reference number), 0 if unknown.
@@ -254,6 +256,7 @@ pub(super) enum ListError {
 struct Layout {
     class: FILE_INFORMATION_CLASS,
     end_of_file: usize,
+    last_write: usize,
     allocation_size: usize,
     attributes: usize,
     name_length: usize,
@@ -265,6 +268,7 @@ struct Layout {
 const ID_FULL: Layout = Layout {
     class: FileIdFullDirectoryInformation,
     end_of_file: offset_of!(FILE_ID_FULL_DIR_INFORMATION, EndOfFile),
+    last_write: offset_of!(FILE_ID_FULL_DIR_INFORMATION, LastWriteTime),
     allocation_size: offset_of!(FILE_ID_FULL_DIR_INFORMATION, AllocationSize),
     attributes: offset_of!(FILE_ID_FULL_DIR_INFORMATION, FileAttributes),
     name_length: offset_of!(FILE_ID_FULL_DIR_INFORMATION, FileNameLength),
@@ -276,6 +280,7 @@ const ID_FULL: Layout = Layout {
 const FULL: Layout = Layout {
     class: FileFullDirectoryInformation,
     end_of_file: offset_of!(FILE_FULL_DIR_INFORMATION, EndOfFile),
+    last_write: offset_of!(FILE_FULL_DIR_INFORMATION, LastWriteTime),
     allocation_size: offset_of!(FILE_FULL_DIR_INFORMATION, AllocationSize),
     attributes: offset_of!(FILE_FULL_DIR_INFORMATION, FileAttributes),
     name_length: offset_of!(FILE_FULL_DIR_INFORMATION, FileNameLength),
@@ -395,6 +400,7 @@ fn parse(rec: &Records<'_>, layout: &Layout, sink: &mut dyn FnMut(&Entry<'_>)) {
             name,
             attributes,
             logical: rec.u64_at(off + layout.end_of_file).unwrap_or(0),
+            last_write: rec.u64_at(off + layout.last_write).unwrap_or(0),
             allocated: rec.u64_at(off + layout.allocation_size),
             file_id: layout
                 .file_id
@@ -454,6 +460,8 @@ pub(super) fn list_find(
             name: &data.cFileName[..name_len],
             attributes,
             logical: (data.nFileSizeHigh as u64) << 32 | data.nFileSizeLow as u64,
+            last_write: (data.ftLastWriteTime.dwHighDateTime as u64) << 32
+                | data.ftLastWriteTime.dwLowDateTime as u64,
             allocated: None,
             file_id: 0,
             reparse_tag: if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {

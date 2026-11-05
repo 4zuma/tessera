@@ -418,7 +418,7 @@ mod tests {
         let mut t = Tree::new(b"X:\\");
         let mut b = tessera_core::EntryBatch::new();
         for (i, s) in [5u64, 50, 7, 900, 3].iter().enumerate() {
-            b.push_wtf8(format!("f{i}").as_bytes(), *s, *s, Default::default());
+            b.push_wtf8(format!("f{i}").as_bytes(), *s, *s, Default::default(), 0);
         }
         t.add_children(NodeId::ROOT, &b);
         let top: Vec<String> = largest_files(&t, 2)

@@ -515,15 +515,25 @@ fn populated_volume_matches_a_walk() {
             "resident"
         );
         assert_eq!(n("docs\\sub\\deeper\\x.bin").size, 102_400);
+        // Last write time comes from $STANDARD_INFORMATION: the image was
+        // filled moments ago.
+        let now_min = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 11_644_473_600)
+            / 60;
+        let mt = n("docs\\sub\\deeper\\x.bin").mtime as i64;
+        assert!((now_min - mt).abs() <= 60, "mtime {mt} vs now {now_min}");
         let docs = n("docs");
         assert_eq!(docs.logical, 1234 + 10 + 100_000);
-        assert_eq!(docs.child_count, 4);
+        assert_eq!(t.child_count(node(t, "docs")), 4);
 
         let orig = n("links\\orig.dat");
         assert_eq!((orig.size, orig.logical), (12288, 10_000));
         assert!(!orig.flags.contains(NodeFlags::HARDLINK));
         let more = node(t, "links\\more");
-        assert_eq!(t.node(more).child_count, 40);
+        assert_eq!(t.child_count(more), 40);
         assert!(
             t.children(more)
                 .all(|c| t.node(c).flags.contains(NodeFlags::HARDLINK))
@@ -542,7 +552,7 @@ fn populated_volume_matches_a_walk() {
         }
         if dos {
             assert!(t.lookup_relative(b"dos\\LONGFI~1.TXT").is_none());
-            assert_eq!(t.node(node(t, "dos")).child_count, 1);
+            assert_eq!(t.child_count(node(t, "dos")), 1);
         }
         if stream {
             let s = n("streams.txt");
@@ -554,9 +564,9 @@ fn populated_volume_matches_a_walk() {
         if junction {
             let j = n("junction");
             assert!(j.flags.contains(NodeFlags::REPARSE | NodeFlags::DIR));
-            assert_eq!(j.child_count, 0);
+            assert_eq!(t.child_count(node(t, "junction")), 0);
         }
-        assert_eq!(t.node(node(t, "many")).child_count, 1500);
+        assert_eq!(t.child_count(node(t, "many")), 1500);
         assert_eq!(
             t.node(node(t, "many")).logical,
             (0..1500u64).map(|i| i % 3000).sum::<u64>()

@@ -177,12 +177,12 @@ fn mft_scan_of_the_system_volume() {
     let (_, uni) = node("Ünïcødé 照片 🦀.txt");
     assert_eq!(uni.logical, 5000);
 
-    let (_, empty) = node("empty");
+    let (empty_id, empty) = node("empty");
     assert!(empty.is_dir());
-    assert_eq!(empty.child_count, 0);
+    assert_eq!(t.child_count(empty_id), 0);
 
     let all = t.node(top);
-    assert_eq!(all.child_count, 5);
+    assert_eq!(t.child_count(top), 5);
     assert_eq!(all.logical, 10_000 + 100 + (1 << 20) + 5000);
     assert_eq!(all.size, a.size + (1 << 20) + uni.size);
 }
