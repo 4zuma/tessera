@@ -40,6 +40,12 @@ describe('categories', () => {
     expect(categoryOf('ext4.vhdx')).toBe(Cat.VDisk);
     expect(categoryOf('Makefile')).toBe(Cat.Other);
     expect(categoryOf('.gitignore')).toBe(Cat.Other);
+    // the same table and .ts rule as tessera_core::category
+    expect(categoryOf('Win11.iso')).toBe(Cat.VDisk);
+    expect(categoryOf('setup.exe.crdownload')).toBe(Cat.Cache);
+    expect(categoryOf('pagefile.sys')).toBe(Cat.System);
+    expect(categoryOf('index.d.ts', 2048)).toBe(Cat.Dev);
+    expect(categoryOf('capture.ts', 4 * 2 ** 30)).toBe(Cat.Video);
   });
 });
 

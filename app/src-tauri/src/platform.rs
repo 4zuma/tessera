@@ -19,7 +19,8 @@ pub struct Info {
     pub backdrop: &'static str,
     pub accent: Option<Accent>,
     pub version: String,
-    /// the scan core is wired in; false means the WebView uses its mock tree
+    /// the scan core serves the commands; false (non-Windows dev builds) means
+    /// the WebView uses its mock tree
     pub core: bool,
 }
 
@@ -30,7 +31,7 @@ impl Info {
             backdrop,
             accent: imp::accent(),
             version,
-            core: false,
+            core: cfg!(windows),
         }
     }
 }
@@ -54,12 +55,14 @@ pub fn relaunch_elevated() -> Result<(), String> {
 #[cfg(windows)]
 mod imp {
     use super::Accent;
+    use windows::UI::ViewManagement::{UIColorType, UISettings};
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
+    use windows::Win32::Security::{
+        GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
+    };
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-    use windows::UI::ViewManagement::{UIColorType, UISettings};
     use windows::core::{HSTRING, PCWSTR, w};
 
     pub fn supports_mica() -> bool {
@@ -102,7 +105,16 @@ mod imp {
     pub fn relaunch_elevated() -> Result<(), String> {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let exe = HSTRING::from(exe.as_os_str());
-        let r = unsafe { ShellExecuteW(None, w!("runas"), &exe, PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL) };
+        let r = unsafe {
+            ShellExecuteW(
+                None,
+                w!("runas"),
+                &exe,
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            )
+        };
         // values above 32 mean success; the user may also have declined the UAC prompt
         if r.0 as isize > 32 {
             Ok(())
