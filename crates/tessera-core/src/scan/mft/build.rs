@@ -69,7 +69,7 @@ impl Accum {
     /// `records`: number of MFT record slots; `expected_names`: a capacity
     /// hint (records in use).
     pub fn new(root_name: &[u8], records: usize, expected_names: usize) -> Accum {
-        let mut names = NamePool::new();
+        let mut names = NamePool::with_dedup();
         names.push(root_name);
         Accum {
             root_name: root_name.to_vec(),

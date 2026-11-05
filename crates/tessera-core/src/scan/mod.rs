@@ -172,6 +172,9 @@ pub fn scan(
             }
         }
     };
+    if let Ok(mut t) = tree.write() {
+        t.end_scan();
+    }
     summary.elapsed = start.elapsed();
     if summary.volume.is_none() {
         summary.volume = volume_info(root).ok();

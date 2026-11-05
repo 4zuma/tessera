@@ -41,25 +41,22 @@ jobs:
           name: tessera-windows-x64
           path: target/release/tessera.exe
 
-  linux:
-    name: Linux (portable parts, Windows cross-check)
+  ntfs-images:
+    # The only Linux job: it builds real NTFS images with ntfs-3g (hard links,
+    # compression, sparse files, a fragmented MFT...) and checks the MFT
+    # parser against a mounted walk of each. Everything else runs on Windows.
+    name: MFT parser on NTFS images (Linux)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
-      - name: Install NTFS tools (MFT parser tests on real NTFS images)
+      - name: Install NTFS tools
         run: sudo apt-get update -q && sudo apt-get install -y -q ntfs-3g
-      - name: Test portable code
-        run: cargo test --workspace
       - name: MFT image tests (must not skip)
         # They build volumes with mkntfs and fill them through an ntfs-3g
         # mount (via sudo -n); this run fails instead of skipping.
         env:
           TESSERA_REQUIRE_NTFS_IMAGES: "1"
-        run: cargo test -p tessera-core image_tests -- --nocapture
-      - name: Type-check for Windows
-        run: cargo check --workspace --all-targets --target x86_64-pc-windows-msvc
+        run: cargo test -p tessera-core --lib image_tests -- --nocapture

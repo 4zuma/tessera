@@ -249,24 +249,138 @@ impl<T> ChunkedVec<T> {
 
 /// All names, concatenated as WTF-8 in 1 MiB chunks. A name never straddles
 /// two chunks; the few bytes left at the end of a full chunk are wasted.
+///
+/// While a scan runs, identical names are stored once (`__init__.py`,
+/// `LICENSE`, `index.js`... repeat hundreds of thousands of times on a
+/// typical system drive). The lookup table for that is only kept during the
+/// scan ([`NamePool::end_dedup`] frees it); names added later are appended.
 pub struct NamePool {
     chunks: Vec<Vec<u8>>,
+    dedup: Option<Dedup>,
 }
 
 const NAME_CHUNK_SHIFT: u32 = 20; // 1 MiB
 const NAME_CHUNK: usize = 1 << NAME_CHUNK_SHIFT;
 
+/// Open-addressing set of stored names. A slot packs the name's offset
+/// (bits 0..32), its length + 1 (bits 32..48, 0 = empty slot) and 16 more
+/// bits of its hash (bits 48..64) to skip most byte comparisons.
+struct Dedup {
+    slots: Vec<u64>,
+    used: usize,
+}
+
+impl Dedup {
+    fn new() -> Self {
+        Dedup {
+            slots: vec![0; 1 << 16],
+            used: 0,
+        }
+    }
+}
+
+#[inline]
+fn name_hash(b: &[u8]) -> u64 {
+    const K: u64 = 0x517c_c1b7_2722_0a95;
+    let mut h = b.len() as u64;
+    let mut words = b.chunks_exact(8);
+    for w in &mut words {
+        h = (h.rotate_left(5) ^ u64::from_le_bytes(w.try_into().unwrap())).wrapping_mul(K);
+    }
+    let rest = words.remainder();
+    if !rest.is_empty() {
+        let mut buf = [0u8; 8];
+        buf[..rest.len()].copy_from_slice(rest);
+        h = (h.rotate_left(5) ^ u64::from_le_bytes(buf)).wrapping_mul(K);
+    }
+    // Final avalanche so the low bits used for the slot index are well mixed.
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    h ^ (h >> 33)
+}
+
 impl NamePool {
+    /// A pool that appends every name (no de-duplication).
     pub const fn new() -> Self {
-        NamePool { chunks: Vec::new() }
+        NamePool {
+            chunks: Vec::new(),
+            dedup: None,
+        }
     }
 
-    /// Stores `name` and returns its offset.
+    /// A pool that stores identical names once until [`NamePool::end_dedup`].
+    pub fn with_dedup() -> Self {
+        NamePool {
+            chunks: Vec::new(),
+            dedup: Some(Dedup::new()),
+        }
+    }
+
+    /// Frees the de-duplication table (call when a scan ends). Names that
+    /// are already shared stay shared.
+    pub fn end_dedup(&mut self) {
+        self.dedup = None;
+    }
+
+    /// Stores `name` (or finds an identical stored copy) and returns its offset.
     ///
     /// # Panics
     /// If `name` is longer than `u16::MAX` bytes or the pool exceeds 4 GiB.
     pub fn push(&mut self, name: &[u8]) -> u32 {
         assert!(name.len() <= u16::MAX as usize, "name too long");
+        let Some(mut d) = self.dedup.take() else {
+            return self.append(name);
+        };
+        // Names of 65,535 bytes don't fit the packed length; just append.
+        if name.len() >= u16::MAX as usize {
+            self.dedup = Some(d);
+            return self.append(name);
+        }
+        if (d.used + 1) * 4 > d.slots.len() * 3 {
+            self.grow(&mut d);
+        }
+        let h = name_hash(name);
+        let mask = d.slots.len() - 1;
+        let tag = h >> 48;
+        let want = ((name.len() as u64 + 1) << 32) | (tag << 48);
+        let mut i = h as usize & mask;
+        let off = loop {
+            let slot = d.slots[i];
+            if slot == 0 {
+                let off = self.append(name);
+                d.slots[i] = want | off as u64;
+                d.used += 1;
+                break off;
+            }
+            if slot & !0xFFFF_FFFF == want {
+                let off = slot as u32;
+                if self.get(off, name.len() as u16) == name {
+                    break off;
+                }
+            }
+            i = (i + 1) & mask;
+        };
+        self.dedup = Some(d);
+        off
+    }
+
+    /// Doubles the table and re-inserts every stored name.
+    fn grow(&self, d: &mut Dedup) {
+        let mut slots = vec![0u64; d.slots.len() * 2];
+        let mask = slots.len() - 1;
+        for &slot in d.slots.iter().filter(|&&s| s != 0) {
+            let len = ((slot >> 32) & 0xFFFF) as u16 - 1;
+            let h = name_hash(self.get(slot as u32, len));
+            let mut i = h as usize & mask;
+            while slots[i] != 0 {
+                i = (i + 1) & mask;
+            }
+            slots[i] = slot;
+        }
+        d.slots = slots;
+    }
+
+    fn append(&mut self, name: &[u8]) -> u32 {
         let need_new = match self.chunks.last() {
             Some(c) => c.len() + name.len() > c.capacity(),
             None => true,
@@ -290,9 +404,16 @@ impl NamePool {
         &c[start..start + len as usize]
     }
 
+    /// Heap bytes held, including the de-duplication table while it exists.
     pub fn heap_bytes(&self) -> usize {
         self.chunks.iter().map(|c| c.capacity()).sum::<usize>()
             + self.chunks.capacity() * std::mem::size_of::<Vec<u8>>()
+            + self.dedup.as_ref().map_or(0, |d| d.slots.capacity() * 8)
+    }
+
+    /// Bytes of name data actually stored (excluding unused chunk tails).
+    pub fn stored_bytes(&self) -> usize {
+        self.chunks.iter().map(|c| c.len()).sum()
     }
 }
 
@@ -418,7 +539,7 @@ impl Tree {
     pub fn new(root_name: &[u8]) -> Tree {
         let mut t = Tree {
             nodes: ChunkedVec::new(),
-            names: NamePool::new(),
+            names: NamePool::with_dedup(),
         };
         let name_off = t.names.push(root_name);
         t.nodes.push(Node {
@@ -447,6 +568,12 @@ impl Tree {
         {
             Tree::new(root.to_string_lossy().as_bytes())
         }
+    }
+
+    /// Releases memory only needed while scanning (the name
+    /// de-duplication table). Called by [`crate::scan::scan`] when it ends.
+    pub fn end_scan(&mut self) {
+        self.names.end_dedup();
     }
 
     /// Wraps the tree for sharing between threads.
@@ -930,6 +1057,29 @@ mod tests {
             m.nodes >= 200_001 * 40 && m.nodes < 5 * 65_536 * 40,
             "{m:?}"
         );
+    }
+
+    #[test]
+    fn name_pool_dedups_while_scanning() {
+        let mut p = NamePool::with_dedup();
+        let a = p.push(b"__init__.py");
+        let b = p.push(b"LICENSE");
+        assert_eq!(p.push(b"__init__.py"), a);
+        assert_ne!(p.push(b"license"), b, "names are case sensitive here");
+        assert_eq!(p.push(b""), p.push(b""));
+        // Enough distinct names to force several table growths.
+        let offs: Vec<u32> = (0..200_000)
+            .map(|i| p.push(format!("f{i}.txt").as_bytes()))
+            .collect();
+        for (i, &o) in offs.iter().enumerate().step_by(997) {
+            let n = format!("f{i}.txt");
+            assert_eq!(p.push(n.as_bytes()), o);
+            assert_eq!(p.get(o, n.len() as u16), n.as_bytes());
+        }
+        let stored = p.stored_bytes();
+        p.end_dedup();
+        assert_ne!(p.push(b"LICENSE"), b, "after the scan, names are appended");
+        assert_eq!(p.stored_bytes(), stored + 7);
     }
 
     #[test]
