@@ -6,7 +6,8 @@
 //!
 //! ```text
 //! tessera scan  <PATH> [--mode auto|walk|mft] [--threads N] [--top N] [--json]
-//! tessera bench <PATH> [--mode auto|walk|mft] [--threads N] [--runs N] [--idle SECS]
+//! tessera bench <PATH> [--mode auto|walk|mft] [--threads N] [--runs N] [--idle SECS] [--watch]
+//! tessera watch <PATH> [--mode auto|walk|mft] [--secs N]
 //! ```
 
 mod sys;
@@ -15,19 +16,25 @@ use std::collections::BinaryHeap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use tessera_core::scan::{self, ScanMode, ScanOptions, ScanProgress, ScanSummary};
-use tessera_core::{NodeId, Tree};
+use tessera_core::watch::{BatchReport, WatchOptions, Watcher};
+use tessera_core::{NodeId, SharedTree, Tree};
 
 const USAGE: &str = "\
 usage:
   tessera scan  <PATH> [--mode auto|walk|mft] [--threads N] [--top N] [--json]
-  tessera bench <PATH> [--mode auto|walk|mft] [--threads N] [--runs N] [--idle SECS]
+  tessera bench <PATH> [--mode auto|walk|mft] [--threads N] [--runs N] [--idle SECS] [--watch]
+  tessera watch <PATH> [--mode auto|walk|mft] [--secs N]
 
 scan   scans PATH once and prints totals, memory and the largest items
 bench  scans PATH several times, then keeps the last tree and measures idle
-       CPU for SECS seconds; prints one JSON object
+       CPU for SECS seconds (with --watch: with live updates running);
+       prints one JSON object
+watch  scans PATH, then prints every batch of live updates (for N seconds,
+       or until Ctrl+C)
 ";
 
 struct Args {
@@ -39,6 +46,8 @@ struct Args {
     json: bool,
     runs: usize,
     idle_secs: u64,
+    watch: bool,
+    secs: u64,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -57,6 +66,8 @@ fn parse_args() -> Result<Args, String> {
         json: false,
         runs: 3,
         idle_secs: 10,
+        watch: false,
+        secs: 0,
     };
     let mut path = None;
     while let Some(a) = it.next() {
@@ -79,7 +90,9 @@ fn parse_args() -> Result<Args, String> {
             "--top" => args.top = num(&value("--top")?)?,
             "--runs" => args.runs = num::<usize>(&value("--runs")?)?.max(1),
             "--idle" => args.idle_secs = num(&value("--idle")?)?,
+            "--secs" => args.secs = num(&value("--secs")?)?,
             "--json" => args.json = true,
+            "--watch" => args.watch = true,
             "-h" | "--help" => return Err(String::new()),
             _ if s.starts_with("--") => return Err(format!("unknown option {s}")),
             _ if path.is_none() => path = Some(PathBuf::from(a)),
@@ -108,6 +121,7 @@ fn main() -> ExitCode {
     let result = match args.command.as_str() {
         "scan" => cmd_scan(&args),
         "bench" => cmd_bench(&args),
+        "watch" => cmd_watch(&args),
         other => Err(format!("unknown command {other}")),
     };
     match result {
@@ -121,7 +135,7 @@ fn main() -> ExitCode {
 
 /// Runs one scan on a worker thread while the main thread prints progress
 /// to stderr every 500 ms (only while the scan runs).
-fn run_scan(args: &Args, show_progress: bool) -> Result<(Tree, ScanSummary), String> {
+fn run_scan(args: &Args, show_progress: bool) -> Result<(SharedTree, ScanSummary), String> {
     let tree = Tree::for_path(&args.path).into_shared();
     let progress = Arc::new(ScanProgress::new());
     let opts = ScanOptions {
@@ -153,15 +167,31 @@ fn run_scan(args: &Args, show_progress: bool) -> Result<(Tree, ScanSummary), Str
         .join()
         .map_err(|_| "scanner thread panicked".to_string())?
         .map_err(|e| e.to_string())?;
-    let tree = Arc::try_unwrap(tree)
-        .map_err(|_| "tree still shared".to_string())?
-        .into_inner()
-        .map_err(|_| "tree lock poisoned".to_string())?;
     Ok((tree, summary))
 }
 
+/// Starts live updates on a scanned tree, reusing the MFT scan's journal
+/// position when there is one.
+fn start_watcher(
+    args: &Args,
+    tree: &SharedTree,
+    summary: &mut ScanSummary,
+    on_batch: impl Fn(&BatchReport) + Send + 'static,
+) -> Result<Watcher, String> {
+    let usn = summary.frn_index.take().zip(summary.usn_checkpoint.take());
+    Watcher::start(
+        &args.path,
+        tree.clone(),
+        WatchOptions::default(),
+        usn,
+        on_batch,
+    )
+    .map_err(|e| format!("cannot watch: {e}"))
+}
+
 fn cmd_scan(args: &Args) -> Result<(), String> {
-    let (tree, summary) = run_scan(args, !args.json)?;
+    let (shared, summary) = run_scan(args, !args.json)?;
+    let tree = shared.read().map_err(|_| "tree lock poisoned")?;
     let mem = sys::memory();
     let tmem = tree.memory();
     let root = tree.node(NodeId::ROOT);
@@ -253,7 +283,7 @@ fn cmd_scan(args: &Args) -> Result<(), String> {
 
 fn cmd_bench(args: &Args) -> Result<(), String> {
     let mut times = Vec::with_capacity(args.runs);
-    let mut last: Option<(Tree, ScanSummary)> = None;
+    let mut last: Option<(SharedTree, ScanSummary)> = None;
     for run in 0..args.runs {
         // Drop the previous tree first so runs don't stack up memory.
         drop(last.take());
@@ -262,47 +292,127 @@ fn cmd_bench(args: &Args) -> Result<(), String> {
             "run {}: {:.2} s, {} nodes",
             run + 1,
             summary.elapsed.as_secs_f64(),
-            tree.len()
+            tree.read().map_err(|_| "tree lock poisoned")?.len()
         );
         times.push(summary.elapsed);
         last = Some((tree, summary));
     }
-    let (tree, summary) = last.expect("at least one run");
+    let (tree, mut summary) = last.expect("at least one run");
     let after_scan = sys::memory();
 
-    // Idle: keep the tree alive and do nothing; any CPU time is overhead.
+    // Idle: keep the tree alive (and, with --watch, live updates running)
+    // and do nothing else; any CPU time is overhead.
+    let batches = Arc::new(AtomicUsize::new(0));
+    let watcher = if args.watch {
+        let b = batches.clone();
+        Some(start_watcher(args, &tree, &mut summary, move |_| {
+            b.fetch_add(1, Ordering::Relaxed);
+        })?)
+    } else {
+        None
+    };
+    let backend = watcher.as_ref().map(|w| format!("{:?}", w.backend()));
     let cpu_before = sys::cpu_time();
     let idle_start = Instant::now();
     std::thread::sleep(Duration::from_secs(args.idle_secs));
     let idle_wall = idle_start.elapsed();
     let idle_cpu = sys::cpu_time().saturating_sub(cpu_before);
+    let idle_mem = sys::memory();
+    if let Some(w) = watcher {
+        w.stop();
+    }
 
+    // The first run reads a cold(er) disk cache; the rest are warm.
+    let first = times[0];
     times.sort();
     let median = times[times.len() / 2];
+    let t = tree.read().map_err(|_| "tree lock poisoned")?;
     let mut j = Json::new();
     j.str("path", &args.path.to_string_lossy());
     j.str("mode", &format!("{:?}", summary.mode));
     j.bool("elevated", scan::is_elevated());
     j.num("runs", args.runs as u64);
+    j.num("first_ms", first.as_millis() as u64);
     j.num("min_ms", times[0].as_millis() as u64);
     j.num("median_ms", median.as_millis() as u64);
     j.num("max_ms", times[times.len() - 1].as_millis() as u64);
     j.num("files", summary.files);
     j.num("dirs", summary.dirs);
     j.num("inaccessible", summary.inaccessible);
-    j.num("nodes", tree.len() as u64);
-    j.num("size_on_disk", tree.node(NodeId::ROOT).size);
-    j.num("tree_bytes", tree.memory().total() as u64);
+    j.num("nodes", t.len() as u64);
+    j.num("size_on_disk", t.node(NodeId::ROOT).size);
+    if let Some(v) = &summary.volume {
+        j.num("volume_used", v.total_bytes.saturating_sub(v.free_bytes));
+    }
+    j.num("tree_bytes", t.memory().total() as u64);
     j.num("working_set_after_scan", after_scan.working_set);
     j.num("private_bytes_after_scan", after_scan.private_bytes);
     j.num("peak_working_set", after_scan.peak_working_set);
+    j.num("working_set_idle", idle_mem.working_set);
+    j.str("watcher", backend.as_deref().unwrap_or("off"));
+    j.num("watch_batches", batches.load(Ordering::Relaxed) as u64);
     j.num("idle_secs", idle_wall.as_secs());
     j.float(
         "idle_cpu_percent_of_one_core",
         100.0 * idle_cpu.as_secs_f64() / idle_wall.as_secs_f64(),
     );
     println!("{}", j.finish());
-    drop(tree);
+    Ok(())
+}
+
+fn cmd_watch(args: &Args) -> Result<(), String> {
+    let (tree, mut summary) = run_scan(args, true)?;
+    {
+        let t = tree.read().map_err(|_| "tree lock poisoned")?;
+        println!(
+            "scanned {} ({:?}) in {:.2} s: {} files, {} dirs, {}",
+            args.path.display(),
+            summary.mode,
+            summary.elapsed.as_secs_f64(),
+            summary.files,
+            summary.dirs,
+            human(t.node(NodeId::ROOT).size)
+        );
+    }
+    let start = Instant::now();
+    let shared = tree.clone();
+    let watcher = start_watcher(args, &tree, &mut summary, move |r| {
+        let total = shared
+            .read()
+            .map(|t| t.node(NodeId::ROOT).size)
+            .unwrap_or(0);
+        println!(
+            "{:>8.1}s  {} events -> +{} -{} ~{} moved {}{}{}  total {}",
+            start.elapsed().as_secs_f64(),
+            r.events,
+            r.created,
+            r.deleted,
+            r.modified,
+            r.moved,
+            if r.rescan_needed.is_empty() {
+                String::new()
+            } else {
+                format!("  rescan needed: {}", r.rescan_needed.len())
+            },
+            r.error
+                .as_ref()
+                .map(|e| format!("  error: {e}"))
+                .unwrap_or_default(),
+            human(total)
+        );
+    })?;
+    println!(
+        "watching with {:?}; idle means 0% CPU. Ctrl+C to stop.",
+        watcher.backend()
+    );
+    if args.secs > 0 {
+        std::thread::sleep(Duration::from_secs(args.secs));
+        watcher.stop();
+    } else {
+        loop {
+            std::thread::park();
+        }
+    }
     Ok(())
 }
 
