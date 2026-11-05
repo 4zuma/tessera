@@ -123,6 +123,8 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
   const total = kids.reduce((a, b) => a + b.s, 0);
   const W = inp.width - 2 * o.outer;
   const H = inp.height - 2 * o.outer;
+  // a folder opens only above both thresholds (rule 5)
+  const openArea = Math.max(o.minArea * o.recurse, o.openShare * W * H);
   place(view, kids, o.outer, o.outer, W, H, 1, NONE);
   return { rects: out, bytesPerPx: total / Math.max(1, W * H) };
 
@@ -188,8 +190,9 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       }
       const r: Rect = { ...base, id: n.id, target: deep.id, size: c.s, name: '', kind: Kind.DirLeaf, cat: CAT_NONE, flags: flagsOf(drive, n) | flagsOf(drive, deep) };
       out.push(r);
-      if (depth < o.maxDepth && rw * rh > o.minArea * o.recurse && kidsOf.length) {
-        const hh = rh >= o.header * 2.2 && rw >= o.minHeaderW ? o.header : 0;
+      const hh = rh >= o.header * 2.2 && rw >= o.minHeaderW ? o.header : 0;
+      // an open folder always has a header, so it is never a nameless frame
+      if (depth < o.maxDepth && (hh || o.header <= 0) && rw * rh > openArea && kidsOf.length) {
         const ix = rx + o.pad;
         const iy = ry + (hh || o.pad);
         const iw = rw - 2 * o.pad;

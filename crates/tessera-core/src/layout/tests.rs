@@ -197,7 +197,14 @@ fn check(tree: &Tree, req: &LayoutRequest, d: &Decoded, extras: u64) {
             kids.contains_key(&r.id) && r.kind != kind::FREE && r.kind != kind::UNSCANNED;
         assert_eq!(r.kind == kind::DIR, has_kids, "{r:?}");
         if r.kind == kind::DIR {
-            assert!(r.depth < st.max_depth && r.w * r.h > st.min_area * st.recurse);
+            let area = r.w * r.h;
+            assert!(r.depth < st.max_depth, "{r:?}");
+            assert!(
+                r.header > 0 || st.header <= 0.0,
+                "open without a header: {r:?}"
+            );
+            assert!(area > st.min_area * st.recurse, "{r:?}");
+            assert!(area > st.open_share * map.2 * map.3, "{r:?}");
         }
     }
     for (&parent, group) in &kids {
@@ -383,6 +390,7 @@ fn styles_are_respected() {
         min_header_w: 100.0,
         min_area: 400.0,
         recurse: 1.0,
+        open_share: 0.0,
         max_depth: 3,
         max_per_dir: 5,
         label_min_w: 80.0,
@@ -554,16 +562,15 @@ fn single_folder_chains_fold() {
     assert_eq!(nav(&t, NodeId::ROOT, SizeMode::Disk).up, None);
 }
 
-#[test]
-fn folders_open_by_size_and_depth() {
+/// A chain of 20 folders, each with a file beside the next folder that
+/// takes three quarters of it, so the area quarters at every level.
+fn chain_tree() -> (Tree, Vec<NodeId>) {
     let mut t = Tree::new(b"R:\\");
-    // A chain of folders, each with a file beside the next folder.
     let mut cur = NodeId::ROOT;
     let mut chain = vec![];
     for i in 0..20 {
         cur = t.add_child(cur, format!("d{i}").as_bytes(), 0, 0, NodeFlags::DIR, 0);
         chain.push(cur);
-        // Three quarters of each folder: the area quarters at every level.
         let size = 3u64 << (2 * (19 - i) + 10);
         t.add_child(cur, format!("f{i}").as_bytes(), size, 1, NodeFlags::NONE, 0);
     }
@@ -575,6 +582,12 @@ fn folders_open_by_size_and_depth() {
         NodeFlags::NONE,
         0,
     );
+    (t, chain)
+}
+
+#[test]
+fn folders_open_by_size_and_depth() {
+    let (t, chain) = chain_tree();
     let mut req = LayoutRequest::new(NodeId::ROOT, 3000.0, 3000.0);
     req.style.max_depth = 4;
     let d = lay(&t, &req);
@@ -595,6 +608,56 @@ fn folders_open_by_size_and_depth() {
         .unwrap();
     assert_eq!(last.kind, kind::DIR_LEAF);
     assert!(last.depth < 20);
+}
+
+#[test]
+fn open_share_keeps_the_depth_when_the_window_grows() {
+    let (t, chain) = chain_tree();
+    let open = |side: f32, share: f32| {
+        let mut req = LayoutRequest::new(NodeId::ROOT, side, side);
+        req.style.recurse = 1.0;
+        req.style.open_share = share;
+        req.style.max_depth = 255;
+        let d = lay(&t, &req);
+        let ids: Vec<u32> = d
+            .records
+            .iter()
+            .filter(|r| r.kind == kind::DIR)
+            .map(|r| r.id)
+            .collect();
+        ids
+    };
+    // Folders at 100 %, 25 %, 6.25 % and 1.6 % of the map open, the one
+    // at 0.4 % does not.
+    let small = open(1500.0, 0.01);
+    assert_eq!(small, [chain[0].0, chain[1].0, chain[2].0, chain[3].0]);
+    assert_eq!(open(6000.0, 0.01), small);
+    // Without the share, a bigger window opens more levels.
+    assert!(open(6000.0, 0.0).len() > open(1500.0, 0.0).len());
+}
+
+#[test]
+fn only_folders_with_a_header_open() {
+    let t = synthetic(5, 3_000, 4, 10, 0, 0);
+    let mut req = LayoutRequest::new(NodeId::ROOT, 1600.0, 1000.0);
+    let d = lay(&t, &req);
+    assert!(d.records.iter().any(|r| r.kind == kind::DIR));
+    // No folder is wide enough for a header, so none opens.
+    req.style.min_header_w = 10_000.0;
+    let d = lay(&t, &req);
+    assert!(
+        d.records
+            .iter()
+            .all(|r| r.depth == 1 && r.kind != kind::DIR)
+    );
+    // Without header bands at all, the rule is off.
+    req.style.header = 0.0;
+    let d = lay(&t, &req);
+    assert!(
+        d.records
+            .iter()
+            .any(|r| r.kind == kind::DIR && r.header == 0)
+    );
 }
 
 #[test]

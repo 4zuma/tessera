@@ -46,7 +46,8 @@ interface LayoutRequest {
     header: f32;        // folder header band height (21)
     minHeaderW: f32;    // a folder narrower than this gets no header (60)
     minArea: f32;       // px²; smaller siblings are merged into one group (110)
-    recurse: f32;       // a folder opens only if area > minArea * recurse (3)
+    recurse: f32;       // a folder opens only if area > minArea * recurse (60, so 6,600 px²)
+    openShare: f32;     // ... and only if area > openShare * the map's area (0.0025); 0 = off
     maxDepth: u8;       // (14)
     maxPerDir: u32;     // at most this many tiles per folder, the rest are grouped (400)
     labelMinW: f32;     // names are sent only for rects at least this big (44 × 20),
@@ -155,9 +156,13 @@ These are what make the map calm while it changes, and they were tuned in the pr
 4. **Folded chains**: a folder whose only visible child is a folder is merged with it into
    one tile named `a › b › c`; `target` is the deepest folder. `nav().up` skips such
    folders too, so "back" never lands on a view with a single tile.
-5. A folder opens (kind DIR) when `depth < maxDepth` and its area is above
-   `minArea * recurse`. It gets a header band of `header` px when it is at least
-   `header * 2.2` tall and `minHeaderW` wide; the inner box is inset by `pad` (by `header`
-   at the top). If the inner box is smaller than 3 × 3 px it stays DIR_LEAF.
+5. A folder gets a header band of `header` px when it is at least `header * 2.2` tall and
+   `minHeaderW` wide. It opens (kind DIR) only when `depth < maxDepth`, it has a header
+   band (unless `header` is 0), and its area is above both `minArea * recurse` and
+   `openShare` of the map's area. So an open folder is always named and has room for a
+   few labelled tiles, and a very large window does not open more levels than a normal
+   one; smaller folders stay DIR_LEAF tiles that show their name and size. The inner box
+   is inset by `pad` (by `header` at the top). If the inner box is smaller than 3 × 3 px
+   it stays DIR_LEAF.
 6. At the volume root, two pseudo children are added: UNSCANNED (`used - scanned`, while
    scanning and above 64 MiB) ranked first, and FREE (the volume's free bytes) ranked last.

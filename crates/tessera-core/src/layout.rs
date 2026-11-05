@@ -30,13 +30,21 @@
 //!    merged with it into one tile named `a › b › c`, whose `id` is the top
 //!    folder and whose `target` is the deepest one; the deepest folder's
 //!    children fill the tile and name the tile as their `parent`.
-//! 5. A folder opens (kind DIR, its children follow) when its depth is
-//!    below `maxDepth` and its area is above `minArea * recurse`. It gets a
-//!    header band of `header` px when it is at least `header * 2.2` tall
-//!    and `minHeaderW` wide (this applies to DIR_LEAF tiles too). The inner
-//!    box is the tile inset by `pad`, by `header` at the top when it has a
-//!    header. If the inner box is smaller than 3 x 3 px, or no child ends
-//!    up visible, the folder is a DIR_LEAF (drawn solid).
+//! 5. A folder gets a header band of `header` px when it is at least
+//!    `header * 2.2` tall and `minHeaderW` wide (this applies to DIR_LEAF
+//!    tiles too). It opens (kind DIR, its children follow) only when all of
+//!    these hold:
+//!    * its depth is below `maxDepth`;
+//!    * it has a header band (unless `header` is 0), so an open folder is
+//!      always named;
+//!    * its area is above `minArea * recurse` px², so an open folder has
+//!      room for a few labelled tiles;
+//!    * its area is above `openShare` of the map's area, so a very large
+//!      window does not open more levels than a normal one.
+//!
+//!    The inner box is the tile inset by `pad`, by `header` at the top when
+//!    it has a header. If the inner box is smaller than 3 x 3 px, or no
+//!    child ends up visible, the folder is a DIR_LEAF (drawn solid).
 //! 6. When the view is the tree root, two pseudo tiles can be added from
 //!    numbers the caller passes in [`RootExtras`]: UNSCANNED (`used -
 //!    scanned` while scanning, only above 64 MiB), ranked first, and FREE
@@ -191,6 +199,9 @@ pub struct LayoutStyle {
     pub min_area: f32,
     /// A folder opens only if its area is above `min_area * recurse`.
     pub recurse: f32,
+    /// A folder opens only if its area is above this share (0 to 1) of the
+    /// map's area; 0 turns the rule off.
+    pub open_share: f32,
     pub max_depth: u8,
     /// At most this many tiles per folder; the rest are grouped.
     pub max_per_dir: u32,
@@ -199,6 +210,16 @@ pub struct LayoutStyle {
     pub label_min_w: f32,
     pub label_min_h: f32,
 }
+
+/// Default `recurse`: with `min_area` 110, a folder must be over 6,600 px²
+/// (about 80 x 80 px) to open, so that an open folder has room for a few
+/// labelled tiles under its header.
+pub const RECURSE: f32 = 60.0;
+/// Default `open_share`: a folder must also be over 0.25 % of the map to
+/// open. This only matters on maps over 2.6 million px² (about
+/// 2000 x 1300), where it keeps a very large window from opening more
+/// levels than a normal one.
+pub const OPEN_SHARE: f32 = 0.0025;
 
 impl Default for LayoutStyle {
     fn default() -> Self {
@@ -209,7 +230,8 @@ impl Default for LayoutStyle {
             header: 21.0,
             min_header_w: 60.0,
             min_area: 110.0,
-            recurse: 3.0,
+            recurse: RECURSE,
+            open_share: OPEN_SHARE,
             max_depth: 14,
             max_per_dir: 400,
             label_min_w: 44.0,
@@ -370,6 +392,11 @@ struct Style {
     header: f64,
     min_header_w: f64,
     min_area: f64,
+    /// `min_area * recurse`.
+    open_min: f64,
+    open_share: f64,
+    /// What a folder's area must be above to open: the larger of `open_min`
+    /// and `open_share` of the map, set once the map is known.
     open_area: f64,
     max_depth: u8,
     max_per_dir: usize,
@@ -394,7 +421,9 @@ impl Style {
             header: v(s.header).min(255.0),
             min_header_w: v(s.min_header_w),
             min_area,
-            open_area: min_area * v(s.recurse),
+            open_min: min_area * v(s.recurse),
+            open_share: v(s.open_share).min(1.0),
+            open_area: 0.0,
             max_depth: s.max_depth,
             // Room for UNSCANNED, the group and FREE: the top level never
             // goes over the cap.
@@ -543,6 +572,7 @@ impl Run<'_> {
         if !(map.w >= 1.0 && map.h >= 1.0) {
             return 0.0;
         }
+        self.st.open_area = self.st.open_min.max(self.st.open_share * map.w * map.h);
         let (unscanned, free) = if view == NodeId::ROOT {
             (
                 extras.unscanned.filter(|&u| u > UNSCANNED_MIN).unwrap_or(0),
@@ -835,6 +865,7 @@ impl Run<'_> {
                             h: b.h - top - st.pad,
                         };
                         let opens = depth < st.max_depth
+                            && (header || st.header <= 0.0)
                             && b.w * b.h > st.open_area
                             && inner.w >= 3.0
                             && inner.h >= 3.0;
