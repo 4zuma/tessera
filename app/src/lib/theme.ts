@@ -35,6 +35,9 @@ const LIGHT = {
   caution: '#9d5d00',
   acrylic: 'rgba(252,252,252,0.85)',
   'acrylic-solid': '#f9f9f9',
+  // ContentDialog: content area over the solid base, command area on the base
+  'dlg-top': '#ffffff',
+  'dlg-stroke': 'rgba(117,117,117,0.4)',
   smoke: 'rgba(0,0,0,0.3)',
   shadow: '0 8px 16px rgba(0,0,0,0.14)',
   'shadow-dialog': '0 32px 64px rgba(0,0,0,0.1876), 0 2px 21px rgba(0,0,0,0.1474)',
@@ -84,6 +87,8 @@ const DARK: Tokens = {
   caution: '#fce100',
   acrylic: 'rgba(44,44,44,0.96)',
   'acrylic-solid': '#2c2c2c',
+  'dlg-top': 'rgba(255,255,255,0.0538)',
+  'dlg-stroke': 'rgba(117,117,117,0.4)',
   smoke: 'rgba(0,0,0,0.3)',
   shadow: '0 8px 16px rgba(0,0,0,0.26)',
   'shadow-dialog': '0 32px 64px rgba(0,0,0,0.37), 0 2px 21px rgba(0,0,0,0.37)',

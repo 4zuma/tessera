@@ -74,7 +74,7 @@
         <div class="why caption"><Icon name="lock" size={14} /><span>{app.selInfo.lockReason}</span></div>
       {/if}
     {:else}
-      <div class="empty caption">单击选择 · Ctrl+单击多选 · 双击放大 · 右键查看更多操作</div>
+      <div class="empty caption">单击选择 · Ctrl+单击多选 · Shift+单击连选 · 双击放大 · 右键查看更多操作</div>
     {/if}
   </section>
 

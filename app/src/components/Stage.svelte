@@ -51,7 +51,7 @@
     if (e.button !== 0) return;
     const { x, y } = local(e);
     const it = app.engine?.hit(x, y) ?? null;
-    app.click(it ? it.id : null, e.ctrlKey || e.metaKey);
+    app.click(it ? it.id : null, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey });
   }
 
   function onDbl(e: MouseEvent) {

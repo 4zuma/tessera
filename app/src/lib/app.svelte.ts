@@ -10,7 +10,7 @@ import type { Backend, CatStat, Crumb, Details, PlatformInfo, ScanProgress, Size
 import { fmtBytes, fmtSecs } from './format';
 import type { IconName } from './icons';
 import { applyThemeCss, makeTheme, type Scheme, type Theme } from './theme';
-import { TreemapEngine, type ApplyOpts, type Box, type EngineHost, type EngineStats, type MotionKind } from './treemap/engine';
+import { TreemapEngine, type ApplyOpts, type EngineHost, type EngineStats, type MotionKind } from './treemap/engine';
 import { fluentLayout, fluentMotion } from './treemap/motion';
 import { FluentPainter } from './treemap/paint';
 
@@ -47,9 +47,6 @@ export interface ConfirmData {
   size: string;
   body: string;
   ok: string;
-  danger: boolean;
-  /** tile the flyout is anchored to */
-  anchor: number | null;
   run: () => void;
 }
 
@@ -93,6 +90,11 @@ function lockFromFlags(flags: number): string | null {
   return null;
 }
 
+/** files and folders can be selected; groups, free and unscanned space cannot */
+function selectable(r: Rect): boolean {
+  return isNodeId(r.id) && (r.kind === Kind.File || r.kind === Kind.Dir || r.kind === Kind.DirLeaf);
+}
+
 export class App implements EngineHost {
   backend: Backend | null = null;
   phase = $state<Phase>('boot');
@@ -123,9 +125,10 @@ export class App implements EngineHost {
   error = $state<string | null>(null);
   reduced = false;
   undoToken = $state<number | null>(null);
+  /** where a Shift+click run starts */
+  private anchor: number | null = null;
 
   engine: TreemapEngine | null = null;
-  private stage: HTMLElement | null = null;
   private ro: ResizeObserver | null = null;
   private pending: { kind: MotionKind; opt: ApplyOpts } | null = null;
   private inFlight = false;
@@ -199,7 +202,6 @@ export class App implements EngineHost {
   attach(canvas: HTMLCanvasElement, stage: HTMLElement) {
     this.engine = new TreemapEngine(canvas, this, new FluentPainter(), fluentMotion, fluentLayout.outer);
     this.engine.onStats = s => (this.stats = { ...s });
-    this.stage = stage;
     let first = true;
     const measure = () => {
       const r = stage.getBoundingClientRect();
@@ -227,17 +229,6 @@ export class App implements EngineHost {
     this.ro?.disconnect();
     this.engine?.destroy();
     this.engine = null;
-  }
-
-  /** a tile's box in coordinates relative to the stage element */
-  tileBox(id: number): Box | null {
-    const it = this.engine?.items.get(id);
-    if (!it || it.rm) return null;
-    return { x: it.x, y: it.y, w: it.w, h: it.h };
-  }
-
-  stageRect(): DOMRect | null {
-    return this.stage?.getBoundingClientRect() ?? null;
   }
 
   rectOf(id: number): Rect | null {
@@ -490,21 +481,56 @@ export class App implements EngineHost {
     if (this.tip) this.tip = { ...this.tip, x, y };
   }
 
-  click(id: number | null, additive: boolean) {
+  /**
+   * Explorer-style selection. Ctrl toggles one tile. Shift selects the run of siblings
+   * between the anchor (the last plain or Ctrl click) and this tile, in the order they are
+   * laid out, which is by size; Ctrl+Shift adds that run to the selection. When the two
+   * tiles are not siblings there is no run, so Shift just adds the tile.
+   */
+  click(id: number | null, mods: { ctrl?: boolean; shift?: boolean } = {}) {
     this.menu = null;
     const r = id != null ? this.rectOf(id) : null;
-    if (!r || r.kind === Kind.Free || r.kind === Kind.Unscanned || r.kind === Kind.Group) {
-      if (this.sel.size) this.sel.clear();
-    } else if (additive) {
+    if (!r || !selectable(r)) {
+      if (this.sel.size && !mods.ctrl && !mods.shift) this.sel.clear();
+    } else if (mods.shift) {
+      const run = this.anchor != null ? this.siblingRun(this.anchor, r.id) : null;
+      if (run) {
+        if (!mods.ctrl) this.sel.clear();
+        for (const x of run) this.sel.add(x);
+      } else {
+        this.sel.add(r.id);
+        this.anchor ??= r.id;
+      }
+    } else if (mods.ctrl) {
       if (this.sel.has(r.id)) this.sel.delete(r.id);
       else this.sel.add(r.id);
+      this.anchor = r.id;
     } else {
-      this.sel.clear();
-      this.sel.add(r.id);
+      this.selectOnly(r.id);
     }
     void this.refreshSel();
     void this.refreshDetails();
     this.engine?.kick();
+  }
+
+  private selectOnly(id: number) {
+    this.sel.clear();
+    this.sel.add(id);
+    this.anchor = id;
+  }
+
+  /** the tiles from a to b (inclusive) among their siblings in layout order, or null */
+  private siblingRun(a: number, b: number): number[] | null {
+    const items = this.engine?.items;
+    const A = items?.get(a);
+    const B = items?.get(b);
+    if (!items || !A || !B || A.rm || B.rm || A.r.parent !== B.r.parent) return null;
+    const lo = Math.min(A.ord, B.ord);
+    const hi = Math.max(A.ord, B.ord);
+    const run: { id: number; ord: number }[] = [];
+    for (const it of items.values())
+      if (!it.rm && it.r.parent === A.r.parent && it.ord >= lo && it.ord <= hi && selectable(it.r)) run.push(it);
+    return run.sort((x, y) => x.ord - y.ord).map(it => it.id);
   }
 
   /* ------------------------------------------------------------------ navigation */
@@ -640,8 +666,6 @@ export class App implements EngineHost {
       size: fmtBytes(total),
       body: `${ids.length > 1 ? ids.slice(0, 3).map(id => this.nameOf(id)).filter(Boolean).join('、') + (ids.length > 3 ? ' 等。' : '。') : ''}不经过回收站，删除后无法恢复，会立刻腾出 ${fmtBytes(total)}。`,
       ok: '永久删除',
-      danger: true,
-      anchor: ids[0],
       run: () => void this.purge(ids),
     });
   }
@@ -667,8 +691,6 @@ export class App implements EngineHost {
       size: '',
       body: '回收站里的所有文件会被永久删除，删除后无法恢复。',
       ok: '清空回收站',
-      danger: true,
-      anchor: null,
       run: () => void this.emptyBin(),
     });
   }
@@ -680,7 +702,13 @@ export class App implements EngineHost {
     this.requestLayout('delete', { reflow: true });
     this.refreshLegend(true);
     this.volume = { ...this.volume, free: this.volume.free + res.bytes };
-    this.showToast('success', `可用空间现在是 ${fmtBytes(this.volume.free)}。`, [], `回收站已清空，腾出 ${fmtBytes(res.bytes)}`);
+    if (!res.failed.length) {
+      this.showToast('success', `可用空间现在是 ${fmtBytes(this.volume.free)}。`, [], `回收站已清空，腾出 ${fmtBytes(res.bytes)}`);
+      return;
+    }
+    const lines = res.failed.slice(0, 5).map(f => `${this.nameOf(f.id) || f.id}：${f.reason}`);
+    if (res.failed.length > 5) lines.push(`还有 ${res.failed.length - 5} 项`);
+    this.showToast('error', `腾出了 ${fmtBytes(res.bytes)}，这些项目还在回收站里：\n${lines.join('\n')}`, [], '回收站没能全部清空');
   }
 
   async copyPath(ids: number[]) {
@@ -725,8 +753,7 @@ export class App implements EngineHost {
     const r = this.rectOf(id);
     if (!r) return;
     if (isNodeId(id) && !this.sel.has(id)) {
-      this.sel.clear();
-      this.sel.add(id);
+      this.selectOnly(id);
       void this.refreshSel();
       this.engine?.kick();
     }
@@ -763,6 +790,11 @@ export class App implements EngineHost {
     this.menu = null;
     this.tip = null;
     this.confirm = c;
+  }
+
+  /** give keyboard focus back to the map */
+  focusMap() {
+    this.engine?.canvas.focus({ preventScroll: true });
   }
 
   closeConfirm(ok: boolean) {
@@ -834,10 +866,9 @@ export class App implements EngineHost {
       this.engine?.kick();
     } else if (e.key.startsWith('Arrow') && !e.altKey) {
       e.preventDefault();
-      const next = this.engine?.neighbor(sel[sel.length - 1], e.key as 'ArrowLeft');
+      const next = this.engine?.neighbor(sel[sel.length - 1], e.key as 'ArrowLeft', selectable);
       if (next) {
-        this.sel.clear();
-        this.sel.add(next.id);
+        this.selectOnly(next.id);
         void this.refreshSel();
         void this.refreshDetails();
         this.engine?.kick();

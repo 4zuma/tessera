@@ -346,10 +346,10 @@ export class TreemapEngine {
     return null;
   }
 
-  /** the tile next to `id` in an arrow-key direction */
-  neighbor(id: number | undefined, key: 'ArrowLeft' | 'ArrowRight' | 'ArrowUp' | 'ArrowDown'): Item | null {
+  /** the tile next to `id` in an arrow-key direction, among the leaf tiles that `ok` accepts */
+  neighbor(id: number | undefined, key: 'ArrowLeft' | 'ArrowRight' | 'ArrowUp' | 'ArrowDown', ok: (r: Rect) => boolean = () => true): Item | null {
     const [dx, dy] = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[key];
-    const leaves = this.drawList.filter(it => !it.rm && it.r.kind !== Kind.Dir && it.r.kind !== Kind.Unscanned && it.w * it.h > 40);
+    const leaves = this.drawList.filter(it => !it.rm && it.r.kind !== Kind.Dir && it.r.kind !== Kind.Unscanned && ok(it.r) && it.w * it.h > 40);
     const c = id != null ? this.items.get(id) : undefined;
     if (!c || c.rm) return leaves.slice().sort((a, b) => b.w * b.h - a.w * a.h)[0] ?? null;
     let best: Item | null = null;

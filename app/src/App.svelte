@@ -8,7 +8,7 @@
   import Pane from './components/Pane.svelte';
   import StatusBar from './components/StatusBar.svelte';
   import ContextMenu from './components/ContextMenu.svelte';
-  import ConfirmFlyout from './components/ConfirmFlyout.svelte';
+  import ConfirmDialog from './components/ConfirmDialog.svelte';
   import Toast from './components/Toast.svelte';
   import Tooltip from './components/Tooltip.svelte';
 
@@ -47,7 +47,7 @@
     <StatusBar />
   {/if}
   <ContextMenu />
-  <ConfirmFlyout />
+  <ConfirmDialog />
   <Toast />
   <Tooltip />
 </div>

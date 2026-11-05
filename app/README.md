@@ -25,3 +25,9 @@ npx tauri build      # src-tauri/target/release/tessera-app.exe
 Keyboard: arrows move the selection, Enter zooms in, Backspace goes up, Delete moves to
 the recycle bin, Shift+Delete deletes permanently, Ctrl+Z undoes, Ctrl+C copies paths,
 F5 rescans, Ctrl+Shift+F shows the frame-rate overlay.
+
+Mouse: click selects, Ctrl+click toggles a tile, Shift+click selects the run of siblings
+between the last clicked tile and this one in layout (size) order, Ctrl+Shift+click adds
+that run. Permanent delete and emptying the recycle bin ask in a centred dialog over a
+dimmed window, as WinUI's ContentDialog does; moving to the recycle bin does not ask,
+it can be undone.
