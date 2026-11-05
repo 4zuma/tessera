@@ -124,10 +124,10 @@ fn build_tree(root: &Path, each: &mut dyn FnMut(&Path, NodeId)) -> SharedTree {
                 e.file_name().encode_wide().collect()
             };
             if md.is_dir() {
-                batch.push_utf16(&name, 0, 0, flags | NodeFlags::DIR);
+                batch.push_utf16(&name, 0, 0, flags | NodeFlags::DIR, 0);
             } else {
                 let (size, logical) = disk_sizes(&e.path());
-                batch.push_utf16(&name, size, logical, flags);
+                batch.push_utf16(&name, size, logical, flags, 0);
             }
         }
         let ids = tree.add_children(dir, &batch);
@@ -467,7 +467,7 @@ fn flagged_subtrees_are_ignored() {
     let t = s.tree.read().unwrap();
     for name in ["locked", "link"] {
         let id = t.lookup_relative(name.as_bytes()).unwrap();
-        assert_eq!(t.node(id).child_count, 0, "{name} must stay untouched");
+        assert_eq!(t.child_count(id), 0, "{name} must stay untouched");
     }
     drop(t);
     w.stop();

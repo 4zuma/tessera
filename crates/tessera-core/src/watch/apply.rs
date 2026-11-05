@@ -71,6 +71,8 @@ pub(crate) struct Stat {
     pub size: u64,
     /// Logical length.
     pub logical: u64,
+    /// Last write time ([`crate::Node::mtime`] units, 0 = unknown).
+    pub mtime: u32,
 }
 
 impl Stat {
@@ -257,7 +259,6 @@ impl Tree {
         } else {
             self.node_mut(prev).next_sibling = n.next_sibling;
         }
-        self.node_mut(old).child_count -= 1;
         self.add_to_ancestors(old, n.size.wrapping_neg(), n.logical.wrapping_neg());
         // Link at the head of the new parent's list.
         let first = self.node(new_parent).first_child;
@@ -266,7 +267,6 @@ impl Tree {
         m.next_sibling = first;
         let p = self.node_mut(new_parent);
         p.first_child = id;
-        p.child_count += 1;
         self.add_to_ancestors(new_parent, n.size, n.logical);
         true
     }
@@ -434,6 +434,10 @@ impl Applier<'_> {
             self.tree.set_file_size(id, stat.size, stat.logical);
             changed = true;
         }
+        // A new time alone doesn't move any rectangle: not counted as a change.
+        if stat.mtime != 0 && n.mtime != stat.mtime {
+            self.tree.set_mtime(id, stat.mtime);
+        }
         if changed {
             self.t.modified += 1;
             self.t.dirs.insert(n.parent);
@@ -460,6 +464,7 @@ impl Applier<'_> {
             size,
             logical,
             flags,
+            stat.mtime,
         );
         self.t.created += 1;
         self.t.dirs.insert(parent);
@@ -998,6 +1003,7 @@ pub(crate) mod tests {
             reparse_tag: 0,
             size: size.div_ceil(4096) * 4096,
             logical: size,
+            mtime: 0,
         }
     }
 
@@ -1041,7 +1047,7 @@ pub(crate) mod tests {
                 } else {
                     (stat.size, stat.logical)
                 };
-                b.push_wtf8(name, s, l, stat.flags());
+                b.push_wtf8(name, s, l, stat.flags(), stat.mtime);
                 if stat.is_dir() && !stat.flags().contains(NodeFlags::REPARSE) {
                     subdirs.push(path.clone());
                 }
@@ -1201,7 +1207,7 @@ pub(crate) mod tests {
         assert!(t.move_node(old, music, b"archive"));
         t.check_invariants().unwrap();
         assert!(t.lookup_relative(b"music\\archive\\c.bin").is_some());
-        assert_eq!(t.node(docs).child_count, 2);
+        assert_eq!(t.child_count(docs), 2);
         assert_eq!(t.node(NodeId::ROOT).size, before);
         // Into its own subtree, or the root: refused.
         assert!(!t.move_node(music, old, b"loop"));
@@ -1497,8 +1503,7 @@ pub(crate) mod tests {
             shared
                 .read()
                 .unwrap()
-                .node(get(&shared, "link").unwrap().0)
-                .child_count,
+                .child_count(get(&shared, "link").unwrap().0),
             0
         );
         // The junction itself can still be deleted.
