@@ -9,13 +9,15 @@
 //! | 4     | archive  | zip rar 7z tar gz bz2 xz zst cab                 |
 //! | 5     | vdisk    | iso img vhd vhdx vmdk vdi qcow2 wim esd          |
 //! | 6     | app      | exe dll msi msix appx apk jar                    |
-//! | 7     | game     | pak uasset vpk bsa ba2 bik unity3d               |
+//! | 7     | game     | pak uasset vpk bsa ba2 bik bnk bundle unity3d    |
 //! | 8     | doc      | pdf docx xlsx pptx txt md epub csv pst ost       |
 //! | 9     | dev      | source code, build outputs (obj pdb lib), json   |
-//! | 10    | cache    | tmp temp cache log dmp bak crdownload part       |
+//! | 10    | cache    | tmp temp cache log dmp bak swp crdownload part   |
 //! | 11    | system   | sys drv mui cat evtx etl fonts, NTFS metafiles   |
 //!
-//! Folders have no category ([`NONE`]). Matching is case-insensitive on the
+//! Folders have no category ([`NONE`]). A `.ts` file under 1 MiB counts as
+//! dev (TypeScript, which fills `node_modules`), not video; only
+//! [`of_node`] knows the size, so [`of_name`] alone says video. Matching is case-insensitive on the
 //! text after the last `.`; it allocates nothing and costs one binary search
 //! over a table that is sorted once per process.
 
@@ -78,8 +80,8 @@ const LISTS: [(u8, &str); COUNT - 1] = [
     ),
     (
         GAME,
-        "assets ba2 big bik bk2 bsa esm esp forge gcf ncf nsp pak pck ress rpf sav ubulk \
-         uasset ucas umap unity3d upk utoc vpk wad xci",
+        "assets ba2 big bik bk2 bnk bsa bundle esm esp forge gcf ncf nsp pak pck ress rpf sav \
+         ubulk uasset ucas umap unity3d upk utoc vpk wad xci",
     ),
     (
         DOC,
@@ -97,7 +99,7 @@ const LISTS: [(u8, &str); COUNT - 1] = [
     ),
     (
         CACHE,
-        "bak blockmap cache crdownload dmp download hdmp log mdmp old part partial temp tmp",
+        "bak blockmap cache crdownload dmp download hdmp log mdmp old part partial swp temp tmp",
     ),
     (
         SYSTEM,
@@ -143,17 +145,31 @@ pub fn of_name(name: &[u8]) -> u8 {
     }
 }
 
+/// `.ts` files smaller than this are TypeScript, not MPEG transport streams.
+pub const TS_VIDEO_MIN: u64 = 1 << 20;
+
 /// Category of a tree node: [`NONE`] for folders, [`SYSTEM`] for NTFS
-/// metadata files, otherwise by extension.
+/// metadata files, otherwise by extension (with the `.ts` size rule from
+/// the module docs).
 pub fn of_node(tree: &Tree, id: NodeId) -> u8 {
     let n = tree.node(id);
     if n.is_dir() {
-        NONE
-    } else if n.flags.contains(NodeFlags::METAFILE) {
-        SYSTEM
-    } else {
-        of_name(tree.name(id))
+        return NONE;
     }
+    if n.flags.contains(NodeFlags::METAFILE) {
+        return SYSTEM;
+    }
+    let name = tree.name(id);
+    let cat = of_name(name);
+    if cat == VIDEO && n.logical < TS_VIDEO_MIN && is_ts(name) {
+        DEV
+    } else {
+        cat
+    }
+}
+
+fn is_ts(name: &[u8]) -> bool {
+    name.len() >= 3 && name[name.len() - 3..].eq_ignore_ascii_case(b".ts")
 }
 
 #[cfg(test)]
@@ -192,6 +208,10 @@ mod tests {
         assert_eq!(of_name(b"x.regtrans-ms"), SYSTEM);
         assert_eq!(of_name(b"pagefile.sys"), SYSTEM);
         assert_eq!(of_name(b"~DF12.TMP"), CACHE);
+        assert_eq!(of_name(b".main.rs.swp"), CACHE);
+        assert_eq!(of_name(b"Init.bnk"), GAME);
+        assert_eq!(of_name(b"level1.bundle"), GAME);
+        assert_eq!(of_name(b"App.appxbundle"), APP);
         assert_eq!(of_name(b"README"), OTHER);
         assert_eq!(of_name(b"trailingdot."), OTHER);
         assert_eq!(of_name(b".gitignore"), OTHER);
@@ -210,5 +230,17 @@ mod tests {
         assert_eq!(of_node(&t, d), NONE);
         assert_eq!(of_node(&t, m), SYSTEM);
         assert_eq!(of_node(&t, f), AUDIO);
+        // Small .ts files are TypeScript; big ones are video.
+        let small = t.add_child(NodeId::ROOT, b"index.d.TS", 4096, 900, NodeFlags::NONE, 0);
+        let big = t.add_child(
+            NodeId::ROOT,
+            b"rec.ts",
+            8 << 20,
+            8 << 20,
+            NodeFlags::NONE,
+            0,
+        );
+        assert_eq!(of_node(&t, small), DEV);
+        assert_eq!(of_node(&t, big), VIDEO);
     }
 }

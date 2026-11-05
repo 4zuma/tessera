@@ -654,7 +654,9 @@ fn delete_detailed(
 /// names, `\\?\` prefixes, `/` separators, `.` and `..`.
 pub fn lock_reason(path: &Path) -> Option<&'static str> {
     let raw = wide(path);
-    if raw.is_empty() {
+    // A bare `C:` means the drive here. Windows would resolve it to the
+    // current directory on that drive, which could be anything.
+    if raw.is_empty() || is_drive(&raw) {
         return Some(reasons::DRIVE_ROOT);
     }
     let Some(full) = resolve(&raw) else {

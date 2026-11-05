@@ -128,6 +128,9 @@ mod unix {
     fn protection() {
         assert_eq!(lock_reason(Path::new("/")), Some(reasons::DRIVE_ROOT));
         assert_eq!(lock_reason(Path::new("")), Some(reasons::DRIVE_ROOT));
+        // A bare drive letter is the drive, not its current directory.
+        assert_eq!(lock_reason(Path::new("C:")), Some(reasons::DRIVE_ROOT));
+        assert_eq!(lock_reason(Path::new("d:")), Some(reasons::DRIVE_ROOT));
         let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
             return;
         };
