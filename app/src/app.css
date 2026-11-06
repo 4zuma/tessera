@@ -89,6 +89,8 @@ kbd {
   border: 1px solid var(--ctl-stroke);
   border-bottom-color: var(--ctl-stroke-2);
   background: var(--ctl);
+  /* never inherit a secondary text colour from the container */
+  color: var(--text);
   white-space: nowrap;
   transition: background var(--t-fast) linear;
 }
