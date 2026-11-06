@@ -24,10 +24,10 @@
     {/each}
   </div>
   {#if app.platform && !app.platform.elevated}
-    <div class="hint card caption">
-      <Icon name="shield" />
-      <span>现在以普通权限运行，用多线程逐个目录扫描。以管理员身份运行时会直接读取 NTFS 的 MFT，通常快很多。</span>
-      <button class="btn" onclick={() => app.relaunchElevated()}>以管理员身份重启</button>
+    <div class="hint" role="note">
+      <span class="ti"><Icon name="info" /></span>
+      <p class="msg"><strong>以普通权限运行</strong>现在用多线程逐个目录扫描。以管理员身份运行时会直接读取 NTFS 的 MFT，通常快很多。</p>
+      <button class="btn" onclick={() => app.relaunchElevated()}><Icon name="shield" />以管理员身份重启</button>
     </div>
   {/if}
 </section>
@@ -101,17 +101,42 @@
   .meta {
     color: var(--text-2);
   }
+  /* a Fluent InfoBar (informational): primary text, accent icon, standard button */
   .hint {
     width: min(720px, 100%);
     margin-top: 16px;
-    padding: 12px 14px;
+    padding: 12px 16px;
     display: flex;
     align-items: center;
     gap: 12px;
-    color: var(--text-2);
+    background: var(--card-2);
+    border: 1px solid var(--card-stroke);
+    border-radius: var(--r-card);
   }
-  .hint span {
+  .ti {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    flex: none;
+    align-self: flex-start;
+    color: var(--on-accent);
+    background: var(--accent);
+  }
+  .ti :global(svg) {
+    width: 13px;
+    height: 13px;
+    stroke-width: 2;
+  }
+  .msg {
     flex: 1;
+    min-width: 0;
+    margin: 0;
+  }
+  .msg strong {
+    font-weight: 600;
+    margin-right: 8px;
   }
   @media (max-width: 640px) {
     .pick {
@@ -119,6 +144,12 @@
     }
     .hint {
       flex-wrap: wrap;
+    }
+    .msg {
+      flex-basis: calc(100% - 32px);
+    }
+    .hint .btn {
+      margin-left: 32px;
     }
   }
 </style>
