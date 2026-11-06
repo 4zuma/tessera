@@ -1042,8 +1042,9 @@ fn usn_paths(
     (entries, links)
 }
 
-/// The files below `dir`, just filled by a scan, whose bytes it counted
-/// (up to the probe budget): the scan only knew the names it saw itself.
+/// The files below `dir`, just filled by a scan, that it made count their
+/// bytes (up to the probe budget): the scan only knew the names it saw
+/// itself. Empty files too, as their bytes may come with a later write.
 fn scanned_files(tree: &Tree, dir: NodeId, out: &mut Vec<NodeId>) {
     let mut stack = vec![dir];
     while let Some(d) = stack.pop() {
@@ -1059,7 +1060,6 @@ fn scanned_files(tree: &Tree, dir: NodeId, out: &mut Vec<NodeId>) {
             } else if !n
                 .flags
                 .intersects(NodeFlags(NOT_LINKED.0 | NodeFlags::HARDLINK.0))
-                && (n.size | n.logical) != 0
             {
                 out.push(c);
             }
@@ -2165,10 +2165,23 @@ pub(crate) mod tests {
         fs.put("proj", dir());
         fs.put("proj\\deps", dir());
         fs.link("docs\\b.txt", "proj\\deps\\b.txt");
+        // An empty file as well: it counts no bytes yet, but a later write
+        // through either name must not count them twice.
+        fs.put("docs\\empty", file(0));
+        fs.set_id("docs\\empty", 600);
+        run(&shared, &mut fs, vec![changed("docs\\empty")]);
+        fs.link("docs\\empty", "proj\\deps\\empty");
         let r = run(&shared, &mut fs, vec![changed("proj")]);
         assert_eq!(r.created, 1);
         check_links(&shared, &fs);
         assert_eq!(root_size(&shared), before);
+        fs.write("docs\\empty", file(7000));
+        let both = || vec![changed("docs\\empty"), changed("proj\\deps\\empty")];
+        run(&shared, &mut fs, both());
+        check_links(&shared, &fs);
+        fs.write("docs\\empty", file(0));
+        run(&shared, &mut fs, both());
+        check_links(&shared, &fs);
         // A rescanned directory too.
         let music = get(&shared, "music").unwrap().0;
         run(&shared, &mut fs, vec![Event::Rescan(music)]);
