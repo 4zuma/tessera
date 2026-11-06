@@ -53,7 +53,14 @@
         <div class="path caption">{d.path}</div>
       {/if}
       {#if d.lockReason && d.id !== app.view && (d.kind === 'file' || d.kind === 'dir')}
-        <div class="note warn caption"><Icon name="lock" size={14} /><span>{d.lockReason}</span></div>
+        <!-- a fact about the item, not an error: neutral, and it says first what is locked -->
+        <div class="note locked caption" role="note">
+          <Icon name="lock" size={14} />
+          <div class="nb">
+            <b>{d.kind === 'dir' ? '这个文件夹不能删除' : '这个文件不能删除'}</b>
+            <span>{d.lockReason}</span>
+          </div>
+        </div>
       {/if}
       {#if d.hint}
         <div class="note caption"><Icon name="info" size={14} /><span>{d.hint}</span></div>
@@ -204,10 +211,24 @@
     background: var(--accent-soft);
   }
   .note :global(svg) {
+    flex: none;
     margin-top: 1px;
   }
-  .note.warn {
-    background: var(--critical-bg);
+  /* InfoBar, informational: the subtle attention fill with a card stroke, no severity colour */
+  .note.locked {
+    background: var(--card-2);
+    border: 1px solid var(--card-stroke);
+    color: var(--text-2);
+  }
+  .nb {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .nb b {
+    font-weight: 600;
+    color: var(--text);
   }
   .st {
     margin-bottom: 10px;
@@ -223,9 +244,14 @@
   .why {
     display: flex;
     gap: 6px;
-    align-items: center;
+    align-items: flex-start;
     margin-top: 8px;
     color: var(--text-2);
+  }
+  /* the reason can run to a few lines: the lock stays with the first */
+  .why :global(svg) {
+    flex: none;
+    margin-top: 1px;
   }
   h2 {
     font: 600 14px/20px var(--font);

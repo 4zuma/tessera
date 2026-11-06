@@ -11,11 +11,34 @@
   import ConfirmDialog from './components/ConfirmDialog.svelte';
   import Toast from './components/Toast.svelte';
   import Tooltip from './components/Tooltip.svelte';
+  import { FLUENT } from './lib/treemap/ease';
 
   let width = $state(1200);
   let paneWanted = $state(true);
   const paneOpen = $derived(paneWanted && width >= 820);
   const browser = $derived(!app.platform?.native);
+
+  function togglePane() {
+    app.paneToggled();
+    paneWanted = !paneWanted;
+  }
+
+  /**
+   * The details pane slides in from the window edge, clipped to its own column, as WinUI's
+   * SplitView does with an inline pane: 200 ms in, 100 ms out, KeySpline 0,0.35 0.15,1.
+   * The stage takes its new width once and the treemap animates into it.
+   */
+  function paneSlide(node: HTMLElement, { duration }: { duration: number }) {
+    const w = node.offsetWidth;
+    return {
+      duration: app.reduced ? 0 : duration,
+      easing: FLUENT.pane,
+      css: (t: number) => {
+        const d = ((1 - t) * w).toFixed(2);
+        return `transform: translateX(${d}px); clip-path: inset(0 ${d}px 0 0);`;
+      },
+    };
+  }
 
   onMount(() => {
     void app.init().catch(err => {
@@ -39,10 +62,12 @@
   {:else if app.phase === 'pick'}
     <DrivePicker />
   {:else}
-    <CommandBar {paneOpen} canTogglePane={width >= 820} onTogglePane={() => (paneWanted = !paneWanted)} />
+    <CommandBar {paneOpen} canTogglePane={width >= 820} onTogglePane={togglePane} />
     <div class="main">
       <Stage />
-      {#if paneOpen}<Pane />{/if}
+      {#if paneOpen}
+        <div class="pane-col" in:paneSlide={{ duration: 200 }} out:paneSlide={{ duration: 100 }}><Pane /></div>
+      {/if}
     </div>
     <StatusBar />
   {/if}
@@ -79,6 +104,11 @@
     display: flex;
     gap: 8px;
     padding: 0 8px 8px;
+  }
+  .pane-col {
+    flex: none;
+    display: flex;
+    min-height: 0;
   }
   .boot {
     flex: 1;

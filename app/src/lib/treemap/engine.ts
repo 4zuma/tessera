@@ -205,6 +205,16 @@ export class TreemapEngine {
     return { x: o, y: o, w: this.W - 2 * o, h: this.H - 2 * o };
   }
 
+  /**
+   * Draw now instead of on the next animation frame. A resize clears the canvas; called from
+   * the ResizeObserver (which runs before paint) this keeps that frame from showing it empty.
+   */
+  drawNow() {
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+    this.frame(performance.now());
+  }
+
   apply(L: Layout, kind: MotionKind, opt: ApplyOpts = {}) {
     const rects = L.rects;
     const now = performance.now();
