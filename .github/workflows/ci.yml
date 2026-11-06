@@ -50,7 +50,8 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.core != 'false' }}
     runs-on: windows-latest
-    timeout-minutes: 30
+    # longer for a walk of all of C: (Run workflow with full_walk)
+    timeout-minutes: ${{ inputs.full_walk && 60 || 30 }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -81,7 +82,7 @@ jobs:
         # runner's slow disk, so it walks the user profiles and ProgramData:
         # junction loops, symbolic links, folders that deny listing and files
         # in use. Run workflow with "full_walk" walks all of C:.
-        timeout-minutes: 15
+        timeout-minutes: ${{ inputs.full_walk && 50 || 15 }}
         env:
           FULL_WALK: ${{ inputs.full_walk }}
         run: |
