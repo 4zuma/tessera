@@ -8,14 +8,16 @@
  * 97 -> 62 MB after a scan, 141 -> 106 MB in a maximized 4K window):
  * - WebView2 starts with `--js-flags="--max-semi-space-size=1 --expose-gc"`
  *   (tauri.conf.json): V8's young generation stays at 1 MB instead of growing to 16 MB;
- * - one full collection (`gc()`, which also sweeps Blink's heap) once nothing has moved for
- *   QUIET_MS, at most every MIN_GAP_MS, and only if frames ran since the last one, so an
- *   idle window costs nothing.
+ * - one full collection (`gc()`, which also sweeps Blink's heap) once no frame has been
+ *   painted for QUIET_MS after one that left everything still, at most every MIN_GAP_MS,
+ *   and only if frames ran since the last one, so an idle window costs nothing.
+ *   Any frame counts, also one that snaps without animating (reduced motion, an instant
+ *   layout).
  * In a plain browser `gc` does not exist and this does nothing.
  */
 
-const QUIET_MS = 1500;
-const MIN_GAP_MS = 15000;
+export const QUIET_MS = 1500;
+export const MIN_GAP_MS = 15000;
 
 type Gc = () => void;
 
@@ -28,19 +30,17 @@ function collector(): Gc | null {
   return typeof g === 'function' ? (g as Gc) : null;
 }
 
-/** something is moving: hold the collection back */
-export function busy() {
+/**
+ * A frame was painted. `still`: nothing moves after it, so collect once no other frame
+ * follows for QUIET_MS; otherwise hold the collection back.
+ */
+export function painted(still: boolean, now = performance.now()) {
   if (timer) {
     clearTimeout(timer);
     timer = null;
   }
   pending = true;
-}
-
-/** everything holds still: collect once it has stayed so for a while */
-export function quiet(now = performance.now()) {
-  if (!pending || timer || !collector()) return;
-  timer = setTimeout(run, Math.max(QUIET_MS, last + MIN_GAP_MS - now));
+  if (still && collector()) timer = setTimeout(run, Math.max(QUIET_MS, last + MIN_GAP_MS - now));
 }
 
 function run() {
@@ -50,4 +50,12 @@ function run() {
   pending = false;
   last = performance.now();
   g();
+}
+
+/** for tests: forget all state */
+export function reset() {
+  if (timer) clearTimeout(timer);
+  timer = null;
+  last = -Infinity;
+  pending = false;
 }

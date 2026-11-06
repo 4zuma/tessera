@@ -466,13 +466,9 @@ export class TreemapEngine {
     const cont = (host.scanning && !host.reduced) || (this.mouse.in && this.mouse.moved);
     this.mouse.moved = false;
     const going = moving || easing || cont;
-    if (going) {
-      this.kick();
-      memory.busy();
-    } else {
-      this.frames.length = 0;
-      memory.quiet(now);
-    }
+    if (going) this.kick();
+    else this.frames.length = 0;
+    memory.painted(!going, now);
     this.stats.fps = this.frames.length;
     if (this.stats.busy !== going || now - this.statsAt > 250) {
       this.stats.busy = going;
