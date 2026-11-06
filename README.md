@@ -97,10 +97,11 @@ with *full_walk* to walk the whole drive.
 
    `node scripts/bump-version.mjs --check` lists the versions and fails if
    they differ.
-2. Optionally write the release notes, in English, in `docs/releases/v0.3.1.md`
-   and delete the previous version's file: the folder only holds the latest
-   notes, since published ones live on the Releases page. Without a notes
-   file GitHub writes them from the merged pull requests.
+2. Write the release notes, in English, in the pull request's description,
+   between a line `<!-- release-notes -->` and a line `<!-- /release-notes -->`
+   (GitHub doesn't show either). That text becomes the release notes; without
+   it GitHub writes them from the merged pull requests. To fix the notes of a
+   published release, edit them on the Releases page.
 3. Commit, open a pull request, and merge it once CI is green. Merging is
    the release: when a push to `main` changes the version, the `release`
    workflow builds the Windows binaries (x64 and Arm64), tags the merge commit
@@ -108,7 +109,8 @@ with *full_walk* to walk the whole drive.
    already exists, release nothing.
 4. To release by hand (for example after a failed run), run the `release`
    workflow from the Actions tab on `main` with version `0.3.1`. It refuses a
-   version that differs from the one in the code. For a version that is
+   version that differs from the one in the code, and takes the notes from
+   the pull request that merged the commit it runs on. For a version that is
    already released it only adds missing files, built from that version's
    tag; the current release gets them by itself when the workflow gains a
    new architecture.

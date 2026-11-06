@@ -191,7 +191,8 @@ function bump(version) {
   console.log(
     'Next: commit, open a pull request and merge it once CI is green. Merging it to main\n' +
       `tags v${version} and publishes the release by itself (.github/workflows/release.yml).\n` +
-      `Release notes come from docs/releases/v${version}.md if you add it; otherwise GitHub writes them.`,
+      'Write the release notes in the pull request description between <!-- release-notes -->\n' +
+      'and <!-- /release-notes -->; without them GitHub writes the notes.',
   );
 }
 
