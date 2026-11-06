@@ -7,6 +7,8 @@
 //! * [`delete`]: deletion to the recycle bin (or permanently) via `IFileOperation`.
 //! * [`layout`]: squarified treemap layout and the binary rectangle format
 //!   sent to the front end.
+//! * [`totals`]: file and folder counts and bytes per category below a
+//!   folder, cached across live changes.
 //!
 //! Hard rule from the architecture doc: the full tree stays in Rust. The UI
 //! only ever receives the rectangles currently on screen.
@@ -16,6 +18,7 @@ pub mod delete;
 mod error;
 pub mod layout;
 pub mod scan;
+pub mod totals;
 pub mod tree;
 pub mod watch;
 pub mod wtf8;

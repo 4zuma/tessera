@@ -284,6 +284,9 @@ impl Tree {
             return false;
         }
         if self.name(id) != new_name {
+            // the name decides a file's category
+            let parent = self.node(id).parent;
+            self.touch(parent);
             let off = self.names.push(new_name);
             let n = self.node_mut(id);
             n.name_off = off;

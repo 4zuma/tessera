@@ -194,6 +194,7 @@ impl Tree {
             nodes: ChunkedVec::new(),
             names,
             changed: 0,
+            journal: Default::default(),
         };
         tree.nodes.push(Node {
             size: 0,
