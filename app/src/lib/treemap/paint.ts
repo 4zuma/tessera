@@ -7,12 +7,23 @@
  * - a tile that cannot hold a whole line of text gets no label (the tooltip has it);
  * - folder depth stays readable: header bands, nested translucent fills that build up
  *   with depth, and an outline whose contrast steps down with depth.
+ *
+ * The work is split in two so that a big window stays at 60 fps: `scene()` paints the map
+ * itself (it changes only with the layout, the theme or the category filter, and the
+ * engine keeps it in a cached layer), `overlay()` paints what changes from frame to frame
+ * (hover, selection, the pointer light, the moving stripes of the unscanned tile). Between
+ * layouts the engine restores just the region that changed from the cache and runs
+ * `overlay()` clipped to it.
+ *
+ * With a GPU batch, `scene()` hands every folder, header band and tile to it (one draw call
+ * on a WebGL canvas under this one) and paints only text and textures here.
  */
 import { Flag, Kind } from '../backend/codec';
 import { CAT_COUNT } from '../backend/categories';
 import { fmtBytes } from '../format';
 import { rgba } from '../theme';
-import type { Item, Painter, PaintState } from './engine';
+import type { Box, Item, Painter, PaintState } from './engine';
+import { NONE, type BoxBatch, type RGBA } from './gpu';
 
 export const UI_FONT = '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", "Noto Sans SC", system-ui, sans-serif';
 const F_REG = `400 12px ${UI_FONT}`;
@@ -22,6 +33,15 @@ const LABEL_MIN_W = 44;
 const LINE = 16;
 const RADIUS = 3;
 const FOLDER_RADIUS = 4;
+/** radius of the pointer light, CSS px */
+const LIGHT_R = 90;
+
+/** a rect snapped to device pixels, so edges stay crisp at any DPR */
+function snapBox(it: Item, dpr: number): Box {
+  const x0 = Math.round(it.x * dpr) / dpr;
+  const y0 = Math.round(it.y * dpr) / dpr;
+  return { x: x0, y: y0, w: Math.round((it.x + it.w) * dpr) / dpr - x0, h: Math.round((it.y + it.h) * dpr) / dpr - y0 };
+}
 
 class TextFit {
   private w = new Map<string, number>();
@@ -58,12 +78,27 @@ export const textFit = new TextFit();
 type Pat = { pat: CanvasPattern; size: number };
 
 export class FluentPainter implements Painter {
+  readonly light = LIGHT_R;
   private pats = new Map<string, Pat>();
   private batches = new Map<string, Path2D>();
+  /** folder outline per depth, per scheme */
+  private strokes = new Map<string, string[]>();
 
   reset() {
     this.pats.clear();
+    this.strokes.clear();
     textFit.clear();
+  }
+
+  private folderStroke(dark: boolean, depth: number) {
+    const k = dark ? 'dark' : 'light';
+    let a = this.strokes.get(k);
+    if (!a) {
+      a = [];
+      for (let d = 0; d < 32; d++) a.push(dark ? `rgba(255,255,255,${Math.max(0.05, 0.13 - d * 0.012)})` : `rgba(0,0,0,${Math.max(0.055, 0.15 - d * 0.016)})`);
+      this.strokes.set(k, a);
+    }
+    return a[Math.min(depth, 31)];
   }
 
   private pattern(ctx: CanvasRenderingContext2D, key: string, size: number, dpr: number, paint: (g: CanvasRenderingContext2D, s: number) => void): Pat {
@@ -85,12 +120,11 @@ export class FluentPainter implements Painter {
     return p.pat;
   }
 
-  draw(ctx: CanvasRenderingContext2D, list: readonly Item[], S: PaintState) {
+  scene(ctx: CanvasRenderingContext2D, list: readonly Item[], S: PaintState, gpu: BoxBatch | null = null) {
     const th = S.theme;
     const t = th.tok;
     const dark = th.scheme === 'dark';
     const dpr = S.dpr;
-    const snap = (v: number) => Math.round(v * dpr) / dpr;
     ctx.clearRect(0, 0, S.W, S.H);
     ctx.textBaseline = 'alphabetic';
     ctx.globalAlpha = 1;
@@ -107,11 +141,7 @@ export class FluentPainter implements Painter {
       return c < CAT_COUNT && it.r.kind !== Kind.DirLeaf ? th.ink[c] : t['tm-leafdir-ink'];
     };
     const outlined = (it: Item) => it.r.kind === Kind.DirLeaf || it.r.cat >= CAT_COUNT;
-    const box = (it: Item) => {
-      const x0 = snap(it.x);
-      const y0 = snap(it.y);
-      return { x: x0, y: y0, w: snap(it.x + it.w) - x0, h: snap(it.y + it.h) - y0 };
-    };
+    const box = (it: Item) => snapBox(it, dpr);
 
     /* ---------- pass 1: open folders (containers), shallow to deep ---------- */
     for (const it of list) {
@@ -119,18 +149,28 @@ export class FluentPainter implements Painter {
       if (r.kind !== Kind.Dir || it.va <= 0.004 || it.w < 2 || it.h < 2) continue;
       const b = box(it);
       ctx.globalAlpha = it.va;
-      ctx.beginPath();
-      ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, FOLDER_RADIUS);
-      ctx.fillStyle = t['tm-folder'];
-      ctx.fill();
-      ctx.lineWidth = 1;
-      ctx.strokeStyle = dark ? `rgba(255,255,255,${Math.max(0.05, 0.13 - r.depth * 0.012)})` : `rgba(0,0,0,${Math.max(0.055, 0.15 - r.depth * 0.016)})`;
-      ctx.stroke();
-      if (r.header && b.h > r.header + 2) {
+      if (gpu) {
+        // the outline's outer edge lies half a pixel outside the 2D path, so its radius is half a pixel more
+        gpu.push(b.x * dpr, b.y * dpr, b.w * dpr, b.h * dpr, (FOLDER_RADIUS + 0.5) * dpr, gpu.color(t['tm-folder'], it.va), gpu.color(this.folderStroke(dark, r.depth), it.va), dpr);
+      } else {
         ctx.beginPath();
-        ctx.roundRect(b.x + 1, b.y + 1, b.w - 2, r.header - 1, [FOLDER_RADIUS - 1, FOLDER_RADIUS - 1, 0, 0]);
-        ctx.fillStyle = t['tm-folder-head'];
+        ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, FOLDER_RADIUS);
+        ctx.fillStyle = t['tm-folder'];
         ctx.fill();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = this.folderStroke(dark, r.depth);
+        ctx.stroke();
+      }
+      if (r.header && b.h > r.header + 2) {
+        if (gpu) {
+          // rounded on top only: a box that runs on past its bottom corners, cut at the band's bottom
+          gpu.push((b.x + 1) * dpr, (b.y + 1) * dpr, (b.w - 2) * dpr, (r.header - 1 + 2 * FOLDER_RADIUS) * dpr, (FOLDER_RADIUS - 1) * dpr, gpu.color(t['tm-folder-head'], it.va), null, 0, (b.y + r.header) * dpr);
+        } else {
+          ctx.beginPath();
+          ctx.roundRect(b.x + 1, b.y + 1, b.w - 2, r.header - 1, [FOLDER_RADIUS - 1, FOLDER_RADIUS - 1, 0, 0]);
+          ctx.fillStyle = t['tm-folder-head'];
+          ctx.fill();
+        }
         this.header(ctx, it, b, S);
       }
     }
@@ -144,13 +184,18 @@ export class FluentPainter implements Painter {
     const overlays: Item[] = [];
     for (const it of list) {
       const r = it.r;
-      if (r.kind === Kind.Dir || it.va <= 0.004 || it.w < 0.6 || it.h < 0.6) continue;
-      if (r.kind === Kind.Free || r.kind === Kind.Unscanned || it.va < 0.995 || r.flags & Flag.Cloud) {
+      if (r.kind === Kind.Dir || r.kind === Kind.Unscanned || it.va <= 0.004 || it.w < 0.6 || it.h < 0.6) continue;
+      if (r.kind === Kind.Free || it.va < 0.995 || r.flags & Flag.Cloud) {
         loose.push(it);
         continue;
       }
       const b = box(it);
       const col = leafFill(it);
+      if (gpu) {
+        this.gpuTile(gpu, b, dpr, gpu.color(col), outlined(it) ? gpu.color(t['tm-leafdir-stroke']) : null);
+        if (r.kind === Kind.Group || r.flags & (Flag.NoAccess | Flag.InUse)) overlays.push(it);
+        continue;
+      }
       let p = batches.get(col);
       if (!p) batches.set(col, (p = new Path2D()));
       if (b.w < 5 || b.h < 5) p.rect(b.x, b.y, b.w, b.h);
@@ -175,11 +220,17 @@ export class FluentPainter implements Painter {
     for (const it of loose) {
       const r = it.r;
       const b = box(it);
-      if (r.kind === Kind.Free || r.kind === Kind.Unscanned) {
+      if (r.kind === Kind.Free) {
         this.special(ctx, it, b, S);
         continue;
       }
       ctx.globalAlpha = it.va * (r.flags & Flag.Cloud ? 0.55 : 1);
+      if (gpu) {
+        const a = ctx.globalAlpha;
+        this.gpuTile(gpu, b, dpr, gpu.color(leafFill(it), a), outlined(it) ? gpu.color(t['tm-leafdir-stroke'], a) : null);
+        if (r.kind === Kind.Group || r.flags & (Flag.NoAccess | Flag.InUse)) overlays.push(it);
+        continue;
+      }
       ctx.beginPath();
       if (b.w < 5 || b.h < 5) ctx.rect(b.x, b.y, b.w, b.h);
       else ctx.roundRect(b.x, b.y, b.w, b.h, RADIUS);
@@ -229,9 +280,32 @@ export class FluentPainter implements Painter {
       this.label(ctx, name, fmtBytes(r.size), b, ink, ink);
     }
 
-    /* ---------- pass 5: hover and selection (paint only, geometry untouched) ---------- */
+    ctx.globalAlpha = 1;
+  }
+
+  /** a tile on the GPU, as pass 2 paints it: the fill, then a closed folder's outline over it */
+  private gpuTile(gpu: BoxBatch, b: Box, dpr: number, fill: RGBA, stroke: RGBA | null) {
+    gpu.push(b.x * dpr, b.y * dpr, b.w * dpr, b.h * dpr, b.w < 5 || b.h < 5 ? 0 : RADIUS * dpr, fill);
+    if (stroke && b.w > 3 && b.h > 3) gpu.push(b.x * dpr, b.y * dpr, b.w * dpr, b.h * dpr, (Math.min(RADIUS, b.w / 2, b.h / 2) + 0.5) * dpr, NONE, stroke, dpr);
+  }
+
+  inOverlay(it: Item) {
+    return it.r.kind === Kind.Unscanned;
+  }
+
+  overlay(ctx: CanvasRenderingContext2D, list: readonly Item[], marked: readonly Item[], S: PaintState) {
+    const t = S.theme.tok;
+    const dark = S.theme.scheme === 'dark';
+    const dpr = S.dpr;
+    const box = (it: Item) => snapBox(it, dpr);
+
+    /* ---------- the unscanned tile: its stripes move while the scan runs ---------- */
     for (const it of list) {
-      if (it.hv <= 0.01 && !S.sel.has(it.id)) continue;
+      if (it.r.kind === Kind.Unscanned && it.va > 0.004 && it.w >= 0.6 && it.h >= 0.6) this.special(ctx, it, box(it), S);
+    }
+
+    /* ---------- pass 5: hover and selection (paint only, geometry untouched) ---------- */
+    for (const it of marked) {
       const r = it.r;
       const b = box(it);
       if (it.hv > 0.01) {
@@ -270,7 +344,7 @@ export class FluentPainter implements Painter {
     if (S.mouse.in) {
       const mx = S.mouse.x;
       const my = S.mouse.y;
-      const R = 90;
+      const R = LIGHT_R;
       const g = ctx.createRadialGradient(mx, my, 0, mx, my, R);
       g.addColorStop(0, t['tm-reveal']);
       g.addColorStop(1, 'rgba(0,0,0,0)');
