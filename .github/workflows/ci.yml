@@ -47,29 +47,38 @@ jobs:
           path: target/release/tessera.exe
 
   windows-arm64:
-    # Windows on Arm, cross-compiled on the x64 runner with Visual Studio's
-    # ARM64 tools. The exe can't run on this runner, so this checks that the
-    # core and the CLI build and pass clippy for Arm64; the tests run on x64.
-    name: Windows arm64 (cross build)
-    runs-on: windows-latest
-    timeout-minutes: 30
+    # Windows on Arm, natively: GitHub's free Arm64 runners for public
+    # repositories. Same tests and smoke scans as the x64 job, so the arm64
+    # release (cross-compiled from the same code) is not shipped untested.
+    name: Windows arm64 (build, test, smoke scan)
+    runs-on: windows-11-arm
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-pc-windows-msvc
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           key: arm64
       - name: Clippy
-        run: cargo clippy --workspace --exclude tessera-app --all-targets --target aarch64-pc-windows-msvc -- -D warnings
+        run: cargo clippy --workspace --exclude tessera-app --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace --exclude tessera-app
+      - name: Admin tests (MFT, USN journal)
+        env:
+          TESSERA_ADMIN_TESTS: "1"
+        run: cargo test -p tessera-core --test mft --test watch -- --include-ignored
       - name: Build release
-        run: cargo build --release -p tessera-cli --target aarch64-pc-windows-msvc
+        run: cargo build --release -p tessera-cli
+      - name: Smoke scan (walk)
+        run: target\release\tessera.exe scan C:\ --mode walk --top 5
+      - name: Smoke scan (MFT)
+        run: target\release\tessera.exe scan C:\ --mode mft --top 5
       - uses: actions/upload-artifact@v7
         with:
           name: tessera-windows-arm64
-          path: target/aarch64-pc-windows-msvc/release/tessera.exe
+          path: target/release/tessera.exe
           if-no-files-found: error
 
   ntfs-images:
