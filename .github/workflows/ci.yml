@@ -103,8 +103,10 @@ jobs:
     # repositories. Same tests and smoke scans as the x64 job, so the arm64
     # release (cross-compiled from the same code) is not shipped untested.
     name: Windows arm64 (build, test, smoke scan)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.core != 'false' }}
     runs-on: windows-11-arm
-    timeout-minutes: 40
+    timeout-minutes: ${{ inputs.full_walk && 60 || 30 }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -113,6 +115,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: arm64
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Clippy
         run: cargo clippy --workspace --exclude tessera-app --all-targets -- -D warnings
       - name: Test
@@ -124,7 +127,16 @@ jobs:
       - name: Build release
         run: cargo build --release -p tessera-cli
       - name: Smoke scan (walk)
-        run: target\release\tessera.exe scan C:\ --mode walk --top 5
+        # the same folders as the x64 job (see there)
+        timeout-minutes: ${{ inputs.full_walk && 50 || 15 }}
+        env:
+          FULL_WALK: ${{ inputs.full_walk }}
+        run: |
+          $paths = if ($env:FULL_WALK -eq 'true') { @('C:\') } else { @('C:\Users', 'C:\ProgramData') }
+          foreach ($path in $paths) {
+            target\release\tessera.exe scan $path --mode walk --top 5
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Smoke scan (MFT)
         run: target\release\tessera.exe scan C:\ --mode mft --top 5
       - uses: actions/upload-artifact@v7
