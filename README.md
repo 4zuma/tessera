@@ -70,6 +70,22 @@ The MFT parser is also tested against real NTFS images built with `mkntfs`
 and `ntfs-3g` on Linux (`cargo test -p tessera-core --lib image_tests`).
 The scanner itself only runs on Windows.
 
+## Continuous integration
+
+Each push and pull request runs only the checks its files can affect
+(`.github/scripts/ci-changes.sh`): a change to docs only (`*.md`, `docs/`)
+runs none, a change to the app only skips the core's jobs, and a change to
+the CLI only skips the app's. A skipped job still reports its check as
+passed, so required checks keep working.
+
+The app exe is built on `main`. For a test build of a pull request, add the
+`build-exe` label to it: that starts an `app` run whose artifact
+`tessera-app-windows-x64` holds the exe, and later pushes build one too.
+
+The smoke scan walks `C:\Users` and `C:\ProgramData`, since a walk of all of
+C: takes up to 35 minutes on GitHub's runners; run the `CI` workflow by hand
+with *full_walk* to walk the whole drive.
+
 ## Releasing
 
 1. Set the new version everywhere it is written down (Cargo, npm and Tauri
