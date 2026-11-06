@@ -36,7 +36,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -75,7 +75,8 @@ pub enum WatchBackend {
 pub struct WatchOptions {
     pub backend: WatchBackend,
     /// Length of the window that gathers changes into one batch, i.e. the
-    /// shortest time between two batches. Default 500 ms.
+    /// shortest time between two batches. Default 500 ms. Change it while
+    /// running with [`Watcher::set_throttle`].
     pub throttle: Duration,
 }
 
@@ -127,13 +128,40 @@ impl BatchReport {
     }
 }
 
+/// The batch window, shared by the watcher and its applier thread so it
+/// can change while the watcher runs.
+#[derive(Debug)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) struct Throttle(AtomicU64);
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl Throttle {
+    pub(crate) fn new(d: Duration) -> Throttle {
+        Throttle(AtomicU64::new(Self::nanos(d)))
+    }
+
+    fn nanos(d: Duration) -> u64 {
+        u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
+    }
+
+    pub(crate) fn get(&self) -> Duration {
+        Duration::from_nanos(self.0.load(Ordering::Relaxed))
+    }
+
+    pub(crate) fn set(&self, d: Duration) {
+        self.0.store(Self::nanos(d), Ordering::Relaxed);
+    }
+}
+
 /// The applier loop: wait (indefinitely) for the first event, gather for
 /// one throttle window, apply, report; repeat until the channel closes or
-/// `stop` is set.
+/// `stop` is set. The window is measured from its first event with the
+/// throttle as it is now, so shortening the throttle and sending an empty
+/// event list ends a long window early.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn run_applier(
     rx: Receiver<Vec<Event>>,
-    throttle: Duration,
+    throttle: &Throttle,
     stop: &AtomicBool,
     mut apply: impl FnMut(Batch) -> Result<BatchReport>,
     on_batch: &dyn Fn(&BatchReport),
@@ -141,13 +169,15 @@ pub(crate) fn run_applier(
     let mut co = Coalescer::default();
     loop {
         match rx.recv() {
+            // an empty list only wakes the loop (see Watcher::set_throttle)
+            Ok(events) if events.is_empty() => continue,
             Ok(events) => co.extend(events),
             Err(_) => return,
         }
-        let deadline = Instant::now() + throttle;
+        let opened = Instant::now();
         let mut closed = false;
         loop {
-            let left = deadline.saturating_duration_since(Instant::now());
+            let left = (opened + throttle.get()).saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break;
             }
@@ -182,6 +212,7 @@ pub struct Watcher {
     backend: WatchBackend,
     stop: Arc<AtomicBool>,
     progress: Arc<ScanProgress>,
+    throttle: Arc<Throttle>,
     requests: Option<Sender<Vec<Event>>>,
     #[cfg(windows)]
     wake: Arc<sys::OwnedHandle>,
@@ -270,10 +301,12 @@ impl Watcher {
                 }
             })?;
 
+        let throttle = Arc::new(Throttle::new(opts.throttle));
         let mut w = Watcher {
             backend: WatchBackend::Auto,
             stop: stop.clone(),
             progress: progress.clone(),
+            throttle: throttle.clone(),
             requests: Some(tx),
             wake,
             collector: Some(collector),
@@ -293,7 +326,6 @@ impl Watcher {
             _ => None,
         };
         let mut probe = sys::WinProbe::new(root, usn_state.is_some())?;
-        let throttle = opts.throttle;
         let applier = std::thread::Builder::new()
             .name("tessera-watch".into())
             .spawn(move || {
@@ -308,7 +340,7 @@ impl Watcher {
                 };
                 run_applier(
                     rx,
-                    throttle,
+                    &throttle,
                     &stop,
                     |batch| {
                         apply::apply_batch(&tree, batch, &mut probe, usn_state.as_mut(), &mut scan)
@@ -337,6 +369,25 @@ impl Watcher {
     /// The backend actually in use (never `Auto`).
     pub fn backend(&self) -> WatchBackend {
         self.backend
+    }
+
+    /// Changes the batch window (see [`WatchOptions::throttle`]), e.g. a
+    /// longer one while the UI is in the background, so busy disks wake the
+    /// watcher less often and repeated changes to one file are read once.
+    /// A window already open closes as soon as it has lasted the new length.
+    pub fn set_throttle(&self, throttle: Duration) {
+        if self.throttle.get() == throttle {
+            return;
+        }
+        self.throttle.set(throttle);
+        if let Some(tx) = &self.requests {
+            let _ = tx.send(Vec::new());
+        }
+    }
+
+    /// The current batch window.
+    pub fn throttle(&self) -> Duration {
+        self.throttle.get()
     }
 
     /// Rescans directory `dir` on the watcher's thread: its children are
@@ -398,6 +449,7 @@ mod tests {
     struct Harness {
         tx: Option<Sender<Vec<Event>>>,
         stop: Arc<AtomicBool>,
+        throttle: Arc<Throttle>,
         reports: Arc<Mutex<Vec<(Instant, BatchReport)>>>,
         thread: Option<JoinHandle<()>>,
         shared: SharedTree,
@@ -413,16 +465,22 @@ mod tests {
             let fs = Arc::new(Mutex::new(fs));
             let (tx, rx) = mpsc::channel();
             let stop = Arc::new(AtomicBool::new(false));
+            let throttle = Arc::new(Throttle::new(throttle));
             let reports = Arc::new(Mutex::new(Vec::new()));
-            let (t_shared, t_fs, t_stop, t_reports) =
-                (shared.clone(), fs.clone(), stop.clone(), reports.clone());
+            let (t_shared, t_fs, t_stop, t_reports, t_throttle) = (
+                shared.clone(),
+                fs.clone(),
+                stop.clone(),
+                reports.clone(),
+                throttle.clone(),
+            );
             let thread = std::thread::spawn(move || {
                 let on_batch = move |r: &BatchReport| {
                     t_reports.lock().unwrap().push((Instant::now(), r.clone()));
                 };
                 run_applier(
                     rx,
-                    throttle,
+                    &t_throttle,
                     &t_stop,
                     |batch| {
                         let mut fs = t_fs.lock().unwrap().clone();
@@ -437,6 +495,7 @@ mod tests {
             Harness {
                 tx: Some(tx),
                 stop,
+                throttle,
                 reports,
                 thread: Some(thread),
                 shared,
@@ -509,6 +568,29 @@ mod tests {
         let f = t.lookup_relative(b"d\\f.log").unwrap();
         assert_eq!(t.node(f).logical, 64_000);
         drop(t);
+        h.finish();
+    }
+
+    #[test]
+    fn a_shorter_throttle_ends_a_long_window() {
+        let mut h = Harness::new(Duration::from_secs(30));
+        let start = Instant::now();
+        h.send(vec![grow(99)]);
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(h.reports().is_empty(), "the 30 s window is still open");
+        // What Watcher::set_throttle does: store, then wake the loop.
+        h.throttle.set(Duration::from_millis(20));
+        h.send(Vec::new());
+        assert!(h.wait_for(1, Duration::from_secs(5)));
+        assert!(start.elapsed() < Duration::from_secs(5));
+        assert_eq!(h.reports()[0].1.modified, 1);
+        // A wake-up alone opens no window and applies nothing.
+        h.send(Vec::new());
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(h.reports().len(), 1);
+        // Later windows use the new length.
+        h.send(vec![grow(123)]);
+        assert!(h.wait_for(2, Duration::from_secs(5)));
         h.finish();
     }
 

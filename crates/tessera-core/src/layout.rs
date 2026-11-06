@@ -1280,6 +1280,74 @@ pub fn decode(buf: &[u8]) -> Result<Decoded> {
     })
 }
 
+/// The `bytesPerPx` field of an encoded layout's header: bytes per px² at
+/// that view. `None` if `buf` is too short to be a layout.
+pub fn header_bytes_per_px(buf: &[u8]) -> Option<f32> {
+    buf.get(28..32)
+        .map(|b| f32::from_le_bytes(b.try_into().expect("4 bytes")))
+}
+
+/// True when two encoded layouts draw the same picture: the same rects in
+/// the same order, with the same ids, names, kinds, categories, flags,
+/// headers and item counts, the same size labels (see [`size_label`]), and
+/// no edge more than `tolerance` CSS px from where it was. The revision and
+/// `bytesPerPx` are not compared. Live updates use it to skip redraws that
+/// would not change a single visible pixel by more than `tolerance`.
+/// Buffers that do not decode are never the same.
+pub fn same_picture(a: &[u8], b: &[u8], tolerance: f32) -> bool {
+    let (Ok(a), Ok(b)) = (decode(a), decode(b)) else {
+        return false;
+    };
+    let near = |p: f32, q: f32| (p - q).abs() <= tolerance;
+    a.view == b.view
+        && a.records.len() == b.records.len()
+        && a.records.iter().zip(&b.records).all(|(r, s)| {
+            r.id == s.id
+                && r.parent == s.parent
+                && r.target == s.target
+                && r.count == s.count
+                && r.depth == s.depth
+                && r.kind == s.kind
+                && r.cat == s.cat
+                && r.flags == s.flags
+                && r.header == s.header
+                && r.name == s.name
+                // only named rects show their size
+                && (r.name.is_none() || size_label(r.size) == size_label(s.size))
+                && near(r.x, s.x)
+                && near(r.y, s.y)
+                && near(r.x + r.w, s.x + s.w)
+                && near(r.y + r.h, s.y + s.h)
+        })
+}
+
+/// What the UI's size label shows for `bytes`, as (unit and decimals,
+/// rounded value): two sizes with the same key read the same. Mirrors
+/// `fmtBytes` in `app/src/lib/format.ts`; keep the two in step.
+pub fn size_label(bytes: u64) -> (u8, u64) {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    const TB: f64 = GB * 1024.0;
+    let b = bytes as f64;
+    let r = |v: f64| v.round() as u64;
+    if b >= TB {
+        (0, r(b / TB * 100.0))
+    } else if b >= 100.0 * GB {
+        (1, r(b / GB))
+    } else if b >= GB {
+        (2, r(b / GB * 10.0))
+    } else if b >= 10.0 * MB {
+        (3, r(b / MB))
+    } else if b >= MB {
+        (4, r(b / MB * 10.0))
+    } else if b >= KB {
+        (5, r(b / KB))
+    } else {
+        (6, bytes)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Navigation
 

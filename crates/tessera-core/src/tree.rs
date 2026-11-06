@@ -515,6 +515,8 @@ impl EntryBatch {
 pub struct Tree {
     pub(crate) nodes: ChunkedVec<Node>,
     pub(crate) names: NamePool,
+    /// See [`Tree::changed_bytes`].
+    pub(crate) changed: u64,
 }
 
 /// A tree shared between the scanner threads, the watcher and the UI.
@@ -540,6 +542,7 @@ impl Tree {
         let mut t = Tree {
             nodes: ChunkedVec::new(),
             names: NamePool::with_dedup(),
+            changed: 0,
         };
         let name_off = t.names.push(root_name);
         t.nodes.push(Node {
@@ -780,6 +783,10 @@ impl Tree {
         if dsize == 0 && dlogical == 0 {
             return;
         }
+        let moved = (dsize as i64)
+            .unsigned_abs()
+            .max((dlogical as i64).unsigned_abs());
+        self.changed = self.changed.wrapping_add(moved);
         let mut cur = from;
         while !cur.is_none() {
             let n = self.node_mut(cur);
@@ -790,6 +797,15 @@ impl Tree {
             }
             cur = n.parent;
         }
+    }
+
+    /// Bytes added, removed or resized anywhere in the tree so far (the
+    /// larger of the on-disk and logical change, summed; a move counts
+    /// twice). It only grows: the difference between two readings bounds how
+    /// much any folder's total moved in between, so the UI can skip redraws
+    /// for changes too small to see. Wraps around after 16 EiB.
+    pub fn changed_bytes(&self) -> u64 {
+        self.changed
     }
 
     /// Changes a file's sizes and updates all its ancestors by the difference.
@@ -1017,6 +1033,28 @@ mod tests {
         t.set_file_size(notes, 1, 1);
         t.check_invariants().unwrap();
         assert!(!t.mark_deleted(NodeId::ROOT));
+    }
+
+    #[test]
+    fn changed_bytes_counts_every_size_change() {
+        let mut t = sample();
+        let start = t.changed_bytes();
+        let notes = t.lookup_relative(b"Users\\notes.txt").unwrap();
+        // The larger of the two deltas: on disk 4096 -> 8192, logical 12 -> 5000.
+        t.set_file_size(notes, 8192, 5000);
+        assert_eq!(t.changed_bytes() - start, 4988);
+        // Shrinking counts too.
+        t.set_file_size(notes, 4096, 12);
+        assert_eq!(t.changed_bytes() - start, 2 * 4988);
+        let before = t.changed_bytes();
+        t.set_file_size(notes, 4096, 12);
+        assert_eq!(t.changed_bytes(), before, "no change, nothing counted");
+        let w = t.lookup_relative(b"Windows").unwrap();
+        t.add_child(w, b"new.log", 4096, 100, NodeFlags::NONE, 7);
+        assert_eq!(t.changed_bytes() - before, 4096);
+        let before = t.changed_bytes();
+        assert!(t.mark_deleted(NodeId(1)));
+        assert_eq!(t.changed_bytes() - before, 8192 + 4096);
     }
 
     #[test]

@@ -193,6 +193,7 @@ impl Tree {
         let mut tree = Tree {
             nodes: ChunkedVec::new(),
             names,
+            changed: 0,
         };
         tree.nodes.push(Node {
             size: 0,
