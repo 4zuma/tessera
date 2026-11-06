@@ -12,8 +12,8 @@
 //   app/package.json, app/package-lock.json (two root entries)
 //   app/src/lib/backend/mock/index.ts   the browser-only preview backend
 //
-// The release workflow refuses a version that differs from tauri.conf.json,
-// so bump first, merge the bump, then start the release.
+// Merging the bump to main releases it: the release workflow sees the new
+// version in tauri.conf.json, tags the merge commit and publishes.
 //
 // Every file is read and checked before any is written: if one place cannot
 // be found, nothing changes.
@@ -189,8 +189,8 @@ function bump(version) {
   }
   console.log(`\n${[...before].join(', ')} -> ${version}`);
   console.log(
-    'Next: commit, open a pull request and merge it once CI is green, then run the release\n' +
-      `workflow on main with version ${version} (a new run; Re-run reuses the old commit).\n` +
+    'Next: commit, open a pull request and merge it once CI is green. Merging it to main\n' +
+      `tags v${version} and publishes the release by itself (.github/workflows/release.yml).\n` +
       `Release notes come from docs/releases/v${version}.md if you add it; otherwise GitHub writes them.`,
   );
 }

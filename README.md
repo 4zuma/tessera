@@ -3,7 +3,7 @@
 A lightweight, fast disk-space visualizer for Windows: scan a drive, see it
 as a treemap, delete what you don't need.
 
-> Status: first preview. Download the portable `.exe` from
+> Status: 1.0, the first stable release. Download the portable `.exe` from
 > [Releases](https://github.com/4zuma/tessera/releases) (Windows 10/11 x64,
 > needs WebView2; the build is not code-signed yet). The repository holds the
 > Rust core (scanner, file tree, live updates, deletion, treemap layout), the
@@ -83,11 +83,14 @@ The scanner itself only runs on Windows.
    they differ.
 2. Optionally write the release notes in `docs/releases/v0.3.1.md`. Without
    that file GitHub writes them from the merged pull requests.
-3. Commit, open a pull request, and merge it once CI is green.
-4. Run the `release` workflow from the Actions tab on `main` with version
-   `0.3.1`. It builds the Windows binaries, tags the commit and publishes the
-   release. Start a new run after the bump is merged: Re-run reuses the
-   commit of the earlier run.
+3. Commit, open a pull request, and merge it once CI is green. Merging is
+   the release: when a push to `main` changes the version, the `release`
+   workflow builds the Windows binaries, tags the merge commit `v0.3.1` and
+   publishes the release. Pushes that leave the version alone, or whose tag
+   already exists, release nothing.
+4. To release by hand (for example after a failed run), run the `release`
+   workflow from the Actions tab on `main` with version `0.3.1`. It refuses a
+   version that is already released or differs from the one in the code.
 
 ## First measurements
 
