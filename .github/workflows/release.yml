@@ -2,9 +2,15 @@ name: release
 
 # Builds the Windows binaries and publishes a GitHub release.
 #
-# Start it from the Actions tab ("Run workflow", version e.g. 0.1.0) or by
-# pushing a tag v0.1.0. The version must match app/src-tauri/tauri.conf.json;
-# set it with `node scripts/bump-version.mjs <version>` and merge that first.
+# Normally it runs by itself: when a push to main changes the version in
+# app/src-tauri/tauri.conf.json (set it everywhere with
+# `node scripts/bump-version.mjs <version>`), it tags that commit v<version>
+# and publishes the release. It does nothing when the version did not change
+# or the tag v<version> already exists.
+#
+# It can still be started by hand from the Actions tab ("Run workflow",
+# version e.g. 0.1.0) or by pushing a tag v0.1.0. The version must match
+# tauri.conf.json, and a version that is already released is refused.
 # The release notes come from docs/releases/v<version>.md when that file
 # exists, otherwise GitHub generates them from the merged pull requests.
 
@@ -15,37 +21,60 @@ on:
         description: "Version to release, without the v (e.g. 0.1.0)"
         required: true
   push:
+    branches: [main]
+    # Tags pushed by this workflow use GITHUB_TOKEN, which starts no new run.
     tags: ["v*"]
+    # Only checked for pushes to main (GitHub ignores paths for tag pushes).
+    paths: ["app/src-tauri/tauri.conf.json"]
 
 permissions:
   contents: write
 
-concurrency:
-  group: release
-  cancel-in-progress: false
-
 jobs:
-  windows:
-    name: Build and publish
-    runs-on: windows-latest
-    timeout-minutes: 60
-    defaults:
-      run:
-        shell: pwsh
+  plan:
+    name: Decide what to release
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      tag: ${{ steps.plan.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
 
-      - name: Work out the tag
-        id: tag
+      - name: Compare the version with the last push and the existing tags
+        id: plan
         env:
+          GH_TOKEN: ${{ github.token }}
           INPUT_VERSION: ${{ inputs.version }}
+          BEFORE: ${{ github.event.before }}
+        run: bash .github/scripts/release-plan.sh
+
+  windows:
+    name: Build and publish
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    # One release at a time, in the order they were started.
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Make sure no other run released it meanwhile
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = if ($env:INPUT_VERSION) { "v$($env:INPUT_VERSION.TrimStart('v'))" } else { "$env:GITHUB_REF_NAME" }
-          $conf = Get-Content app/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
-          if ($tag -ne "v$($conf.version)") {
-            throw "tag $tag does not match the app version $($conf.version) in tauri.conf.json"
-          }
-          "tag=$tag" >> $env:GITHUB_OUTPUT
+          if url=$(gh release view "$TAG" --json url --jq .url 2>/dev/null); then
+            echo "::error::$TAG was already released by another run: $url"
+            exit 1
+          fi
 
       - uses: actions/setup-node@v7
         with:
@@ -67,8 +96,6 @@ jobs:
         run: cargo build --release -p tessera-cli
 
       - name: Package
-        env:
-          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
           # asset names are all lowercase
@@ -82,12 +109,13 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           $notes = "docs/releases/$env:TAG.md"
           # PowerShell does not expand wildcards for native commands, so list the files
           $files = (Get-ChildItem out -File).FullName
           $ghArgs = @($env:TAG) + $files + @("--title", "Tessera $env:TAG", "--target", "$env:GITHUB_SHA")
           if (Test-Path $notes) { $ghArgs += @("--notes-file", $notes) } else { $ghArgs += "--generate-notes" }
+          # a version like 0.4.0-beta.1 is a pre-release, so it never becomes "Latest"
+          if ($env:TAG -match '-') { $ghArgs += "--prerelease" }
           gh release create @ghArgs
           if ($LASTEXITCODE -ne 0) { throw "gh release create failed ($LASTEXITCODE)" }
