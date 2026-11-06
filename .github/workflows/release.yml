@@ -1,0 +1,91 @@
+name: release
+
+# Builds the Windows binaries and publishes a GitHub release.
+#
+# Start it from the Actions tab ("Run workflow", version e.g. 0.1.0) or by
+# pushing a tag v0.1.0. The version must match app/src-tauri/tauri.conf.json.
+# The release notes come from docs/releases/v<version>.md when that file
+# exists, otherwise GitHub generates them from the merged pull requests.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the v (e.g. 0.1.0)"
+        required: true
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Build and publish
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the tag
+        id: tag
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $tag = if ($env:INPUT_VERSION) { "v$($env:INPUT_VERSION.TrimStart('v'))" } else { "$env:GITHUB_REF_NAME" }
+          $conf = Get-Content app/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          if ($tag -ne "v$($conf.version)") {
+            throw "tag $tag does not match the app version $($conf.version) in tauri.conf.json"
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+
+      - name: Build the app (tauri build, no installer)
+        working-directory: app
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npx tauri build
+      - name: Build the command-line tool
+        run: cargo build --release -p tessera-cli
+
+      - name: Package
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item target/release/tessera-app.exe "out/Tessera-$env:TAG-windows-x64.exe"
+          Copy-Item target/release/tessera.exe "out/tessera-cli-$env:TAG-windows-x64.exe"
+          Get-ChildItem out/*.exe | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+          } | Set-Content -Encoding ascii out/SHA256SUMS.txt
+          Get-Content out/SHA256SUMS.txt
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          $notes = "docs/releases/$env:TAG.md"
+          # PowerShell does not expand wildcards for native commands, so list the files
+          $files = (Get-ChildItem out -File).FullName
+          $ghArgs = @($env:TAG) + $files + @("--title", "Tessera $env:TAG", "--target", "$env:GITHUB_SHA")
+          if (Test-Path $notes) { $ghArgs += @("--notes-file", $notes) } else { $ghArgs += "--generate-notes" }
+          gh release create @ghArgs
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed ($LASTEXITCODE)" }

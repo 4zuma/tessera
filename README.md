@@ -3,9 +3,11 @@
 A lightweight, fast disk-space visualizer for Windows: scan a drive, see it
 as a treemap, delete what you don't need.
 
-> Status: early development. This repository currently holds the Rust core
-> (scanner, file tree, live updates, deletion, treemap layout) and a
-> command-line harness. The Tauri 2 front end comes next.
+> Status: first preview. Download the portable `.exe` from
+> [Releases](https://github.com/4zuma/tessera/releases) (Windows 10/11 x64,
+> needs WebView2; the build is not code-signed yet). The repository holds the
+> Rust core (scanner, file tree, live updates, deletion, treemap layout), the
+> Tauri 2 + Svelte app in [`app/`](app/README.md) and a command-line harness.
 
 ## What the core does
 
