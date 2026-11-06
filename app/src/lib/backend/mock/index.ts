@@ -3,6 +3,7 @@
  * lives here; the UI only gets layout buffers and small JSON records, exactly as
  * with the real core (see docs/ipc.md).
  */
+import { browserChoice, t } from '../../i18n.svelte';
 import { encodeLayout, FREE, groupFolder, isGroupId, UNSCANNED } from '../codec';
 import type {
   Backend,
@@ -54,7 +55,7 @@ export class MockBackend implements Backend {
 
   constructor(platform: Partial<PlatformInfo> = {}, opts: { scanMs?: number } = {}) {
     this.scanMs = opts.scanMs ?? 4600;
-    this.platform = { elevated: false, backdrop: 'none', accent: null, version: '0.3.1', core: false, native: false, ...platform };
+    this.platform = { elevated: false, backdrop: 'none', accent: null, version: '0.3.1', core: false, native: false, ...browserChoice(), ...platform };
   }
 
   /* ------------------------------ helpers ------------------------------ */
@@ -126,13 +127,13 @@ export class MockBackend implements Backend {
 
   private lockReason(n: MNode): string | null {
     const d = this.d;
-    if (n.lock === 'sys') return '系统正在使用的文件，不能删除';
-    if (n.lock === 'acl') return '没有访问权限';
-    // the same words as the core's reasons (src-tauri backend.rs, zh)
-    if (n.lock === 'mine') return '这是你的个人文件夹，Windows 和应用要用到它。';
-    if (n.lock === 'temp') return 'Windows 和应用把临时文件放在这个文件夹里。';
-    if (n.lock === 'os' || n.id === 0) return '系统目录，受保护';
-    if (n.id === d.binId || n.id === d.binUserId) return '请使用“清空回收站”';
+    if (n.lock === 'sys') return t('lock.inUse');
+    if (n.lock === 'acl') return t('lock.noAccess');
+    // the same words as the core's reasons (src-tauri i18n.rs)
+    if (n.lock === 'mine') return t('core.personal');
+    if (n.lock === 'temp') return t('core.temp');
+    if (n.lock === 'os' || n.id === 0) return t('mock.systemFolder');
+    if (n.id === d.binId || n.id === d.binUserId) return t('lock.bin');
     return null;
   }
 
@@ -157,7 +158,7 @@ export class MockBackend implements Backend {
       const d = this.drives.get(root);
       const cap = root === 'C:\\' ? 501.6 * GB : 931.5 * GB;
       const used = d ? this.used(d) : root === 'C:\\' ? 499.8 * GB : 612.4 * GB;
-      return { root, label: root === 'C:\\' ? '本地磁盘' : '数据', fs: 'NTFS', capacity: cap, free: cap - used };
+      return { root, label: root === 'C:\\' ? t('core.localDisk') : t('mock.dataLabel'), fs: 'NTFS', capacity: cap, free: cap - used };
     });
   }
 
@@ -242,16 +243,16 @@ export class MockBackend implements Backend {
     const blank = { disk: 0, logical: 0, files: 0, dirs: 0, modified: null, cat: 255, flags: 0, lockReason: null, hint: null };
     if (id === FREE) {
       const f = this.free(d);
-      return { ...blank, id, kind: 'free', name: '可用空间', path: d.root, size: f, share: f / d.capacity, hint: '卷上还没被使用的空间' };
+      return { ...blank, id, kind: 'free', name: t('free'), path: d.root, size: f, share: f / d.capacity, hint: t('core.freeHint') };
     }
     if (id === UNSCANNED) {
       const u = Math.max(0, this.used(d) - d.nodes[0].dT);
-      return { ...blank, id, kind: 'unscanned', name: '尚未扫描', path: d.root, size: u, share: u / d.capacity, hint: '已用空间里还没扫描到的部分，会随扫描缩小' };
+      return { ...blank, id, kind: 'unscanned', name: t('unscanned'), path: d.root, size: u, share: u / d.capacity, hint: t('core.unscannedHint') };
     }
     if (isGroupId(id)) {
       const p = this.node(groupFolder(id));
       if (!p) return null;
-      return { ...blank, id, kind: 'group', name: '小项合并显示', path: this.pathOf(p.id), size: 0, share: 0, hint: '太小、画不下的项目合并成一块；放大上级文件夹可以看到它们' };
+      return { ...blank, id, kind: 'group', name: t('core.group'), path: this.pathOf(p.id), size: 0, share: 0, hint: t('core.groupHint') };
     }
     const n = this.node(id);
     if (!n || !this.attached(n)) return null;
@@ -276,13 +277,13 @@ export class MockBackend implements Backend {
       lockReason: this.lockReason(n),
       hint:
         n.name === 'hiberfil.sys'
-          ? '可以在管理员终端运行 powercfg /h off 关闭休眠来释放它'
+          ? t('core.hiberfil')
           : n.name === 'pagefile.sys'
-            ? '在“高级系统设置 › 性能 › 虚拟内存”里调整'
+            ? t('core.pagefile')
             : n.name === 'Windows.old'
-              ? '旧版 Windows 的备份，用系统的“磁盘清理”删除最稳妥'
+              ? t('core.windowsOld')
               : n.cloud
-                ? 'OneDrive 仅在线文件：实际大小很大，但几乎不占磁盘'
+                ? t('mock.cloud')
                 : null,
     };
   }
@@ -326,9 +327,9 @@ export class MockBackend implements Backend {
     const bin = d.nodes[d.binUserId];
     for (const id of this.roots(ids)) {
       const n = this.node(id);
-      const why = n ? this.lockReason(n) : '项目不存在';
+      const why = n ? this.lockReason(n) : t('core.noItem');
       if (!n || why) {
-        failed.push({ id, reason: why || '项目不存在' });
+        failed.push({ id, reason: why || t('core.noItem') });
         continue;
       }
       const p = d.nodes[n.parent];
@@ -384,9 +385,9 @@ export class MockBackend implements Backend {
     let bytes = 0;
     for (const id of this.roots(ids)) {
       const n = this.node(id);
-      const why = n ? this.lockReason(n) : '项目不存在';
+      const why = n ? this.lockReason(n) : t('core.noItem');
       if (!n || why || !this.attached(n)) {
-        failed.push({ id, reason: why || '项目不存在' });
+        failed.push({ id, reason: why || t('core.noItem') });
         continue;
       }
       const p = d.nodes[n.parent];

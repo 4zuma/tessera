@@ -3,6 +3,7 @@
  * full (the user's real situation), and a calmer D: data drive. Deterministic, so
  * screenshots and tests are stable.
  */
+import { t } from '../../i18n.svelte';
 import { Cat, categoryOf } from '../categories';
 
 export const KB = 1024;
@@ -373,7 +374,7 @@ export function buildC(): Drive {
   F(root, 'hiberfil.sys', 12.7 * GB, { lock: 'sys', age: 0, cat: Cat.System });
   F(root, 'swapfile.sys', 0.25 * GB, { lock: 'sys', age: 0, cat: Cat.System });
   const svi = D(root, 'System Volume Information', { lock: 'acl', lockDeep: 'acl' });
-  F(svi, '（无权限，大小由卷信息推算）', 9.2 * GB, { lock: 'acl', age: 3, cat: Cat.System });
+  F(svi, t('mock.svi'), 9.2 * GB, { lock: 'acl', age: 3, cat: Cat.System });
   const bin = D(root, '$Recycle.Bin');
   const binMe = D(bin, 'S-1-5-21-3623811015-3361044348-30300820-1001');
   fill(binMe, 3.4 * GB, 90, { ext: ['zip', 'mp4', 'exe', 'png', 'tmp'], age: [1, 40], name: (_i, e) => `$R${hex(6).toUpperCase()}.${e}` });
@@ -390,7 +391,7 @@ export function buildC(): Drive {
     name: (_i, e) => `${pick(['setup', 'installer', 'portable', 'release', 'driver', 'firmware', 'wallpaper', 'dataset', 'backup', 'sample', 'font', 'patch'])}${pick(['-x64', '_win64', '-v2', '_2025', '-final', ''])}${b.rnd() < 0.4 ? '-' + (1 + int(30)) : ''}.${e}`,
   });
 
-  return finish(b, { root: 'C:\\', label: '本地磁盘', fs: 'NTFS', capacity: CAPACITY, usedTarget: USED_TARGET, binId: bin.id, binUserId: binMe.id, downloadsId: dl.id });
+  return finish(b, { root: 'C:\\', label: t('core.localDisk'), fs: 'NTFS', capacity: CAPACITY, usedTarget: USED_TARGET, binId: bin.id, binUserId: binMe.id, downloadsId: dl.id });
 }
 
 export function buildD(): Drive {
@@ -438,11 +439,11 @@ export function buildD(): Drive {
   const binMe = D(bin, 'S-1-5-21-3623811015-3361044348-30300820-1001');
   fill(binMe, 1.1 * GB, 20, { ext: ['zip', 'mp4'], age: [1, 30], name: (_i, e) => `$R${hex(6).toUpperCase()}.${e}` });
   const svi = D(root, 'System Volume Information', { lock: 'acl', lockDeep: 'acl' });
-  F(svi, '（无权限，大小由卷信息推算）', 2.3 * GB, { lock: 'acl', age: 3, cat: Cat.System });
+  F(svi, t('mock.svi'), 2.3 * GB, { lock: 'acl', age: 3, cat: Cat.System });
 
   let tot = 0;
   for (const n of b.N) if (!n.kids) tot += n.disk;
   fill(D(root, '杂项'), Math.max(1 * GB, USED_TARGET - tot), 200, { ext: ['zip', 'mp4', 'jpg', 'pdf', 'psd'], age: [10, 1500] });
 
-  return finish(b, { root: 'D:\\', label: '数据', fs: 'NTFS', capacity: CAPACITY, usedTarget: USED_TARGET, binId: bin.id, binUserId: binMe.id, downloadsId: -1 });
+  return finish(b, { root: 'D:\\', label: t('mock.dataLabel'), fs: 'NTFS', capacity: CAPACITY, usedTarget: USED_TARGET, binId: bin.id, binUserId: binMe.id, downloadsId: -1 });
 }

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from '../lib/app.svelte';
   import { fmtBytes } from '../lib/format';
+  import { t, tParts } from '../lib/i18n.svelte';
 
   const v = $derived(app.volume);
   const used = $derived(v ? v.capacity - v.free : 0);
@@ -9,15 +10,15 @@
 
 <footer class="status caption tabular">
   {#if v}
-    <span>已用 <b>{fmtBytes(used)}</b> / {fmtBytes(v.capacity)}</span>
+    <span>{#each tParts('status.used', { used: fmtBytes(used), capacity: fmtBytes(v.capacity) }) as p, i (i)}{#if p.v === 'used'}<b>{p.text}</b>{:else}{p.text}{/if}{/each}</span>
     <span class="bar" class:low><i style:width="{((used / v.capacity) * 100).toFixed(2)}%"></i></span>
-    <span>可用 <b class:low>{fmtBytes(v.free)}</b></span>
+    <span>{#each tParts('status.free', { free: fmtBytes(v.free) }) as p, i (i)}{#if p.v}<b class:low>{p.text}</b>{:else}{p.text}{/if}{/each}</span>
     <span class="dot" aria-hidden="true"></span>
   {/if}
   <span class="scan" aria-live="polite">{app.scanText}</span>
   <span class="sp"></span>
   {#if app.bytesPerPx}
-    <span class="scale" title="当前视图里每个像素代表的大小">1 px² ≈ {fmtBytes(app.bytesPerPx)}</span>
+    <span class="scale" title={t('status.scaleTip')}>1 px² ≈ {fmtBytes(app.bytesPerPx)}</span>
   {/if}
 </footer>
 

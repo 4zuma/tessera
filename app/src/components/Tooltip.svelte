@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from '../lib/app.svelte';
   import { fmtBytes, fmtPct } from '../lib/format';
+  import { t as tr } from '../lib/i18n.svelte';
 
   let w = $state(0);
   let h = $state(0);
@@ -19,7 +20,7 @@
   {@const t = app.tip}
   <div class="tip acrylic caption" bind:offsetWidth={w} bind:offsetHeight={h} style:transform="translate({Math.round(pos.x)}px, {Math.round(pos.y)}px)" aria-hidden="true">
     <div class="n">{t.name || '…'}</div>
-    <div class="m tabular"><b>{fmtBytes(t.size)}</b><span>{t.kind}{t.share != null ? ` · 占上级 ${fmtPct(t.share)}` : ''}</span></div>
+    <div class="m tabular"><b>{fmtBytes(t.size)}</b><span>{t.kind}{t.share != null ? ` · ${tr('shareParent', { pct: fmtPct(t.share) })}` : ''}</span></div>
   </div>
 {/if}
 
