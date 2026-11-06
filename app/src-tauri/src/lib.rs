@@ -7,6 +7,7 @@
 
 mod backend;
 mod i18n;
+mod memlog;
 mod platform;
 mod volumes;
 
@@ -36,6 +37,7 @@ pub fn run() {
                 .ok_or("main window missing")?;
             let backdrop = platform::apply_backdrop(&window);
             platform::trim_when_minimized(&window);
+            memlog::start(app.handle());
             app.manage(platform::Info::detect(
                 backdrop,
                 app.package_info().version.to_string(),

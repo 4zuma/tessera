@@ -72,6 +72,10 @@ The MFT parser is also tested against real NTFS images built with `mkntfs`
 and `ntfs-3g` on Linux (`cargo test -p tessera-core --lib image_tests`).
 The scanner itself only runs on Windows.
 
+To see where the app's memory goes, start it with `TESSERA_MEMLOG` set to
+a file: every 2 seconds it appends a line with its private working set,
+heaps, other private memory and the file tree's share.
+
 ## Continuous integration
 
 Each push and pull request runs only the checks its files can affect

@@ -86,6 +86,12 @@ impl Core {
             .ok_or_else(|| text::NO_SCAN.get().to_string())
     }
 
+    /// Memory held by the current scan's tree, if there is one.
+    pub fn tree_memory(&self) -> Option<tessera_core::tree::TreeMemory> {
+        let s = self.current().ok()?;
+        Some(s.tree().memory())
+    }
+
     fn is_current(&self, id: u32) -> bool {
         self.session
             .read()
