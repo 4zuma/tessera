@@ -6,6 +6,7 @@
 import { Kind, type Layout, type Rect } from '../backend/codec';
 import type { Theme } from '../theme';
 import type { Motion } from './ease';
+import { BoxBatch, type GpuMode } from './gpu';
 
 export type MotionKind = 'instant' | 'update' | 'scan' | 'live' | 'zoom' | 'morph' | 'mode' | 'delete';
 
@@ -138,8 +139,11 @@ export interface PaintState {
 }
 
 export interface Painter {
-  /** the map itself: changes only with the layout, the theme or the category filter (cached) */
-  scene(ctx: CanvasRenderingContext2D, list: readonly Item[], S: PaintState): void;
+  /**
+   * the map itself: changes only with the layout, the theme or the category filter (cached).
+   * With `gpu` the boxes go to it and `ctx` gets only what is drawn over them.
+   */
+  scene(ctx: CanvasRenderingContext2D, list: readonly Item[], S: PaintState, gpu: BoxBatch | null): void;
   /**
    * what changes between layouts, drawn over the scene every frame: hover and selection on
    * `marked` (the hovered and selected items, in paint order), the pointer light, and tiles
@@ -166,6 +170,8 @@ export interface EngineStats {
   fps: number;
   frameMs: number;
   busy: boolean;
+  /** boxes are drawn with WebGL */
+  gpu: boolean;
 }
 
 /** draw-order comparator: shallow before deep, leaving tiles under staying ones, then layout order */
@@ -181,9 +187,12 @@ export class TreemapEngine {
   H = 0;
   dpr = 1;
   readonly mouse = { x: -1, y: -1, in: false, moved: false };
-  readonly stats: EngineStats = { rects: 0, fps: 0, frameMs: 0, busy: false };
+  readonly stats: EngineStats = { rects: 0, fps: 0, frameMs: 0, busy: false, gpu: false };
   onStats: ((s: EngineStats) => void) | null = null;
   private ctx: CanvasRenderingContext2D;
+  /** folders, header bands and tiles, on a WebGL canvas under the 2D one; null draws them in 2D */
+  private gpu: BoxBatch | null = null;
+  private batch: BoxBatch | null = null;
   private raf = 0;
   private lastNow = 0;
   private frames: number[] = [];
@@ -213,10 +222,48 @@ export class TreemapEngine {
     public painter: Painter,
     public motion: MotionSet,
     public outer: number,
+    /** a canvas under `canvas`, the same size, for the boxes */
+    readonly gpuCanvas: HTMLCanvasElement | null = null,
+    gpuMode: GpuMode = 'auto',
   ) {
     const ctx = canvas.getContext('2d', { alpha: true });
     if (!ctx) throw new Error('canvas 2d unavailable');
     this.ctx = ctx;
+    if (gpuCanvas) {
+      try {
+        this.batch = BoxBatch.create(gpuCanvas, gpuMode);
+      } catch {
+        this.batch = null;
+      }
+      this.gpu = this.batch;
+      gpuCanvas.addEventListener('webglcontextlost', this.onLost);
+      gpuCanvas.addEventListener('webglcontextrestored', this.onRestored);
+      this.showGpu();
+    }
+  }
+
+  /** a lost context (driver reset, GPU switch) falls back to the 2D painter until it is back */
+  private onLost = (e: Event) => {
+    e.preventDefault();
+    this.gpu = null;
+    this.showGpu();
+    this.invalidate();
+  };
+
+  private onRestored = () => {
+    try {
+      this.batch?.init();
+      this.gpu = this.batch;
+    } catch {
+      this.gpu = null;
+    }
+    this.showGpu();
+    this.invalidate();
+  };
+
+  private showGpu() {
+    if (this.gpuCanvas) this.gpuCanvas.style.visibility = this.gpu ? 'visible' : 'hidden';
+    this.stats.gpu = !!this.gpu;
   }
 
   /** returns true when the size or DPR changed (a new layout is needed) */
@@ -231,6 +278,13 @@ export class TreemapEngine {
     this.canvas.height = Math.round(H * dpr);
     this.canvas.style.width = W + 'px';
     this.canvas.style.height = H + 'px';
+    const g = this.gpuCanvas;
+    if (g) {
+      g.width = this.canvas.width;
+      g.height = this.canvas.height;
+      g.style.width = W + 'px';
+      g.style.height = H + 'px';
+    }
     if (this.layer) {
       this.layer.width = this.canvas.width;
       this.layer.height = this.canvas.height;
@@ -418,21 +472,25 @@ export class TreemapEngine {
   private paintAll(S: PaintState, moving: boolean) {
     const ctx = this.ctx;
     const d = this.dpr;
+    const gpu = this.gpu;
     this.sceneDirty = false;
+    gpu?.begin();
     if (moving) {
       this.layerOk = false;
       ctx.setTransform(d, 0, 0, d, 0, 0);
-      this.painter.scene(ctx, this.drawList, S);
+      this.painter.scene(ctx, this.drawList, S, gpu);
     } else {
       const lc = this.ensureLayer();
       lc.setTransform(d, 0, 0, d, 0, 0);
-      this.painter.scene(lc, this.drawList, S);
+      this.painter.scene(lc, this.drawList, S, gpu);
       this.layerOk = true;
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
       ctx.drawImage(this.layer!, 0, 0);
       ctx.setTransform(d, 0, 0, d, 0, 0);
     }
+    // the GPU canvas holds the boxes until the scene changes again; hover frames leave it alone
+    gpu?.draw();
     this.painter.overlay(ctx, this.drawList, this.marked, S);
     ctx.globalAlpha = 1;
   }
@@ -588,6 +646,12 @@ export class TreemapEngine {
     if (this.layer) this.layer.width = this.layer.height = 0;
     this.layer = null;
     this.layerCtx = null;
+    if (this.gpuCanvas) {
+      this.gpuCanvas.removeEventListener('webglcontextlost', this.onLost);
+      this.gpuCanvas.removeEventListener('webglcontextrestored', this.onRestored);
+    }
+    this.batch?.dispose();
+    this.batch = this.gpu = null;
   }
 }
 

@@ -6,9 +6,10 @@
 
   let stage: HTMLDivElement;
   let canvas: HTMLCanvasElement;
+  let gpu: HTMLCanvasElement;
 
   onMount(() => {
-    app.attach(canvas, stage);
+    app.attach(canvas, stage, gpu);
     return () => app.detach();
   });
 
@@ -69,6 +70,8 @@
 </script>
 
 <div class="stage" bind:this={stage}>
+  <!-- folders and tiles on the GPU, under the canvas with text, hover and selection -->
+  <canvas class="gpu" bind:this={gpu} aria-hidden="true"></canvas>
   <canvas
     bind:this={canvas}
     aria-label="磁盘占用矩形树图。方向键移动选择，回车放大，Backspace 返回上级，Delete 移到回收站"
@@ -85,6 +88,7 @@
       <span>{fmtInt(app.stats.rects)} 个矩形</span>
       <span class:busy={app.stats.busy}>{app.stats.busy ? `${app.stats.fps} fps` : '空闲 · 0 fps'}</span>
       <span>绘制 {app.stats.frameMs.toFixed(1)} ms</span>
+      <span>{app.stats.gpu ? 'WebGL' : '2D'}</span>
     </div>
   {/if}
 </div>
@@ -106,6 +110,9 @@
     top: 0;
     display: block;
     touch-action: manipulation;
+  }
+  canvas.gpu {
+    pointer-events: none;
   }
   /* the selection outline shows where the keyboard is; the stage edge only hints at focus */
   canvas:focus-visible {

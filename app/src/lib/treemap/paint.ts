@@ -14,12 +14,16 @@
  * (hover, selection, the pointer light, the moving stripes of the unscanned tile). Between
  * layouts the engine restores just the region that changed from the cache and runs
  * `overlay()` clipped to it.
+ *
+ * With a GPU batch, `scene()` hands every folder, header band and tile to it (one draw call
+ * on a WebGL canvas under this one) and paints only text and textures here.
  */
 import { Flag, Kind } from '../backend/codec';
 import { CAT_COUNT } from '../backend/categories';
 import { fmtBytes } from '../format';
 import { rgba } from '../theme';
 import type { Box, Item, Painter, PaintState } from './engine';
+import { NONE, type BoxBatch, type RGBA } from './gpu';
 
 export const UI_FONT = '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", "Noto Sans SC", system-ui, sans-serif';
 const F_REG = `400 12px ${UI_FONT}`;
@@ -116,7 +120,7 @@ export class FluentPainter implements Painter {
     return p.pat;
   }
 
-  scene(ctx: CanvasRenderingContext2D, list: readonly Item[], S: PaintState) {
+  scene(ctx: CanvasRenderingContext2D, list: readonly Item[], S: PaintState, gpu: BoxBatch | null = null) {
     const th = S.theme;
     const t = th.tok;
     const dark = th.scheme === 'dark';
@@ -145,18 +149,28 @@ export class FluentPainter implements Painter {
       if (r.kind !== Kind.Dir || it.va <= 0.004 || it.w < 2 || it.h < 2) continue;
       const b = box(it);
       ctx.globalAlpha = it.va;
-      ctx.beginPath();
-      ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, FOLDER_RADIUS);
-      ctx.fillStyle = t['tm-folder'];
-      ctx.fill();
-      ctx.lineWidth = 1;
-      ctx.strokeStyle = this.folderStroke(dark, r.depth);
-      ctx.stroke();
-      if (r.header && b.h > r.header + 2) {
+      if (gpu) {
+        // the outline's outer edge lies half a pixel outside the 2D path, so its radius is half a pixel more
+        gpu.push(b.x * dpr, b.y * dpr, b.w * dpr, b.h * dpr, (FOLDER_RADIUS + 0.5) * dpr, gpu.color(t['tm-folder'], it.va), gpu.color(this.folderStroke(dark, r.depth), it.va), dpr);
+      } else {
         ctx.beginPath();
-        ctx.roundRect(b.x + 1, b.y + 1, b.w - 2, r.header - 1, [FOLDER_RADIUS - 1, FOLDER_RADIUS - 1, 0, 0]);
-        ctx.fillStyle = t['tm-folder-head'];
+        ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, FOLDER_RADIUS);
+        ctx.fillStyle = t['tm-folder'];
         ctx.fill();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = this.folderStroke(dark, r.depth);
+        ctx.stroke();
+      }
+      if (r.header && b.h > r.header + 2) {
+        if (gpu) {
+          // rounded on top only: a box that runs on past its bottom corners, cut at the band's bottom
+          gpu.push((b.x + 1) * dpr, (b.y + 1) * dpr, (b.w - 2) * dpr, (r.header - 1 + 2 * FOLDER_RADIUS) * dpr, (FOLDER_RADIUS - 1) * dpr, gpu.color(t['tm-folder-head'], it.va), null, 0, (b.y + r.header) * dpr);
+        } else {
+          ctx.beginPath();
+          ctx.roundRect(b.x + 1, b.y + 1, b.w - 2, r.header - 1, [FOLDER_RADIUS - 1, FOLDER_RADIUS - 1, 0, 0]);
+          ctx.fillStyle = t['tm-folder-head'];
+          ctx.fill();
+        }
         this.header(ctx, it, b, S);
       }
     }
@@ -177,6 +191,11 @@ export class FluentPainter implements Painter {
       }
       const b = box(it);
       const col = leafFill(it);
+      if (gpu) {
+        this.gpuTile(gpu, b, dpr, gpu.color(col), outlined(it) ? gpu.color(t['tm-leafdir-stroke']) : null);
+        if (r.kind === Kind.Group || r.flags & (Flag.NoAccess | Flag.InUse)) overlays.push(it);
+        continue;
+      }
       let p = batches.get(col);
       if (!p) batches.set(col, (p = new Path2D()));
       if (b.w < 5 || b.h < 5) p.rect(b.x, b.y, b.w, b.h);
@@ -206,6 +225,12 @@ export class FluentPainter implements Painter {
         continue;
       }
       ctx.globalAlpha = it.va * (r.flags & Flag.Cloud ? 0.55 : 1);
+      if (gpu) {
+        const a = ctx.globalAlpha;
+        this.gpuTile(gpu, b, dpr, gpu.color(leafFill(it), a), outlined(it) ? gpu.color(t['tm-leafdir-stroke'], a) : null);
+        if (r.kind === Kind.Group || r.flags & (Flag.NoAccess | Flag.InUse)) overlays.push(it);
+        continue;
+      }
       ctx.beginPath();
       if (b.w < 5 || b.h < 5) ctx.rect(b.x, b.y, b.w, b.h);
       else ctx.roundRect(b.x, b.y, b.w, b.h, RADIUS);
@@ -256,6 +281,12 @@ export class FluentPainter implements Painter {
     }
 
     ctx.globalAlpha = 1;
+  }
+
+  /** a tile on the GPU, as pass 2 paints it: the fill, then a closed folder's outline over it */
+  private gpuTile(gpu: BoxBatch, b: Box, dpr: number, fill: RGBA, stroke: RGBA | null) {
+    gpu.push(b.x * dpr, b.y * dpr, b.w * dpr, b.h * dpr, b.w < 5 || b.h < 5 ? 0 : RADIUS * dpr, fill);
+    if (stroke && b.w > 3 && b.h > 3) gpu.push(b.x * dpr, b.y * dpr, b.w * dpr, b.h * dpr, (Math.min(RADIUS, b.w / 2, b.h / 2) + 0.5) * dpr, NONE, stroke, dpr);
   }
 
   inOverlay(it: Item) {

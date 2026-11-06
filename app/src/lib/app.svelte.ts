@@ -11,6 +11,7 @@ import { fmtBytes, fmtSecs } from './format';
 import type { IconName } from './icons';
 import { applyThemeCss, makeTheme, type Scheme, type Theme } from './theme';
 import { TreemapEngine, type ApplyOpts, type EngineHost, type EngineStats, type MotionKind } from './treemap/engine';
+import type { GpuMode } from './treemap/gpu';
 import { fluentLayout, fluentMotion } from './treemap/motion';
 import { FluentPainter } from './treemap/paint';
 
@@ -120,7 +121,7 @@ export class App implements EngineHost {
   tip = $state<TipData | null>(null);
   scheme = $state<Scheme>('light');
   theme = $state.raw<Theme>(makeTheme('light', null));
-  stats = $state<EngineStats>({ rects: 0, fps: 0, frameMs: 0, busy: false });
+  stats = $state<EngineStats>({ rects: 0, fps: 0, frameMs: 0, busy: false, gpu: false });
   showHud = $state(false);
   error = $state<string | null>(null);
   reduced = false;
@@ -199,8 +200,16 @@ export class App implements EngineHost {
 
   /* ------------------------------------------------------------------ canvas */
 
-  attach(canvas: HTMLCanvasElement, stage: HTMLElement) {
-    this.engine = new TreemapEngine(canvas, this, new FluentPainter(), fluentMotion, fluentLayout.outer);
+  attach(canvas: HTMLCanvasElement, stage: HTMLElement, gpuCanvas: HTMLCanvasElement | null = null) {
+    // 'tessera.gpu' = 'off' keeps the treemap on the 2D canvas, 'force' takes even a software WebGL
+    let gpuMode: GpuMode = 'auto';
+    try {
+      const v = localStorage.getItem('tessera.gpu');
+      if (v === 'off' || v === 'force') gpuMode = v;
+    } catch {
+      /* storage can be unavailable */
+    }
+    this.engine = new TreemapEngine(canvas, this, new FluentPainter(), fluentMotion, fluentLayout.outer, gpuCanvas, gpuMode);
     this.engine.onStats = s => (this.stats = { ...s });
     let first = true;
     const measure = () => {
