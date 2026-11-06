@@ -180,6 +180,19 @@ const paintOrder = (a: Item, b: Item) => a.r.depth - b.r.depth || +a.rm - +b.rm 
 /** dirty regions beyond this count are merged into their bounding box */
 const MAX_DIRTY = 6;
 
+/** a new layout that moves no edge of a resting tile by this many CSS px puts it there at once */
+const SNAP_PX = 0.5;
+
+/** every edge of `a` lies within SNAP_PX of the same edge of `b` */
+export function nearlySame(a: Box, b: Box): boolean {
+  return (
+    Math.abs(a.x - b.x) < SNAP_PX &&
+    Math.abs(a.y - b.y) < SNAP_PX &&
+    Math.abs(a.x + a.w - (b.x + b.w)) < SNAP_PX &&
+    Math.abs(a.y + a.h - (b.y + b.h)) < SNAP_PX
+  );
+}
+
 export class TreemapEngine {
   readonly items = new Map<number, Item>();
   drawList: Item[] = [];
@@ -342,7 +355,11 @@ export class TreemapEngine {
         it.rm = false;
         it.r = r;
         it.ord = i;
-        if (!it.headingTo(r) && (it.x !== r.x || it.y !== r.y || it.w !== r.w || it.h !== r.h || it.a !== 1))
+        if (it.headingTo(r)) continue;
+        // a sub-pixel nudge (a file somewhere grew a little) would animate the whole map for
+        // nothing: the tile just takes its new place in the one repaint this layout costs
+        if (it.done && it.a === 1 && nearlySame(it, r)) it.snap(r);
+        else if (it.x !== r.x || it.y !== r.y || it.w !== r.w || it.h !== r.h || it.a !== 1)
           it.go(from, { ...r, a: 1 }, now, opt.reflow ? M.reflow : m, opt.reflow ? M.reflowDelay : 0);
       } else {
         this.items.set(r.id, (it = new Item(r.id, r)));

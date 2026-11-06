@@ -515,6 +515,40 @@ impl EntryBatch {
 pub struct Tree {
     pub(crate) nodes: ChunkedVec<Node>,
     pub(crate) names: NamePool,
+    /// See [`Tree::changed_bytes`].
+    pub(crate) changed: u64,
+    /// See [`Tree::touched_since`].
+    pub(crate) journal: Journal,
+}
+
+/// How many folder changes the journal keeps (16 KiB).
+pub const JOURNAL_LEN: usize = 4096;
+
+/// The last [`JOURNAL_LEN`] folders whose entries changed, oldest first, in
+/// a ring (see [`Tree::touched_since`]).
+#[derive(Default)]
+pub(crate) struct Journal {
+    ring: Vec<NodeId>,
+    /// Entries ever recorded.
+    seq: u64,
+}
+
+impl Journal {
+    #[inline]
+    fn record(&mut self, dir: NodeId) {
+        const LEN: u64 = JOURNAL_LEN as u64;
+        // a folder filled or grown in steps is one entry
+        if self.seq > 0 && self.ring[((self.seq - 1) % LEN) as usize] == dir {
+            return;
+        }
+        let i = (self.seq % LEN) as usize;
+        if i == self.ring.len() {
+            self.ring.push(dir);
+        } else {
+            self.ring[i] = dir;
+        }
+        self.seq += 1;
+    }
 }
 
 /// A tree shared between the scanner threads, the watcher and the UI.
@@ -540,6 +574,8 @@ impl Tree {
         let mut t = Tree {
             nodes: ChunkedVec::new(),
             names: NamePool::with_dedup(),
+            changed: 0,
+            journal: Journal::default(),
         };
         let name_off = t.names.push(root_name);
         t.nodes.push(Node {
@@ -777,9 +813,16 @@ impl Tree {
     /// whose bytes are already excluded from its parent.
     #[inline]
     pub(crate) fn add_to_ancestors(&mut self, from: NodeId, dsize: u64, dlogical: u64) {
+        // every change of a folder's entries comes through here, also those
+        // that move no bytes (an empty file added or removed)
+        self.journal.record(from);
         if dsize == 0 && dlogical == 0 {
             return;
         }
+        let moved = (dsize as i64)
+            .unsigned_abs()
+            .max((dlogical as i64).unsigned_abs());
+        self.changed = self.changed.wrapping_add(moved);
         let mut cur = from;
         while !cur.is_none() {
             let n = self.node_mut(cur);
@@ -790,6 +833,44 @@ impl Tree {
             }
             cur = n.parent;
         }
+    }
+
+    /// Bytes added, removed or resized anywhere in the tree so far (the
+    /// larger of the on-disk and logical change, summed; a move counts
+    /// twice). It only grows: the difference between two readings bounds how
+    /// much any folder's total moved in between, so the UI can skip redraws
+    /// for changes too small to see. Wraps around after 16 EiB.
+    pub fn changed_bytes(&self) -> u64 {
+        self.changed
+    }
+
+    /// Records that the entries of folder `dir` changed in a way that moves
+    /// no bytes (a rename, new flags); see [`Tree::touched_since`].
+    #[inline]
+    pub(crate) fn touch(&mut self, dir: NodeId) {
+        self.journal.record(dir);
+    }
+
+    /// Position of the change journal; pass it to [`Tree::touched_since`]
+    /// later to learn which folders changed in between.
+    pub fn change_seq(&self) -> u64 {
+        self.journal.seq
+    }
+
+    /// The folders whose entries changed (added, removed, resized, renamed,
+    /// moved, new flags) since the journal stood at `seq` on this tree,
+    /// oldest first, maybe with repeats. Only the folder that holds the
+    /// changed entry is listed: its ancestors' totals changed too. `None`
+    /// when the journal no longer reaches back that far (more than
+    /// [`JOURNAL_LEN`] changes since, e.g. during a scan): assume that
+    /// everything changed.
+    pub fn touched_since(&self, seq: u64) -> Option<impl Iterator<Item = NodeId> + '_> {
+        const LEN: u64 = JOURNAL_LEN as u64;
+        let j = &self.journal;
+        if seq > j.seq || j.seq - seq > LEN {
+            return None;
+        }
+        Some((seq..j.seq).map(move |s| j.ring[(s % LEN) as usize]))
     }
 
     /// Changes a file's sizes and updates all its ancestors by the difference.
@@ -808,6 +889,9 @@ impl Tree {
 
     /// Replaces a node's flags (sizes and links are untouched).
     pub fn set_flags(&mut self, id: NodeId, flags: NodeFlags) {
+        // a file's flags decide its category (NTFS metafiles)
+        let parent = self.node(id).parent;
+        self.touch(if parent.is_none() { id } else { parent });
         let deleted = self.node(id).flags.contains(NodeFlags::DELETED);
         let mut f = flags;
         f.remove(NodeFlags::DELETED);
@@ -1017,6 +1101,56 @@ mod tests {
         t.set_file_size(notes, 1, 1);
         t.check_invariants().unwrap();
         assert!(!t.mark_deleted(NodeId::ROOT));
+    }
+
+    #[test]
+    fn changed_bytes_counts_every_size_change() {
+        let mut t = sample();
+        let start = t.changed_bytes();
+        let notes = t.lookup_relative(b"Users\\notes.txt").unwrap();
+        // The larger of the two deltas: on disk 4096 -> 8192, logical 12 -> 5000.
+        t.set_file_size(notes, 8192, 5000);
+        assert_eq!(t.changed_bytes() - start, 4988);
+        // Shrinking counts too.
+        t.set_file_size(notes, 4096, 12);
+        assert_eq!(t.changed_bytes() - start, 2 * 4988);
+        let before = t.changed_bytes();
+        t.set_file_size(notes, 4096, 12);
+        assert_eq!(t.changed_bytes(), before, "no change, nothing counted");
+        let w = t.lookup_relative(b"Windows").unwrap();
+        t.add_child(w, b"new.log", 4096, 100, NodeFlags::NONE, 7);
+        assert_eq!(t.changed_bytes() - before, 4096);
+        let before = t.changed_bytes();
+        assert!(t.mark_deleted(NodeId(1)));
+        assert_eq!(t.changed_bytes() - before, 8192 + 4096);
+    }
+
+    #[test]
+    fn journal_lists_the_folders_that_changed() {
+        let mut t = sample();
+        let users = t.lookup_relative(b"Users").unwrap();
+        let w = t.lookup_relative(b"Windows").unwrap();
+        let notes = t.lookup_relative(b"Users\\notes.txt").unwrap();
+        let seq = t.change_seq();
+        assert_eq!(t.touched_since(seq).unwrap().count(), 0);
+        // an empty file moves no bytes but is a change
+        t.add_child(w, b"empty.log", 0, 0, NodeFlags::NONE, 0);
+        // the same folder twice in a row is one entry
+        t.set_file_size(notes, 8192, 5000);
+        t.set_file_size(notes, 4096, 12);
+        t.set_flags(notes, NodeFlags::HIDDEN);
+        assert!(t.mark_deleted(w));
+        let got: Vec<NodeId> = t.touched_since(seq).unwrap().collect();
+        assert_eq!(got, [w, users, NodeId::ROOT]);
+        // older positions fall out of the ring
+        let seq = t.change_seq();
+        for i in 0..=JOURNAL_LEN {
+            let parent = if i % 2 == 0 { users } else { NodeId::ROOT };
+            t.add_child(parent, format!("f{i}").as_bytes(), 1, 1, NodeFlags::NONE, 0);
+        }
+        assert!(t.touched_since(seq).is_none());
+        assert!(t.touched_since(seq + 1).is_some());
+        assert!(t.touched_since(t.change_seq() + 1).is_none());
     }
 
     #[test]

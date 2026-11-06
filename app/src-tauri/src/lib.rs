@@ -48,6 +48,16 @@ pub fn run() {
             window.show()?;
             Ok(())
         })
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Focused(f) => {
+                backend::window_state(window.app_handle(), Some(*f), None)
+            }
+            tauri::WindowEvent::Resized(_) => {
+                let minimized = window.is_minimized().unwrap_or(false);
+                backend::window_state(window.app_handle(), None, Some(minimized))
+            }
+            _ => {}
+        })
         .invoke_handler(tauri::generate_handler![
             platform_info,
             relaunch_elevated,

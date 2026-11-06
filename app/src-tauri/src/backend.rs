@@ -4,7 +4,7 @@
 //! here, in Rust. The WebView only ever receives layout buffers (the rects on
 //! screen) and small records about single nodes.
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, Weak};
@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State, ipc::Response};
 use tessera_core::layout::{self, LayoutEngine, LayoutRequest, LayoutStyle, RootExtras, SizeMode};
 use tessera_core::scan::{self, ScanOptions, ScanProgress};
+use tessera_core::totals::{Totals, TotalsCache};
 use tessera_core::watch::{BatchReport, WatchOptions, Watcher};
 use tessera_core::{NodeFlags, NodeId, SharedTree, Tree, category, delete, tree::mtime_to_unix_ms};
 
@@ -22,6 +23,20 @@ use crate::volumes;
 
 /// How often `scan-progress` is sent while scanning.
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
+
+/// The watcher's batch window while the window is focused, in the
+/// background, and minimized. A longer window wakes the watcher less often
+/// on a busy disk and reads a file that keeps changing once per window.
+const PACE_ACTIVE: Duration = Duration::from_millis(500);
+const PACE_BACKGROUND: Duration = Duration::from_secs(2);
+const PACE_MINIMIZED: Duration = Duration::from_secs(10);
+
+/// Live changes adding up to less than this many px² of the shown view
+/// cannot move anything visibly, so they are not even laid out.
+const REDRAW_PX2: f64 = 1.0;
+/// A laid-out change is only sent to the window when some edge moves by
+/// more than this (CSS px) or a label, colour or tile changes.
+const REDRAW_TOLERANCE_PX: f32 = 0.5;
 
 // ---------------------------------------------------------------------------
 // State
@@ -34,6 +49,9 @@ pub struct Core {
     next_scan: AtomicU32,
     /// The main window, owner of the shell's progress and error dialogs.
     pub owner_hwnd: AtomicIsize,
+    /// The main window has the focus / is minimized (see [`window_state`]).
+    focused: AtomicBool,
+    minimized: AtomicBool,
 }
 
 impl Core {
@@ -44,6 +62,19 @@ impl Core {
             undo: Arc::new(delete::UndoStore::new()),
             next_scan: AtomicU32::new(0),
             owner_hwnd: AtomicIsize::new(0),
+            focused: AtomicBool::new(true),
+            minimized: AtomicBool::new(false),
+        }
+    }
+
+    /// The watcher's batch window for the window's current state.
+    fn pace(&self) -> Duration {
+        if self.minimized.load(Relaxed) {
+            PACE_MINIMIZED
+        } else if self.focused.load(Relaxed) {
+            PACE_ACTIVE
+        } else {
+            PACE_BACKGROUND
         }
     }
 
@@ -95,8 +126,25 @@ struct Session {
     watcher: Mutex<Option<Watcher>>,
     /// Root size when `tree-changed` was last sent.
     last_root: AtomicU64,
-    /// Recursive file and folder counts per folder, with the rev they are for.
-    counts: Mutex<HashMap<u32, (u32, u64, u64)>>,
+    /// What is below big folders (counts, bytes per category), for the
+    /// details card and the legend; see [`TotalsCache`].
+    totals: Mutex<TotalsCache>,
+    /// The layout the window last asked for, to tell which live changes show.
+    shown: Mutex<Shown>,
+    /// Changes came in while the window was minimized; tell it on restore.
+    stale: AtomicBool,
+}
+
+/// The last layout sent to the window, and how much changed since it (or
+/// since the last check that found the picture unchanged).
+#[derive(Default)]
+struct Shown {
+    req: Option<LayoutRequest>,
+    buf: Vec<u8>,
+    bytes_per_px: f64,
+    /// [`Tree::changed_bytes`] and the free space at that point.
+    changes: u64,
+    free: u64,
 }
 
 impl Session {
@@ -119,7 +167,9 @@ impl Session {
             emit_lock: Mutex::new(()),
             watcher: Mutex::new(None),
             last_root: AtomicU64::new(0),
-            counts: Mutex::new(HashMap::new()),
+            totals: Mutex::new(TotalsCache::new()),
+            shown: Mutex::new(Shown::default()),
+            stale: AtomicBool::new(false),
         }
     }
 
@@ -160,6 +210,119 @@ impl Session {
             rev: self.rev.load(Relaxed),
             errors: p.inaccessible,
         }
+    }
+
+    /// The free-space and not-scanned-yet tiles of a layout of `req.view`.
+    fn extras(&self, t: &Tree, req: &LayoutRequest) -> RootExtras {
+        if self.is_volume && req.view == NodeId::ROOT {
+            RootExtras {
+                free: Some(self.free.load(Relaxed)),
+                unscanned: (!self.done.load(Relaxed)).then(|| {
+                    self.used
+                        .load(Relaxed)
+                        .saturating_sub(t.node(NodeId::ROOT).size)
+                }),
+            }
+        } else {
+            RootExtras::default()
+        }
+    }
+
+    /// Remembers the layout just sent to the window.
+    fn record_shown(&self, req: LayoutRequest, buf: &[u8], changes: u64) {
+        let mut g = lock(&self.shown);
+        g.req = Some(req);
+        g.buf.clear();
+        g.buf.extend_from_slice(buf);
+        g.bytes_per_px = layout::header_bytes_per_px(buf).map_or(0.0, f64::from);
+        g.changes = changes;
+        g.free = self.free.load(Relaxed);
+        self.stale.store(false, Relaxed);
+    }
+
+    /// True when the tree changed enough since the window's last layout that
+    /// its picture may differ: first a cheap bound (the bytes changed inside
+    /// the view, as px² of it), then, past that, a layout compared with the
+    /// one on screen. Changes Windows makes all the time on a system drive
+    /// (logs, caches) mostly stop at the first step and cost no redraw.
+    /// Renames change no bytes, so a batch that renamed or moved something
+    /// in a folder drawn open goes straight to the comparison.
+    fn needs_redraw(&self, core: &Core, rep: &BatchReport) -> bool {
+        let t = self.tree();
+        let now = t.changed_bytes();
+        let (req, since, free, bytes_per_px) = {
+            let g = lock(&self.shown);
+            match g.req {
+                Some(req) => (req, g.changes, g.free, g.bytes_per_px),
+                None => return true,
+            }
+        };
+        let view = req.view;
+        if view != NodeId::ROOT {
+            if view.index() >= t.len() || t.is_deleted(view) {
+                return true; // the window falls back to a live folder
+            }
+            let inside = |d: NodeId| d == view || t.ancestors(d).any(|a| a == view);
+            if !rep.dirs.iter().any(|&d| inside(d)) {
+                return false;
+            }
+        }
+        let mut bytes = now.wrapping_sub(since) as f64;
+        if self.is_volume && view == NodeId::ROOT {
+            bytes += self.free.load(Relaxed).abs_diff(free) as f64;
+        }
+        if bytes_per_px > 0.0
+            && bytes_per_px.is_finite()
+            && bytes < bytes_per_px * REDRAW_PX2
+            && !(rep.moved > 0 && self.renamed_in_sight(view, &rep.dirs))
+        {
+            return false;
+        }
+        let extras = self.extras(&t, &req);
+        let buf = lock(&core.engine).layout(&t, &req, extras, self.rev.load(Relaxed));
+        drop(t);
+        let mut g = lock(&self.shown);
+        if g.req == Some(req) && layout::same_picture(&g.buf, &buf, REDRAW_TOLERANCE_PX) {
+            // count again from here; later checks still compare with the
+            // picture on screen, so small changes cannot creep past unseen
+            g.changes = now;
+            g.free = self.free.load(Relaxed);
+            return false;
+        }
+        true
+    }
+
+    /// True when one of `dirs` (folders whose entries changed) is the view or
+    /// a folder whose entries are drawn, so a rename there may show.
+    fn renamed_in_sight(&self, view: NodeId, dirs: &[NodeId]) -> bool {
+        if dirs.contains(&view) {
+            return true;
+        }
+        let Ok(d) = layout::decode(&lock(&self.shown).buf) else {
+            return true;
+        };
+        // open folders, and the innermost folder of a folded chain, whose
+        // entries are drawn under the chain's rect
+        let open: HashSet<u32> = d
+            .records
+            .iter()
+            .filter(|r| r.kind == layout::kind::DIR)
+            .flat_map(|r| [r.id, r.target])
+            .collect();
+        dirs.iter().any(|dir| open.contains(&dir.0))
+    }
+
+    /// Tells the window the tree changed; it asks for a new layout.
+    fn send_changed(&self, app: &AppHandle) {
+        let root = self.root_size();
+        let before = self.last_root.swap(root, Relaxed);
+        let _ = app.emit(
+            "tree-changed",
+            TreeChangedEvent {
+                rev: self.rev.load(Relaxed),
+                bytes_delta: root as i64 - before as i64,
+            },
+        );
     }
 
     /// Takes the watcher out (so no lock is held while it stops) and stops it.
@@ -429,13 +592,13 @@ fn run_scan(app: AppHandle, s: Arc<Session>) {
     let usn = summary.frn_index.zip(summary.usn_checkpoint);
     let weak = Arc::downgrade(&s);
     let app2 = app.clone();
-    match Watcher::start(
-        &s.root,
-        s.tree.clone(),
-        WatchOptions::default(),
-        usn,
-        move |rep| on_batch(&app2, &weak, rep),
-    ) {
+    let opts = WatchOptions {
+        throttle: core.pace(),
+        ..WatchOptions::default()
+    };
+    match Watcher::start(&s.root, s.tree.clone(), opts, usn, move |rep| {
+        on_batch(&app2, &weak, rep)
+    }) {
         Ok(w) => {
             *lock(&s.watcher) = Some(w);
             // a new scan may have started meanwhile
@@ -448,16 +611,17 @@ fn run_scan(app: AppHandle, s: Arc<Session>) {
 }
 
 /// Runs on the watcher's thread after each batch that changed the tree.
+/// The window only hears of it when the change can show (see
+/// [`Session::needs_redraw`]); nothing is sent while it is minimized.
 fn on_batch(app: &AppHandle, s: &Weak<Session>, rep: &BatchReport) {
     let Some(s) = s.upgrade() else { return };
+    let core = app.state::<Core>();
     // a batch can still be in flight while a new scan replaces this session;
     // its delta belongs to the old drive
-    if !app.state::<Core>().is_current(s.id) {
+    if !core.is_current(s.id) {
         return;
     }
-    let rev = s.rev.fetch_add(1, Relaxed) + 1;
-    let root = s.root_size();
-    let before = s.last_root.swap(root, Relaxed);
+    s.rev.fetch_add(1, Relaxed);
     s.refresh_volume();
     if !rep.rescan_needed.is_empty() {
         // never block here: stopping the watcher waits for this thread
@@ -469,13 +633,34 @@ fn on_batch(app: &AppHandle, s: &Weak<Session>, rep: &BatchReport) {
             }
         }
     }
-    let _ = app.emit(
-        "tree-changed",
-        TreeChangedEvent {
-            rev,
-            bytes_delta: root as i64 - before as i64,
-        },
-    );
+    if core.minimized.load(Relaxed) {
+        s.stale.store(true, Relaxed);
+        // restored meanwhile: window_state may have looked before we got here
+        if !core.minimized.load(Relaxed) && s.stale.swap(false, Relaxed) {
+            s.send_changed(app);
+        }
+        return;
+    }
+    if s.needs_redraw(&core, rep) {
+        s.send_changed(app);
+    }
+}
+
+/// The main window gained or lost the focus, or was minimized or restored:
+/// sets the watcher's pace, and on restore sends what changed meanwhile.
+pub fn window_state(app: &AppHandle, focused: Option<bool>, minimized: Option<bool>) {
+    let core = app.state::<Core>();
+    if let Some(f) = focused {
+        core.focused.store(f, Relaxed);
+    }
+    let restored = minimized.is_some_and(|m| core.minimized.swap(m, Relaxed) && !m);
+    let Ok(s) = core.current() else { return };
+    if let Some(w) = lock(&s.watcher).as_ref() {
+        w.set_throttle(core.pace());
+    }
+    if restored && s.stale.swap(false, Relaxed) {
+        s.send_changed(app);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -488,20 +673,12 @@ pub async fn layout(core: State<'_, Core>, req: LayoutReq) -> Result<Response, S
     let t = s.tree();
     // the layout echoes the view it drew, so the UI follows when it falls back
     req.view = live_view(&t, req.view);
-    let extras = if s.is_volume && req.view == NodeId::ROOT {
-        RootExtras {
-            free: Some(s.free.load(Relaxed)),
-            unscanned: (!s.done.load(Relaxed)).then(|| {
-                s.used
-                    .load(Relaxed)
-                    .saturating_sub(t.node(NodeId::ROOT).size)
-            }),
-        }
-    } else {
-        RootExtras::default()
-    };
+    let extras = s.extras(&t, &req);
     let rev = s.rev.load(Relaxed);
     let buf = lock(&core.engine).layout(&t, &req, extras, rev);
+    let changes = t.changed_bytes();
+    drop(t);
+    s.record_shown(req, &buf, changes);
     Ok(Response::new(buf))
 }
 
@@ -661,37 +838,21 @@ fn node_details(s: &Session, id: u32, mode: SizeMode) -> Option<Details> {
     })
 }
 
-/// Recursive file and folder counts, cached per tree revision. While the
-/// root is still being scanned the scanner's own counters are used.
+/// Recursive file and folder counts. While the root is still being scanned
+/// the scanner's own counters are used.
 fn counts(s: &Session, t: &Tree, id: NodeId) -> (u64, u64) {
     if id == NodeId::ROOT && !s.done.load(Relaxed) {
         let p = s.progress.snapshot();
         return (p.files, p.dirs);
     }
-    let rev = s.rev.load(Relaxed);
-    if let Some(&(r, f, d)) = lock(&s.counts).get(&id.0)
-        && r == rev
-    {
-        return (f, d);
-    }
-    let (mut files, mut dirs) = (0u64, 0u64);
-    let mut stack = vec![id];
-    while let Some(d) = stack.pop() {
-        for c in t.children(d) {
-            if t.node(c).is_dir() {
-                dirs += 1;
-                stack.push(c);
-            } else {
-                files += 1;
-            }
-        }
-    }
-    let mut cache = lock(&s.counts);
-    if cache.len() > 256 {
-        cache.clear();
-    }
-    cache.insert(id.0, (rev, files, dirs));
-    (files, dirs)
+    let tot = totals(s, t, id);
+    (tot.files, tot.dirs)
+}
+
+/// What is below `id` now. Only folders on the paths that changed since the
+/// last call are counted again, so asking after every live update is cheap.
+fn totals(s: &Session, t: &Tree, id: NodeId) -> Totals {
+    lock(&s.totals).get(t, id)
 }
 
 fn hint_for(name: &str, n: &tessera_core::Node) -> Option<String> {
@@ -744,26 +905,16 @@ pub async fn cat_stats(
     size_mode: Mode,
 ) -> Result<Vec<CatStat>, String> {
     let s = core.current()?;
-    Ok(cat_stats_of(&s.tree(), NodeId(view), size_mode.into()))
+    Ok(cat_stats_of(&s, NodeId(view), size_mode.into()))
 }
 
 /// Bytes per file category below `view`, largest first.
-fn cat_stats_of(t: &Tree, view: NodeId, mode: SizeMode) -> Vec<CatStat> {
-    if view.index() >= t.len() || t.is_deleted(view) {
+fn cat_stats_of(s: &Session, view: NodeId, mode: SizeMode) -> Vec<CatStat> {
+    let t = s.tree();
+    if view.index() >= t.len() || t.is_deleted(view) || !t.node(view).is_dir() {
         return Vec::new();
     }
-    let mut bytes = [0u64; category::COUNT];
-    let mut stack = vec![view];
-    while let Some(d) = stack.pop() {
-        for c in t.children(d) {
-            let n = t.node(c);
-            if n.is_dir() {
-                stack.push(c);
-            } else if let Some(b) = bytes.get_mut(category::of_node(t, c) as usize) {
-                *b += mode.of(n);
-            }
-        }
-    }
+    let bytes = *totals(s, &t, view).bytes(mode);
     let mut out: Vec<CatStat> = bytes
         .iter()
         .enumerate()
@@ -1028,7 +1179,7 @@ mod tests {
     #[test]
     fn categories_below_a_view() {
         let s = sample();
-        let stats = cat_stats_of(&s.tree(), NodeId::ROOT, SizeMode::Disk);
+        let stats = cat_stats_of(&s, NodeId::ROOT, SizeMode::Disk);
         let cats: Vec<u8> = stats.iter().map(|c| c.cat).collect();
         assert_eq!(
             cats,
@@ -1040,7 +1191,7 @@ mod tests {
             ]
         );
         let me = id_of(&s, &[b"Users", b"me"]);
-        assert_eq!(cat_stats_of(&s.tree(), me, SizeMode::Disk).len(), 3);
+        assert_eq!(cat_stats_of(&s, me, SizeMode::Disk).len(), 3);
     }
 
     #[test]
