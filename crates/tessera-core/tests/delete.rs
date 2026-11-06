@@ -443,19 +443,26 @@ fn tree_lock_is_free_while_the_shell_works() {
         return;
     }
     let dir = TempDir::new("lock");
-    let f = dir.file("x/y.txt", 100);
+    dir.file("x/y.txt", 100);
     let tree = tree_of(&dir.0);
     let x = find(&tree, "x");
-    // Hold a read lock while a background thread deletes: the file must
+    // Hold a read lock while a background thread deletes: the folder must
     // still go, so the shell cannot be waiting for the lock.
     let guard = tree.read().unwrap();
     let worker = {
         let tree = tree.clone();
         std::thread::spawn(move || purge(&tree, &[x], &silent()))
     };
+    // Watch for the delete by listing the scan root, never by opening a
+    // path inside `x`: if the shell deletes `x/y.txt` while a check holds it
+    // open (`Path::exists` opens a handle), `x` fails to go and `purge`
+    // reports nothing deleted.
     let deadline = Instant::now() + Duration::from_secs(60);
-    while f.exists() {
-        assert!(Instant::now() < deadline, "the delete never happened");
+    while std::fs::read_dir(&dir.0).unwrap().next().is_some() {
+        if Instant::now() >= deadline {
+            drop(guard);
+            panic!("the delete never happened: {:?}", worker.join().unwrap());
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(!guard.is_deleted(x), "the tree waits for the write lock");

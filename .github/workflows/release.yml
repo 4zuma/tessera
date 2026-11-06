@@ -3,7 +3,8 @@ name: release
 # Builds the Windows binaries and publishes a GitHub release.
 #
 # Start it from the Actions tab ("Run workflow", version e.g. 0.1.0) or by
-# pushing a tag v0.1.0. The version must match app/src-tauri/tauri.conf.json.
+# pushing a tag v0.1.0. The version must match app/src-tauri/tauri.conf.json;
+# set it with `node scripts/bump-version.mjs <version>` and merge that first.
 # The release notes come from docs/releases/v<version>.md when that file
 # exists, otherwise GitHub generates them from the merged pull requests.
 
