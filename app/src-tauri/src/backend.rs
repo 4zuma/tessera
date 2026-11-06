@@ -4,7 +4,7 @@
 //! here, in Rust. The WebView only ever receives layout buffers (the rects on
 //! screen) and small records about single nodes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, Weak};
@@ -242,6 +242,8 @@ impl Session {
     /// the view, as px² of it), then, past that, a layout compared with the
     /// one on screen. Changes Windows makes all the time on a system drive
     /// (logs, caches) mostly stop at the first step and cost no redraw.
+    /// Renames change no bytes, so a batch that renamed or moved something
+    /// in a folder drawn open goes straight to the comparison.
     fn needs_redraw(&self, core: &Core, rep: &BatchReport) -> bool {
         let t = self.tree();
         let now = t.changed_bytes();
@@ -266,7 +268,11 @@ impl Session {
         if self.is_volume && view == NodeId::ROOT {
             bytes += self.free.load(Relaxed).abs_diff(free) as f64;
         }
-        if bytes_per_px > 0.0 && bytes_per_px.is_finite() && bytes < bytes_per_px * REDRAW_PX2 {
+        if bytes_per_px > 0.0
+            && bytes_per_px.is_finite()
+            && bytes < bytes_per_px * REDRAW_PX2
+            && !(rep.moved > 0 && self.renamed_in_sight(view, &rep.dirs))
+        {
             return false;
         }
         let extras = self.extras(&t, &req);
@@ -281,6 +287,26 @@ impl Session {
             return false;
         }
         true
+    }
+
+    /// True when one of `dirs` (folders whose entries changed) is the view or
+    /// a folder whose entries are drawn, so a rename there may show.
+    fn renamed_in_sight(&self, view: NodeId, dirs: &[NodeId]) -> bool {
+        if dirs.contains(&view) {
+            return true;
+        }
+        let Ok(d) = layout::decode(&lock(&self.shown).buf) else {
+            return true;
+        };
+        // open folders, and the innermost folder of a folded chain, whose
+        // entries are drawn under the chain's rect
+        let open: HashSet<u32> = d
+            .records
+            .iter()
+            .filter(|r| r.kind == layout::kind::DIR)
+            .flat_map(|r| [r.id, r.target])
+            .collect();
+        dirs.iter().any(|dir| open.contains(&dir.0))
     }
 
     /// Tells the window the tree changed; it asks for a new layout.
