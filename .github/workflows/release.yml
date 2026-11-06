@@ -70,7 +70,8 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
-          Copy-Item target/release/tessera-app.exe "out/Tessera-$env:TAG-windows-x64.exe"
+          # asset names are all lowercase
+          Copy-Item target/release/tessera-app.exe "out/tessera-$env:TAG-windows-x64.exe"
           Copy-Item target/release/tessera.exe "out/tessera-cli-$env:TAG-windows-x64.exe"
           Get-ChildItem out/*.exe | ForEach-Object {
             "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
