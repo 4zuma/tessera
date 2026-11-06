@@ -16,7 +16,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -41,7 +41,7 @@ jobs:
         run: target\release\tessera.exe scan C:\ --mode walk --top 5
       - name: Smoke scan (MFT)
         run: target\release\tessera.exe scan C:\ --mode mft --top 5
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: tessera-windows-x64
           path: target/release/tessera.exe
@@ -54,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install NTFS tools
