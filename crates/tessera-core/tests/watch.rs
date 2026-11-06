@@ -13,9 +13,13 @@
 //! The USN journal test runs only with `TESSERA_ADMIN_TESTS=1` (elevated,
 //! NTFS). It builds its file index from `GetFileInformationByHandle` (the
 //! file index of NTFS is the file reference number).
+//!
+//! Hard links are checked on NTFS only (not under Wine): each file's bytes
+//! must be counted on exactly one of its names.
 
 #![cfg(windows)]
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
@@ -165,6 +169,50 @@ fn disk_listing(root: &Path) -> Vec<String> {
     out
 }
 
+/// Ok if the tree has the disk's paths and counts each file's bytes on
+/// exactly one of its names (the others are zero-size `HARDLINK` nodes).
+fn links_match(tree: &Tree, root: &Path) -> Result<(), String> {
+    let path_only = |l: &String| l.split(' ').next().unwrap_or_default().to_owned();
+    let disk: Vec<String> = disk_listing(root).iter().map(path_only).collect();
+    let mine: Vec<String> = tree_listing(tree).iter().map(path_only).collect();
+    if disk != mine {
+        return Err(format!("paths differ: disk {disk:?}, tree {mine:?}"));
+    }
+    fn files(dir: &Path, out: &mut HashMap<u64, Vec<PathBuf>>) {
+        for e in fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                files(&p, out);
+            } else {
+                out.entry(file_reference(&p)).or_default().push(p);
+            }
+        }
+    }
+    let mut by_id = HashMap::new();
+    files(root, &mut by_id);
+    for paths in by_id.values() {
+        let disk = disk_sizes(&paths[0]);
+        let mut counting = Vec::new();
+        for p in paths {
+            let rel = p.strip_prefix(root).unwrap().to_string_lossy().into_owned();
+            let Some(id) = tree.lookup_relative(rel.as_bytes()) else {
+                return Err(format!("{rel} is missing"));
+            };
+            let n = tree.node(id);
+            if !n.flags.contains(NodeFlags::HARDLINK) {
+                counting.push((rel, n.size, n.logical));
+            } else if (n.size, n.logical) != (0, 0) {
+                return Err(format!("{rel} is a hard link with bytes"));
+            }
+        }
+        match &counting[..] {
+            [(_, size, logical)] if (*size, *logical) == disk => {}
+            _ => return Err(format!("{paths:?}: counted as {counting:?}, disk {disk:?}")),
+        }
+    }
+    Ok(())
+}
+
 fn tree_listing(tree: &Tree) -> Vec<String> {
     fn walk(tree: &Tree, id: NodeId, prefix: &str, out: &mut Vec<String>) {
         for c in tree.children(id) {
@@ -250,6 +298,38 @@ impl Session {
     fn id(&self, rel: &str) -> Option<NodeId> {
         self.tree.read().unwrap().lookup_relative(rel.as_bytes())
     }
+
+    /// Waits until the tree counts every file once (see [`links_match`]).
+    fn wait_links(&mut self, what: &str) {
+        let root = self.root.clone();
+        let deadline = Instant::now() + TIMEOUT;
+        self.wait(what, |t| {
+            let r = links_match(t, &root);
+            if let (Err(e), true) = (&r, Instant::now() > deadline) {
+                eprintln!("{what}: {e}");
+            }
+            r.is_ok()
+        });
+    }
+
+    fn root_bytes(&self) -> (u64, u64) {
+        let t = self.tree.read().unwrap();
+        let n = t.node(NodeId::ROOT);
+        (n.size, n.logical)
+    }
+
+    /// The relative path of the name that counts the bytes, among `names`.
+    fn counting(&self, names: &[&str]) -> String {
+        let t = self.tree.read().unwrap();
+        names
+            .iter()
+            .find(|n| {
+                let id = t.lookup_relative(n.as_bytes()).unwrap();
+                !t.node(id).flags.contains(NodeFlags::HARDLINK)
+            })
+            .unwrap()
+            .to_string()
+    }
 }
 
 fn write(path: &Path, len: usize) {
@@ -319,6 +399,67 @@ fn exercise(s: &mut Session) {
     s.wait_synced("a deleted directory tree");
 }
 
+/// Hard links: a new name, a write through it, removing the name that
+/// counts the bytes, a new directory holding another name, a rename.
+fn exercise_links(s: &mut Session) {
+    let root = s.root.clone();
+    write(&root.join("big.bin"), 64 * 1024);
+    s.wait_synced("a new file");
+    let before = s.root_bytes();
+
+    fs::hard_link(root.join("big.bin"), root.join("sub").join("alias.bin")).unwrap();
+    s.wait_links("a new hard link");
+    assert_eq!(s.root_bytes(), before, "a hard link adds no bytes");
+    assert_eq!(s.counting(&["big.bin", r"sub\alias.bin"]), "big.bin");
+
+    // Written through the name that does not count the bytes.
+    let mut f = fs::OpenOptions::new()
+        .append(true)
+        .open(root.join("sub").join("alias.bin"))
+        .unwrap();
+    f.write_all(&[b'w'; 30_000]).unwrap();
+    drop(f);
+    let wait_grown = |s: &mut Session, what: &str| {
+        let root = s.root.clone();
+        s.wait(what, |t| {
+            t.node(NodeId::ROOT).logical > before.1 && links_match(t, &root).is_ok()
+        });
+    };
+    wait_grown(s, "a write through the second name");
+
+    // The counting name removed: the other one takes the bytes over (this
+    // needs the file id in the removal's notification).
+    let grown = s.root_bytes();
+    fs::remove_file(root.join("big.bin")).unwrap();
+    s.wait_links("the counting name removed");
+    assert_eq!(s.root_bytes(), grown, "the bytes stay with the other name");
+
+    // A new directory holding another name: counted once after its scan.
+    fs::create_dir(root.join("made")).unwrap();
+    fs::hard_link(
+        root.join("sub").join("alias.bin"),
+        root.join("made").join("inner.bin"),
+    )
+    .unwrap();
+    s.wait_links("a new directory holding a hard link");
+    assert_eq!(s.root_bytes(), grown);
+
+    // Renaming a name moves only that name.
+    fs::rename(
+        root.join("made").join("inner.bin"),
+        root.join("made").join("renamed.bin"),
+    )
+    .unwrap();
+    s.wait_links("a renamed hard link");
+    assert_eq!(s.root_bytes(), grown);
+
+    fs::remove_dir_all(root.join("made")).unwrap();
+    s.wait_links("a deleted directory holding a hard link");
+    fs::remove_file(root.join("sub").join("alias.bin")).unwrap();
+    s.wait_synced("the last name removed");
+    assert_eq!(s.root_bytes().1, before.1 - 64 * 1024);
+}
+
 fn sample(root: &Path) {
     write(&root.join("a.txt"), 100);
     fs::create_dir_all(root.join("sub").join("deep")).unwrap();
@@ -348,6 +489,20 @@ fn directory_changes_follow_the_disk() {
         "stop took {:?}",
         t.elapsed()
     );
+}
+
+#[test]
+fn hard_links_are_counted_once() {
+    if is_wine() {
+        eprintln!("skipped: Wine has no NTFS hard links to follow");
+        return;
+    }
+    let dir = TempDir::new("links");
+    sample(&dir.0);
+    let tree = build_tree(&dir.0, &mut |_, _| {});
+    let (mut s, w) = Session::start(&dir.0, tree, opts(WatchBackend::DirectoryChanges, 50), None);
+    exercise_links(&mut s);
+    w.stop();
 }
 
 #[test]
@@ -551,6 +706,7 @@ fn usn_journal_follows_the_disk() {
     );
     assert_eq!(w.backend(), WatchBackend::UsnJournal);
     exercise(&mut s);
+    exercise_links(&mut s);
     let t = Instant::now();
     w.stop();
     assert!(
