@@ -13,9 +13,14 @@ this side only receives the rectangles that are on screen (see [`docs/ipc.md`](.
   what changed. Without a hardware GPU everything is drawn on the 2D canvas
   (`localStorage['tessera.gpu']` = `off` forces that, `force` takes a software WebGL).
 - `src/components/` – Fluent (Windows 11) UI in Svelte 5.
+- `src/lib/locales/` – the UI text, one dictionary per language (English is the base;
+  a missing key shows English). `src/lib/i18n.svelte.ts` has `t()` and picks the language
+  Rust chose from the Windows preferred languages (see [`docs/ipc.md`](../docs/ipc.md#language)).
+  New text goes into every dictionary, never straight into a component.
 - `src-tauri/` – the Tauri 2 crate: the commands and events of the contract on top of
   `tessera-core` (`src/backend.rs`), the drive list, Mica backdrop, system accent colour,
-  elevation. It is a member of the root Cargo workspace, so it builds into `../target`.
+  elevation, and the UI language with the text Rust produces (`src/i18n.rs`). It is a
+  member of the root Cargo workspace, so it builds into `../target`.
 
 ## Run
 
@@ -27,6 +32,10 @@ npm run check        # svelte-check / TypeScript
 npx tauri dev        # the real window (Windows; needs Rust and WebView2)
 npx tauri build      # ../target/release/tessera-app.exe
 ```
+
+The UI follows the Windows language (English or Simplified Chinese, else English). To
+see another one, set `TESSERA_LANG` before starting, e.g. `$env:TESSERA_LANG = 'en'` in
+PowerShell, then run `npx tauri dev` or the exe from that shell.
 
 Keyboard: arrows move the selection, Enter zooms in, Backspace goes up, Delete moves to
 the recycle bin, Shift+Delete deletes permanently, Ctrl+Z undoes, Ctrl+C copies paths,

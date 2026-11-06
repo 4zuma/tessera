@@ -17,6 +17,10 @@ export interface PlatformInfo {
   core: boolean;
   /** the UI runs inside the Tauri window (not a plain browser preview) */
   native: boolean;
+  /** UI language, picked from the Windows preferred languages (see lib/i18n.svelte.ts) */
+  lang: string;
+  /** BCP 47 tag for dates and numbers, e.g. en-GB */
+  locale: string;
 }
 
 export interface Volume {

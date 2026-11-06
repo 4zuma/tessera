@@ -8,6 +8,7 @@
    */
   import { tick } from 'svelte';
   import { app } from '../lib/app.svelte';
+  import { t } from '../lib/i18n.svelte';
 
   let el: HTMLDivElement | undefined = $state();
 
@@ -52,7 +53,7 @@
       </div>
       <div class="acts">
         <button class="btn" onclick={() => app.closeConfirm(true)}>{c.ok}</button>
-        <button class="btn no" onclick={() => app.closeConfirm(false)}>取消</button>
+        <button class="btn no" onclick={() => app.closeConfirm(false)}>{t('cancel')}</button>
       </div>
     </div>
   </div>

@@ -22,6 +22,10 @@ pub struct Info {
     /// the scan core serves the commands; false (non-Windows dev builds) means
     /// the WebView uses its mock tree
     pub core: bool,
+    /// UI language (a dictionary id: "en" or "zh-CN"), see [`crate::i18n`]
+    pub lang: &'static str,
+    /// BCP 47 tag for formatting dates and numbers, e.g. "en-GB"
+    pub locale: String,
 }
 
 impl Info {
@@ -32,6 +36,8 @@ impl Info {
             accent: imp::accent(),
             version,
             core: cfg!(windows),
+            lang: crate::i18n::lang().id(),
+            locale: crate::i18n::choice().locale.clone(),
         }
     }
 }
@@ -119,7 +125,7 @@ mod imp {
         if r.0 as isize > 32 {
             Ok(())
         } else {
-            Err("没有以管理员身份重启（可能在 UAC 提示里点了“否”）".into())
+            Err(crate::i18n::text::NOT_ELEVATED.get().into())
         }
     }
 }

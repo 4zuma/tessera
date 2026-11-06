@@ -2,6 +2,7 @@
   import { app } from '../lib/app.svelte';
   import type { IconName } from '../lib/icons';
   import Icon from './Icon.svelte';
+  import { t as tr } from '../lib/i18n.svelte';
 
   const icons: Record<string, IconName> = { info: 'info', success: 'check', recycle: 'trash', error: 'warn' };
 </script>
@@ -24,7 +25,7 @@
           {/each}
         </div>
       {/if}
-      <button class="sbtn x" onclick={() => app.hideToast()} aria-label="关闭"><Icon name="dismiss" size={14} /></button>
+      <button class="sbtn x" onclick={() => app.hideToast()} aria-label={tr('close')}><Icon name="dismiss" size={14} /></button>
     </div>
   {/key}
 {/if}

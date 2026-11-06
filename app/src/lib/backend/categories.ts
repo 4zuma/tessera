@@ -19,20 +19,7 @@ export const Cat = {
 
 export const CAT_COUNT = 12;
 
-export const CAT_NAMES: readonly string[] = [
-  '其他',
-  '视频',
-  '图片',
-  '音频',
-  '压缩包',
-  '磁盘镜像',
-  '程序',
-  '游戏资源',
-  '文档',
-  '开发',
-  '缓存 / 临时',
-  '系统',
-];
+// the names are in the dictionaries (lib/locales, keys cat.0 to cat.11), see catName()
 
 // Copied from tessera_core::category (crates/tessera-core/src/category.rs), which is
 // what the real app uses. Only the mock reads this table; keep the two in sync.

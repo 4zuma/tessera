@@ -4,10 +4,10 @@
  */
 import { SvelteSet } from 'svelte/reactivity';
 import { createBackend } from './backend';
-import { CAT_NAMES } from './backend/categories';
 import { decodeLayout, Flag, FREE, groupFolder, isGroupId, isNodeId, Kind, NONE, UNSCANNED, type Layout, type Rect } from './backend/codec';
 import type { Backend, CatStat, Crumb, Details, PlatformInfo, ScanProgress, SizeMode, Volume } from './backend/types';
 import { fmtBytes, fmtSecs } from './format';
+import { catName, fmtNum, joinList, setLang, t, tn } from './i18n.svelte';
 import type { IconName } from './icons';
 import { applyThemeCss, makeTheme, type Scheme, type Theme } from './theme';
 import { TreemapEngine, type ApplyOpts, type EngineHost, type EngineStats, type MotionKind } from './treemap/engine';
@@ -84,11 +84,11 @@ const SCAN_LAYOUT_MS = 250;
 let toastSeq = 0;
 
 function lockFromFlags(flags: number): string | null {
-  if (flags & Flag.InUse) return '系统正在使用的文件，不能删除';
-  if (flags & Flag.NoAccess) return '没有访问权限';
+  if (flags & Flag.InUse) return t('lock.inUse');
+  if (flags & Flag.NoAccess) return t('lock.noAccess');
   // the flag says only that it is locked; the core's details say why (Windows, a personal folder…)
-  if (flags & Flag.Protected) return '受保护，不能删除';
-  if (flags & Flag.RecycleBin) return '请使用“清空回收站”';
+  if (flags & Flag.Protected) return t('lock.protected');
+  if (flags & Flag.RecycleBin) return t('lock.bin');
   return null;
 }
 
@@ -164,6 +164,7 @@ export class App implements EngineHost {
     const b = await createBackend();
     this.backend = b;
     this.platform = b.platform;
+    setLang(b.platform.lang, b.platform.locale);
     document.documentElement.dataset.backdrop = b.platform.backdrop;
     document.documentElement.dataset.host = b.platform.native ? 'native' : 'browser';
     // follow the system theme; a host page may pin one with data-theme on <html>
@@ -282,7 +283,7 @@ export class App implements EngineHost {
         try {
           L = decodeLayout(buf);
         } catch (err) {
-          this.fail('布局数据无法解析', err);
+          this.fail(t('err.layoutData'), err);
           break;
         }
         // the user moved on while we waited: the newer request is already pending
@@ -298,7 +299,7 @@ export class App implements EngineHost {
         this.afterLayout(L);
       }
     } catch (err) {
-      this.fail('请求布局失败', err);
+      this.fail(t('err.layout'), err);
     } finally {
       this.inFlight = false;
     }
@@ -348,7 +349,7 @@ export class App implements EngineHost {
       this.requestLayout('instant');
     } catch (err) {
       this.scan = null;
-      this.fail('无法开始扫描', err);
+      this.fail(t('err.scanStart'), err);
     }
   }
 
@@ -489,10 +490,20 @@ export class App implements EngineHost {
     }
     const parent = r.parent !== NONE ? this.rectOf(r.parent) : null;
     const viewSize = this.viewTotal || null;
-    const kind =
-      r.kind === Kind.DirLeaf && r.cat < CAT_NAMES.length ? `文件夹 · 多为${CAT_NAMES[r.cat]}` : r.kind === Kind.Dir || r.kind === Kind.DirLeaf ? '文件夹' : r.kind === Kind.Group ? '合并显示的小项' : r.kind === Kind.Free ? '可用空间' : r.kind === Kind.Unscanned ? '扫描中' : (CAT_NAMES[r.cat] ?? '文件');
+    const mostly = r.kind === Kind.DirLeaf ? catName(r.cat) : undefined;
+    const kind = mostly
+      ? t('kind.folderMostly', { cat: mostly })
+      : r.kind === Kind.Dir || r.kind === Kind.DirLeaf
+        ? t('folder')
+        : r.kind === Kind.Group
+          ? t('kind.group')
+          : r.kind === Kind.Free
+            ? t('free')
+            : r.kind === Kind.Unscanned
+              ? t('scanning')
+              : (catName(r.cat) ?? t('file'));
     const name =
-      r.kind === Kind.Group ? `${r.count} 个小项` : r.kind === Kind.Free ? '可用空间' : r.kind === Kind.Unscanned ? '尚未扫描' : r.name || this.nameCache.get(id) || '';
+      r.kind === Kind.Group ? tn('smallItems', r.count) : r.kind === Kind.Free ? t('free') : r.kind === Kind.Unscanned ? t('unscanned') : r.name || this.nameCache.get(id) || '';
     this.tip = { x, y, id, name, size: r.size, kind, share: parent ? r.size / Math.max(1, parent.size) : r.kind === Kind.Free ? null : viewSize ? r.size / viewSize : null };
     if (!name && isNodeId(id)) {
       void this.backend?.details(id, this.view, this.sizeMode).then(d => {
@@ -620,10 +631,7 @@ export class App implements EngineHost {
     this.sizeMode = m;
     this.requestLayout('mode');
     this.refreshLegend(true);
-    this.showToast(
-      'info',
-      m === 'disk' ? '按“占用空间”显示：文件在磁盘上实际占用的空间，清理时能腾出的就是这么多。' : '按“实际大小”显示：文件内容的字节数。OneDrive 仅在线文件和压缩过的系统文件会显得更大。',
-    );
+    this.showToast('info', m === 'disk' ? t('toast.diskMode') : t('toast.logicalMode'));
   }
 
   setFilter(cat: number | null) {
@@ -659,13 +667,13 @@ export class App implements EngineHost {
       this.undoToken = res.undo;
       this.requestLayout('delete', { reflow: true });
       this.refreshLegend(true);
-      const what = res.ok.length > 1 ? `${res.ok.length} 项` : names[ids.indexOf(res.ok[0])] || '1 项';
+      const what = res.ok.length > 1 ? tn('items', res.ok.length) : names[ids.indexOf(res.ok[0])] || tn('items', 1);
       const actions: ToastAction[] = [];
-      if (res.undo != null) actions.push({ label: '撤销', icon: 'undo', run: () => void this.undo() });
-      actions.push({ label: '清空回收站', icon: 'sweep', run: () => this.confirmEmptyBin() });
-      this.showToast('recycle', '回收站和这些文件在同一个盘上，清空回收站后才会真正腾出空间。', actions, `已移到回收站：${what}（${fmtBytes(res.bytes)}）`);
+      if (res.undo != null) actions.push({ label: t('toast.undo'), icon: 'undo', run: () => void this.undo() });
+      actions.push({ label: t('emptyBin'), icon: 'sweep', run: () => this.confirmEmptyBin() });
+      this.showToast('recycle', t('toast.recycledBody'), actions, t('toast.recycled', { what, size: fmtBytes(res.bytes) }));
     }
-    if (res.failed.length) this.showToast('error', res.failed.map(f => `${this.nameOf(f.id) || f.id}：${f.reason}`).join('\n'), [], '有项目没能删除');
+    if (res.failed.length) this.showToast('error', this.failedLines(res.failed).join('\n'), [], t('toast.notDeleted'));
   }
 
   async undo() {
@@ -677,7 +685,7 @@ export class App implements EngineHost {
     this.refreshLegend(true);
     for (const id of res.ok) this.sel.add(id);
     void this.refreshSel();
-    this.showToast('info', '已撤销，文件放回了原处。');
+    this.showToast('info', t('toast.undone'));
   }
 
   confirmPurge(ids: number[]) {
@@ -685,13 +693,14 @@ export class App implements EngineHost {
     if (!ids.length) return;
     const rs = ids.map(id => this.rectOf(id)!).filter(Boolean);
     const total = rs.reduce((a, r) => a + r.size, 0);
-    const first = this.nameOf(ids[0]) || '所选项目';
+    const first = this.nameOf(ids[0]) || t('confirm.selection');
+    const names = joinList(ids.slice(0, 3).map(id => this.nameOf(id)).filter(Boolean));
     this.openConfirm({
-      title: '永久删除？',
-      lead: ids.length > 1 ? `${ids.length} 项` : first,
+      title: t('confirm.purgeTitle'),
+      lead: ids.length > 1 ? tn('items', ids.length) : first,
       size: fmtBytes(total),
-      body: `${ids.length > 1 ? ids.slice(0, 3).map(id => this.nameOf(id)).filter(Boolean).join('、') + (ids.length > 3 ? ' 等。' : '。') : ''}不经过回收站，删除后无法恢复，会立刻腾出 ${fmtBytes(total)}。`,
-      ok: '永久删除',
+      body: (ids.length > 1 ? t(ids.length > 3 ? 'confirm.namesMore' : 'confirm.names', { names }) : '') + t('confirm.purgeBody', { size: fmtBytes(total) }),
+      ok: t('purge'),
       run: () => void this.purge(ids),
     });
   }
@@ -705,18 +714,18 @@ export class App implements EngineHost {
     this.requestLayout('delete', { reflow: true });
     this.refreshLegend(true);
     if (this.volume) this.volume = { ...this.volume, free: this.volume.free + res.bytes };
-    if (res.ok.length) this.showToast('success', `可用空间现在是 ${fmtBytes(this.volume?.free ?? 0)}。`, [], `已永久删除，腾出 ${fmtBytes(res.bytes)}`);
-    if (res.failed.length) this.showToast('error', res.failed.map(f => `${this.nameOf(f.id) || f.id}：${f.reason}`).join('\n'), [], '有项目没能删除');
+    if (res.ok.length) this.showToast('success', t('toast.freeNow', { size: fmtBytes(this.volume?.free ?? 0) }), [], t('toast.purged', { size: fmtBytes(res.bytes) }));
+    if (res.failed.length) this.showToast('error', this.failedLines(res.failed).join('\n'), [], t('toast.notDeleted'));
   }
 
   confirmEmptyBin() {
     this.closeOverlays();
     this.openConfirm({
-      title: '清空回收站？',
-      lead: `${this.volume?.root.slice(0, 2) ?? ''} 上的回收站`,
+      title: t('confirm.binTitle'),
+      lead: t('confirm.binLead', { drive: this.volume?.root.slice(0, 2) ?? '' }),
       size: '',
-      body: '回收站里的所有文件会被永久删除，删除后无法恢复。',
-      ok: '清空回收站',
+      body: t('confirm.binBody'),
+      ok: t('emptyBin'),
       run: () => void this.emptyBin(),
     });
   }
@@ -729,12 +738,16 @@ export class App implements EngineHost {
     this.refreshLegend(true);
     this.volume = { ...this.volume, free: this.volume.free + res.bytes };
     if (!res.failed.length) {
-      this.showToast('success', `可用空间现在是 ${fmtBytes(this.volume.free)}。`, [], `回收站已清空，腾出 ${fmtBytes(res.bytes)}`);
+      this.showToast('success', t('toast.freeNow', { size: fmtBytes(this.volume.free) }), [], t('toast.binEmptied', { size: fmtBytes(res.bytes) }));
       return;
     }
-    const lines = res.failed.slice(0, 5).map(f => `${this.nameOf(f.id) || f.id}：${f.reason}`);
-    if (res.failed.length > 5) lines.push(`还有 ${res.failed.length - 5} 项`);
-    this.showToast('error', `腾出了 ${fmtBytes(res.bytes)}，这些项目还在回收站里：\n${lines.join('\n')}`, [], '回收站没能全部清空');
+    const lines = this.failedLines(res.failed.slice(0, 5));
+    if (res.failed.length > 5) lines.push(tn('toast.more', res.failed.length - 5));
+    this.showToast('error', t('toast.binLeft', { size: fmtBytes(res.bytes), lines: lines.join('\n') }), [], t('toast.binPartly'));
+  }
+
+  private failedLines(failed: { id: number; reason: string }[]) {
+    return failed.map(f => t('failedLine', { name: this.nameOf(f.id) || f.id, reason: f.reason }));
   }
 
   async copyPath(ids: number[]) {
@@ -743,9 +756,9 @@ export class App implements EngineHost {
     const text = ds.map(d => d?.path).filter(Boolean).join('\r\n');
     try {
       await navigator.clipboard.writeText(text);
-      this.showToast('info', ids.length > 1 ? `已复制 ${ids.length} 个路径` : '已复制路径');
+      this.showToast('info', ids.length > 1 ? tn('toast.copiedMany', ids.length) : t('toast.copiedOne'));
     } catch {
-      this.showToast('info', text, [], '路径');
+      this.showToast('info', text, [], t('toast.path'));
     }
   }
 
@@ -753,7 +766,7 @@ export class App implements EngineHost {
     if (!this.backend || !isNodeId(id)) return;
     if (!this.platform?.core) {
       const d = await this.backend.details(id, this.view, this.sizeMode);
-      this.showToast('info', `接入扫描核心后会执行 explorer.exe /select,"${d?.path ?? ''}"`, [], '预览数据里没有真实文件');
+      this.showToast('info', t('preview.revealBody', { path: d?.path ?? '' }), [], t('preview.reveal'));
       return;
     }
     await this.backend.reveal(id);
@@ -761,14 +774,14 @@ export class App implements EngineHost {
 
   async relaunchElevated() {
     if (!this.platform?.native) {
-      this.showToast('info', '在 Tessera 程序里，这个按钮会以管理员身份重启，改用读取 MFT 的方式扫描，速度快很多。', [], '预览里不会重启');
+      this.showToast('info', t('preview.adminBody'), [], t('preview.admin'));
       return;
     }
     await this.backend?.relaunchElevated();
   }
 
   demoDownload() {
-    if (this.backend?.demo?.startDownload()) this.showToast('info', 'Downloads 里有个文件正在下载，每 500 毫秒推一次变化，树图在两次之间补间，不会整屏重画闪烁。', [], '模拟实时更新');
+    if (this.backend?.demo?.startDownload()) this.showToast('info', t('preview.liveBody'), [], t('preview.live'));
   }
 
   /* ------------------------------------------------------------------ overlays */
@@ -786,29 +799,29 @@ export class App implements EngineHost {
     const ids = this.targets(id);
     const rows: MenuRow[] = [];
     if (id === FREE) {
-      rows.push({ type: 'head', label: `可用空间 · ${fmtBytes(r.size)}` });
-      rows.push({ type: 'note', label: '这个盘上还空着的部分。先看看最大的几块。' });
+      rows.push({ type: 'head', label: `${t('free')} · ${fmtBytes(r.size)}` });
+      rows.push({ type: 'note', label: t('menu.freeNote') });
     } else if (isGroupId(id)) {
-      rows.push({ type: 'head', label: `${r.count} 个小项 · ${fmtBytes(r.size)}` });
-      rows.push({ type: 'item', icon: 'zoom', label: '放大查看这些小项', key: 'Enter', run: () => this.zoomInto(id) });
+      rows.push({ type: 'head', label: `${tn('smallItems', r.count)} · ${fmtBytes(r.size)}` });
+      rows.push({ type: 'item', icon: 'zoom', label: t('menu.zoomGroup'), key: 'Enter', run: () => this.zoomInto(id) });
     } else {
       const multi = ids.length > 1;
       const total = ids.reduce((a, x) => a + (this.rectOf(x)?.size ?? 0), 0);
       const isDir = r.kind === Kind.Dir || r.kind === Kind.DirLeaf;
-      rows.push({ type: 'head', label: multi ? `已选 ${ids.length} 项 · ${fmtBytes(total)}` : `${this.nameOf(id) || (isDir ? '文件夹' : '文件')} · ${fmtBytes(r.size)}` });
-      if (!multi && isDir) rows.push({ type: 'item', icon: 'zoom', label: '放大此文件夹', key: 'Enter', run: () => this.zoomInto(id) });
-      rows.push({ type: 'item', icon: 'reveal', label: '在资源管理器中显示', run: () => void this.reveal(id) });
-      rows.push({ type: 'item', icon: 'copy', label: multi ? `复制 ${ids.length} 个路径` : '复制路径', key: 'Ctrl+C', run: () => void this.copyPath(ids) });
+      rows.push({ type: 'head', label: multi ? tn('selected', ids.length, { size: fmtBytes(total) }) : `${this.nameOf(id) || (isDir ? t('folder') : t('file'))} · ${fmtBytes(r.size)}` });
+      if (!multi && isDir) rows.push({ type: 'item', icon: 'zoom', label: t('menu.zoomFolder'), key: 'Enter', run: () => this.zoomInto(id) });
+      rows.push({ type: 'item', icon: 'reveal', label: t('menu.reveal'), run: () => void this.reveal(id) });
+      rows.push({ type: 'item', icon: 'copy', label: multi ? tn('menu.copyPaths', ids.length) : t('menu.copyPath'), key: 'Ctrl+C', run: () => void this.copyPath(ids) });
       rows.push({ type: 'sep' });
       if (r.flags & Flag.RecycleBin) {
-        rows.push({ type: 'item', icon: 'sweep', label: '清空回收站…', danger: true, run: () => this.confirmEmptyBin() });
+        rows.push({ type: 'item', icon: 'sweep', label: t('menu.emptyBin'), danger: true, run: () => this.confirmEmptyBin() });
       } else {
         const flagged = ids.find(x => lockFromFlags(this.rectOf(x)?.flags ?? 0));
         // the details card usually already holds the core's reason for the item under the pointer
         const d = this.details;
         const why = flagged == null ? null : (d?.id === flagged && d.lockReason) || lockFromFlags(this.rectOf(flagged)?.flags ?? 0);
-        rows.push({ type: 'item', icon: 'trash', label: '移到回收站', key: 'Del', disabled: !!why, run: () => void this.recycle(ids) });
-        rows.push({ type: 'item', icon: 'purge', label: '永久删除…', key: 'Shift+Del', danger: true, disabled: !!why, run: () => this.confirmPurge(ids) });
+        rows.push({ type: 'item', icon: 'trash', label: t('recycle'), key: 'Del', disabled: !!why, run: () => void this.recycle(ids) });
+        rows.push({ type: 'item', icon: 'purge', label: t('menu.purge'), key: 'Shift+Del', danger: true, disabled: !!why, run: () => this.confirmPurge(ids) });
         if (why) rows.push({ type: 'note', label: why, lock: true });
       }
     }
@@ -920,8 +933,8 @@ export class App implements EngineHost {
   get scanText(): string {
     const s = this.scan;
     if (!s) return '';
-    if (s.running) return `正在扫描 · ${s.used ? Math.min(100, Math.round((s.scanned / s.used) * 100)) : 0}% · 已找到 ${s.files.toLocaleString('zh-CN')} 个文件`;
-    return `扫描完成 · ${s.files.toLocaleString('zh-CN')} 个文件，${s.dirs.toLocaleString('zh-CN')} 个文件夹 · 用时 ${fmtSecs(s.elapsedMs)}`;
+    if (s.running) return t('scan.running', { pct: fmtNum(s.used ? Math.min(100, Math.round((s.scanned / s.used) * 100)) : 0), files: tn('files', s.files) });
+    return t('scan.done', { files: tn('files', s.files), folders: tn('folders', s.dirs), time: fmtSecs(s.elapsedMs) });
   }
 }
 

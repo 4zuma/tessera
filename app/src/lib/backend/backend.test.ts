@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { decodeLayout, encodeLayout, FREE, GROUP_BIT, Kind, NONE, RECORD_SIZE, HEADER_SIZE, UNSCANNED, type Rect } from './codec';
 import { categoryOf, Cat } from './categories';
+import { t } from '../i18n.svelte';
 import { MockBackend } from './mock';
 import type { LayoutRequest, ScanProgress } from './types';
 
@@ -127,6 +128,6 @@ describe('mock backend', () => {
     const windows = rects.find(r => r.name === 'Windows' || r.name.startsWith('Windows ›'))!;
     const res = await b.recycle([windows.id]);
     expect(res.ok).toEqual([]);
-    expect(res.failed[0].reason).toContain('系统目录');
+    expect(res.failed[0].reason).toBe(t('mock.systemFolder'));
   });
 });
