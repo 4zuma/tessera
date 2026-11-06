@@ -107,3 +107,47 @@ jobs:
           # the crate is a member of the root workspace, so it builds into ./target
           path: target/release/tessera-app.exe
           if-no-files-found: error
+
+  windows-arm64:
+    # Windows on Arm, cross-compiled on the x64 runner with Visual Studio's
+    # ARM64 tools (the exe can't run here, so no tests). The release workflow
+    # builds the same way.
+    name: Windows arm64 exe
+    needs: ui
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: app
+    env:
+      TARGET: aarch64-pc-windows-msvc
+      # like the x64 job: the exe on main, Run workflow and build-exe PRs only
+      BUILD_EXE: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'build-exe') }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: app-arm64
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: npm ci
+      # the app crate embeds app/dist, so build the UI first
+      - run: npm run build
+      - name: Clippy
+        run: cargo clippy -p tessera-app --all-targets --target $env:TARGET -- -D warnings
+      - name: Build (tauri build, no installer)
+        if: env.BUILD_EXE == 'true'
+        run: npx tauri build --target $env:TARGET
+      - uses: actions/upload-artifact@v7
+        if: env.BUILD_EXE == 'true'
+        with:
+          name: tessera-app-windows-arm64
+          path: target/aarch64-pc-windows-msvc/release/tessera-app.exe
+          if-no-files-found: error
