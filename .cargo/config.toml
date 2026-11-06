@@ -3,3 +3,12 @@
 [target.x86_64-pc-windows-gnu]
 linker = "x86_64-w64-mingw32-gcc"
 runner = "/usr/lib/wine/wine64"
+
+# The workspace's rust-version (1.85, for tessera-core / tessera-cli) is the
+# lowest of its members, and Cargo's MSRV-aware resolver applies it to every
+# dependency, including Tauri's. That held `time` and `serde_with` on versions
+# with security advisories (their fixes need Rust 1.88), and a plain
+# `cargo update` would downgrade them again. tessera-app already needs 1.90 and
+# CI builds with stable, so resolve to the newest versions instead.
+[resolver]
+incompatible-rust-versions = "allow"
