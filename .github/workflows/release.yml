@@ -16,8 +16,10 @@ name: release
 # version e.g. 0.1.0) or by pushing a tag v0.1.0. The version must match
 # tauri.conf.json; for a version that is already released, it only adds
 # missing files. The decisions are made by .github/scripts/release-plan.sh.
-# The release notes come from docs/releases/v<version>.md when that file
-# exists, otherwise GitHub generates them from the merged pull requests.
+# The release notes come from the description of the pull request that merged
+# the release's commit (normally the version bump), between the lines
+# <!-- release-notes --> and <!-- /release-notes -->; without them GitHub
+# writes notes from the merged pull requests. See release-publish.sh.
 
 on:
   workflow_dispatch:
@@ -37,6 +39,8 @@ on:
 
 permissions:
   contents: write
+  # the publish step reads the release notes from the bump pull request
+  pull-requests: read
 
 jobs:
   plan:
@@ -125,7 +129,7 @@ jobs:
       group: release
       cancel-in-progress: false
     steps:
-      # the workflow's own commit: the scripts and the current release notes
+      # the workflow's own commit, for the scripts
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:

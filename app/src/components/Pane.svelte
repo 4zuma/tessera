@@ -1,18 +1,18 @@
 <script lang="ts">
   import { app } from '../lib/app.svelte';
-  import { CAT_NAMES } from '../lib/backend/categories';
   import { Flag } from '../lib/backend/codec';
-  import { fmtBytes, fmtDate, fmtInt, fmtPct } from '../lib/format';
+  import { fmtBytes, fmtDate, fmtPct } from '../lib/format';
+  import { catName, t, tn, tParts } from '../lib/i18n.svelte';
   import Icon from './Icon.svelte';
 
   const d = $derived(app.details);
   const kindLabel = $derived.by(() => {
     if (!d) return '';
-    if (d.kind === 'dir') return d.id === app.view ? '当前文件夹' : '文件夹';
-    if (d.kind === 'file') return CAT_NAMES[d.cat] ?? '文件';
-    if (d.kind === 'free') return '可用空间';
-    if (d.kind === 'unscanned') return '扫描中';
-    return '合并显示';
+    if (d.kind === 'dir') return d.id === app.view ? t('kind.currentFolder') : t('folder');
+    if (d.kind === 'file') return catName(d.cat) ?? t('file');
+    if (d.kind === 'free') return t('free');
+    if (d.kind === 'unscanned') return t('scanning');
+    return t('kind.groupShort');
   });
   const legendTotal = $derived(app.legend.reduce((a, c) => a + c.bytes, 0) || 1);
 </script>
@@ -33,20 +33,20 @@
       {#if d.kind !== 'group' && !(d.id === app.crumbs[0]?.id && app.sizeMode === 'logical')}
         <div class="share">
           <div class="bar"><i style:width="{Math.min(100, d.share * 100).toFixed(1)}%"></i></div>
-          <span class="caption tabular">{d.kind === 'free' || d.kind === 'unscanned' || d.id === app.crumbs[0]?.id ? '占整个盘' : '占上级'} {fmtPct(d.share)}</span>
+          <span class="caption tabular">{t(d.kind === 'free' || d.kind === 'unscanned' || d.id === app.crumbs[0]?.id ? 'shareDrive' : 'shareParent', { pct: fmtPct(d.share) })}</span>
         </div>
       {/if}
       {#if d.kind === 'file' || d.kind === 'dir'}
         <dl class="kv caption tabular">
-          <dt class:on={app.sizeMode === 'disk'}>占用空间</dt>
+          <dt class:on={app.sizeMode === 'disk'}>{t('sizeOnDisk')}</dt>
           <dd>{fmtBytes(d.disk)}</dd>
-          <dt class:on={app.sizeMode === 'logical'}>实际大小</dt>
+          <dt class:on={app.sizeMode === 'logical'}>{t('size')}</dt>
           <dd>{fmtBytes(d.logical)}</dd>
           {#if d.kind === 'dir'}
-            <dt>包含</dt>
-            <dd>{fmtInt(d.files)} 个文件{d.dirs ? ` · ${fmtInt(d.dirs)} 个文件夹` : ''}</dd>
+            <dt>{t('pane.contains')}</dt>
+            <dd>{tn('files', d.files)}{d.dirs ? ` · ${tn('folders', d.dirs)}` : ''}</dd>
           {:else}
-            <dt>修改时间</dt>
+            <dt>{t('pane.modified')}</dt>
             <dd>{fmtDate(d.modified)}</dd>
           {/if}
         </dl>
@@ -57,7 +57,7 @@
         <div class="note locked caption" role="note">
           <Icon name="lock" size={14} />
           <div class="nb">
-            <b>{d.kind === 'dir' ? '这个文件夹不能删除' : '这个文件不能删除'}</b>
+            <b>{d.kind === 'dir' ? t('pane.folderLocked') : t('pane.fileLocked')}</b>
             <span>{d.lockReason}</span>
           </div>
         </div>
@@ -66,27 +66,29 @@
         <div class="note caption"><Icon name="info" size={14} /><span>{d.hint}</span></div>
       {/if}
     {:else}
-      <div class="empty caption">把鼠标移到方块上查看详情</div>
+      <div class="empty caption">{t('pane.empty')}</div>
     {/if}
   </section>
 
   <section class="card sel">
     {#if app.selInfo.count}
-      <div class="st">已选 <b>{app.selInfo.count}</b> 项 · <b class="tabular">{fmtBytes(app.selInfo.bytes)}</b></div>
+      <div class="st">
+        {#each tParts('selected', { n: app.selInfo.count, size: fmtBytes(app.selInfo.bytes) }) as p, i (i)}{#if p.v}<b class:tabular={p.v === 'size'}>{p.text}</b>{:else}{p.text}{/if}{/each}
+      </div>
       <div class="sa">
-        <button class="btn" disabled={!!app.selInfo.lockReason} onclick={() => app.recycle([...app.sel])}><Icon name="trash" />移到回收站</button>
-        <button class="btn danger" disabled={!!app.selInfo.lockReason} onclick={() => app.confirmPurge([...app.sel])}><Icon name="purge" />永久删除</button>
+        <button class="btn" disabled={!!app.selInfo.lockReason} onclick={() => app.recycle([...app.sel])}><Icon name="trash" />{t('recycle')}</button>
+        <button class="btn danger" disabled={!!app.selInfo.lockReason} onclick={() => app.confirmPurge([...app.sel])}><Icon name="purge" />{t('purge')}</button>
       </div>
       {#if app.selInfo.lockReason}
         <div class="why caption"><Icon name="lock" size={14} /><span>{app.selInfo.lockReason}</span></div>
       {/if}
     {:else}
-      <div class="empty caption">单击选择 · Ctrl+单击多选 · Shift+单击连选 · 双击放大 · 右键查看更多操作</div>
+      <div class="empty caption">{t('pane.howTo')}</div>
     {/if}
   </section>
 
   <section class="card legend">
-    <h2>按类型</h2>
+    <h2>{t('pane.byType')}</h2>
     {#if app.legend.length}
       <div class="stack" aria-hidden="true">
         {#each app.legend as c (c.cat)}
@@ -95,15 +97,15 @@
       </div>
       <div class="rows">
         {#each app.legend as c (c.cat)}
-          <button class="lg" class:on={app.filter === c.cat} aria-pressed={app.filter === c.cat} onclick={() => app.setFilter(c.cat)} title="只突出显示{CAT_NAMES[c.cat]}">
+          <button class="lg" class:on={app.filter === c.cat} aria-pressed={app.filter === c.cat} onclick={() => app.setFilter(c.cat)} title={t('pane.highlight', { cat: catName(c.cat) ?? '' })}>
             <i class="sw" style:background="var(--cat-{c.cat})"></i>
-            <span class="ln">{CAT_NAMES[c.cat]}</span>
+            <span class="ln">{catName(c.cat)}</span>
             <span class="lv caption tabular">{fmtBytes(c.bytes)}</span>
           </button>
         {/each}
       </div>
     {:else}
-      <div class="empty caption">扫描后显示</div>
+      <div class="empty caption">{t('pane.afterScan')}</div>
     {/if}
   </section>
 </aside>
@@ -233,12 +235,15 @@
   .st {
     margin-bottom: 10px;
   }
+  /* side by side at equal widths; stacked when the labels need more room (English) */
   .sa {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
   }
   .sa .btn {
     flex: 1;
+    min-width: max-content;
     padding: 0 8px;
   }
   .why {

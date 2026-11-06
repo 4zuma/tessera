@@ -15,7 +15,7 @@ All sizes are bytes. All ids are `u32` node indices into the core's arena unless
 
 | Command | Args | Returns |
 | --- | --- | --- |
-| `platform_info` | – | `{ elevated: bool, backdrop: "mica" \| "none", accent: { light, dark } \| null, version: string, core: bool }` |
+| `platform_info` | – | `{ elevated: bool, backdrop: "mica" \| "none", accent: { light, dark } \| null, version: string, core: bool, lang: "en" \| "zh-CN", locale: string }` – `lang` is the UI language, `locale` the BCP 47 tag for dates and numbers (see below) |
 | `list_volumes` | – | `Volume[]` |
 | `scan_start` | `{ root: string }` | `{ scanId: u32, rootId: u32 }` – cancels any running scan |
 | `scan_cancel` | – | `()` |
@@ -76,6 +76,22 @@ interface DeleteResult {
   rev: u32;                           // tree revision after the change
 }
 ```
+
+## Language
+
+There is no language setting. At startup Rust reads the user's "Preferred languages" from
+Windows (`GlobalizationPreferences.Languages`, the ordered list in Settings › Time &
+language › Language & region; `GetUserPreferredUILanguages` if WinRT is unavailable) and
+takes the first one Tessera has a translation for: Simplified Chinese (`zh-Hans-*`, `zh`,
+`zh-CN`, `zh-SG`…) or any English. When none matches, the UI is English. Traditional Chinese
+has no translation yet, so it falls through to the next language in the list. The
+environment variable `TESSERA_LANG` (e.g. `en`) overrides the list, for testing.
+
+All user-facing text in commands' results (`lockReason`, `hint`, `failed[].reason`,
+volume labels, the names of the free, unscanned and grouped tiles, error strings) is in
+that language (`app/src-tauri/src/i18n.rs`); the WebView's own text is in
+`app/src/lib/locales/`. Text that comes from Windows itself (shell errors) is passed
+through as Windows worded it.
 
 ## Events (Rust → WebView)
 
