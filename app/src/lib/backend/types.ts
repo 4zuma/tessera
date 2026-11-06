@@ -35,6 +35,7 @@ export interface LayoutStyle {
   minHeaderW: number;
   minArea: number;
   recurse: number;
+  openShare: number;
   maxDepth: number;
   maxPerDir: number;
   labelMinW: number;

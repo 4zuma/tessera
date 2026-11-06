@@ -27,7 +27,11 @@ export const fluentLayout = {
   header: 21,
   minHeaderW: 60,
   minArea: 110,
-  recurse: 3,
+  // a folder opens only when it gets a header, is over 110 * 60 = 6,600 px² (about
+  // 80 x 80, room for a few labelled tiles) and over 0.25 % of the map; the share
+  // only bites past ~2000 x 1300, so a huge window does not add levels of tiny boxes
+  recurse: 60,
+  openShare: 0.0025,
   maxDepth: 14,
   maxPerDir: 400,
   labelMinW: 44,

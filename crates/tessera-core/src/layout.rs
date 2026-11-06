@@ -30,14 +30,28 @@
 //!    merged with it into one tile named `a › b › c`, whose `id` is the top
 //!    folder and whose `target` is the deepest one; the deepest folder's
 //!    children fill the tile and name the tile as their `parent`.
-//! 5. A folder opens (kind DIR, its children follow) when its depth is
-//!    below `maxDepth` and its area is above `minArea * recurse`. It gets a
-//!    header band of `header` px when it is at least `header * 2.2` tall
-//!    and `minHeaderW` wide (this applies to DIR_LEAF tiles too). The inner
-//!    box is the tile inset by `pad`, by `header` at the top when it has a
-//!    header. If the inner box is smaller than 3 x 3 px, or no child ends
-//!    up visible, the folder is a DIR_LEAF (drawn solid).
-//! 6. When the view is the tree root, two pseudo tiles can be added from
+//! 5. A folder gets a header band of `header` px when it is at least
+//!    `header * 2.2` tall and `minHeaderW` wide (this applies to DIR_LEAF
+//!    tiles too). It opens (kind DIR, its children follow) only when all of
+//!    these hold:
+//!    * its depth is below `maxDepth`;
+//!    * it has a header band (unless `header` is 0), so an open folder is
+//!      always named;
+//!    * its area is above `minArea * recurse` px², so an open folder has
+//!      room for a few labelled tiles;
+//!    * its area is above `openShare` of the map's area, so a very large
+//!      window does not open more levels than a normal one.
+//!
+//!    The inner box is the tile inset by `pad`, by `header` at the top when
+//!    it has a header. If the inner box is smaller than 3 x 3 px, or no
+//!    child ends up visible, the folder is a DIR_LEAF (drawn solid).
+//! 6. A DIR_LEAF's `cat` is the category with the most bytes among all the
+//!    files below it (on a tie, the lower category), or 255 when it has
+//!    none, so a closed folder can be tinted by what fills it. The engine
+//!    walks a closed folder's subtree once and remembers the answer with
+//!    the folder's size; it walks it again only when that size has moved
+//!    by more than 1/8, so steady layouts cost nothing extra.
+//! 7. When the view is the tree root, two pseudo tiles can be added from
 //!    numbers the caller passes in [`RootExtras`]: UNSCANNED (`used -
 //!    scanned` while scanning, only above 64 MiB), ranked first, and FREE
 //!    (the volume's free bytes), ranked last.
@@ -80,7 +94,9 @@
 //!  44  u16  nameLen     0 = no name sent
 //!  46  u8   depth       1 = direct child of the view
 //!  47  u8   kind        see [`kind`]
-//!  48  u8   cat         see [`crate::category`]; 255 for folders and pseudo tiles
+//!  48  u8   cat         see [`crate::category`]; for DIR_LEAF and GROUP the
+//!                       category with the most bytes (rules 2, 6); 255 for
+//!                       open folders, pseudo tiles and anything without files
 //!  49  u8   flags       see [`flags`]
 //!  50  u8   header      header band height in px, 0 = none
 //!  51  u8   reserved    0
@@ -110,7 +126,7 @@ pub const RECORD_SIZE: usize = 52;
 /// sane styles (a 4K canvas holds at most ~75,000 tiles of 110 px²).
 /// `maxPerDir` is clamped to `MAX_RECORDS - 3` so the top level fits too.
 pub const MAX_RECORDS: usize = 100_000;
-/// Pseudo tile threshold for UNSCANNED (rule 6).
+/// Pseudo tile threshold for UNSCANNED (rule 7).
 pub const UNSCANNED_MIN: u64 = 64 << 20;
 
 /// Special ids in records.
@@ -191,6 +207,9 @@ pub struct LayoutStyle {
     pub min_area: f32,
     /// A folder opens only if its area is above `min_area * recurse`.
     pub recurse: f32,
+    /// A folder opens only if its area is above this share (0 to 1) of the
+    /// map's area; 0 turns the rule off.
+    pub open_share: f32,
     pub max_depth: u8,
     /// At most this many tiles per folder; the rest are grouped.
     pub max_per_dir: u32,
@@ -199,6 +218,16 @@ pub struct LayoutStyle {
     pub label_min_w: f32,
     pub label_min_h: f32,
 }
+
+/// Default `recurse`: with `min_area` 110, a folder must be over 6,600 px²
+/// (about 80 x 80 px) to open, so that an open folder has room for a few
+/// labelled tiles under its header.
+pub const RECURSE: f32 = 60.0;
+/// Default `open_share`: a folder must also be over 0.25 % of the map to
+/// open. This only matters on maps over 2.6 million px² (about
+/// 2000 x 1300), where it keeps a very large window from opening more
+/// levels than a normal one.
+pub const OPEN_SHARE: f32 = 0.0025;
 
 impl Default for LayoutStyle {
     fn default() -> Self {
@@ -209,7 +238,8 @@ impl Default for LayoutStyle {
             header: 21.0,
             min_header_w: 60.0,
             min_area: 110.0,
-            recurse: 3.0,
+            recurse: RECURSE,
+            open_share: OPEN_SHARE,
             max_depth: 14,
             max_per_dir: 400,
             label_min_w: 44.0,
@@ -244,7 +274,7 @@ impl LayoutRequest {
     }
 }
 
-/// Pseudo tiles for the volume root (rule 6), used only when the view is
+/// Pseudo tiles for the volume root (rule 7), used only when the view is
 /// the tree root.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RootExtras {
@@ -258,6 +288,8 @@ pub struct RootExtras {
 #[derive(Default)]
 pub struct LayoutEngine {
     ranks: HashMap<u32, Rank, BuildHasherDefault<IdHasher>>,
+    /// Main category of closed folders (rule 6), by folder id.
+    tints: HashMap<u32, Tint, BuildHasherDefault<IdHasher>>,
     generation: u32,
     /// Category per node id, [`CAT_UNKNOWN`] until first needed.
     cats: Vec<u8>,
@@ -276,6 +308,15 @@ struct Rank {
     used: u32,
 }
 
+/// A closed folder's main category, and the size it was found at.
+#[derive(Clone, Copy)]
+struct Tint {
+    size: u64,
+    mode: SizeMode,
+    cat: u8,
+    used: u32,
+}
+
 impl LayoutEngine {
     pub fn new() -> Self {
         Self::default()
@@ -284,6 +325,7 @@ impl LayoutEngine {
     /// Forgets all state; call when a new scan starts.
     pub fn reset(&mut self) {
         self.ranks.clear();
+        self.tints.clear();
         self.cats.clear();
         self.protected = None;
     }
@@ -311,6 +353,7 @@ impl LayoutEngine {
             mode: req.size_mode,
             st: Style::new(&req.style),
             ranks: &mut self.ranks,
+            tints: &mut self.tints,
             generation: self.generation,
             cats: &mut self.cats,
             protected: &protected,
@@ -324,9 +367,12 @@ impl LayoutEngine {
         self.scratch = run.s;
         self.protected = Some((tree.len(), protected));
         // Keep the hysteresis state bounded by what is actually laid out.
+        let g = self.generation;
         if self.ranks.len() > 4 * touched + 4096 {
-            let g = self.generation;
             self.ranks.retain(|_, r| g.wrapping_sub(r.used) < RANK_TTL);
+        }
+        if self.tints.len() > 4 * touched + 4096 {
+            self.tints.retain(|_, t| g.wrapping_sub(t.used) < RANK_TTL);
         }
         buf
     }
@@ -370,6 +416,11 @@ struct Style {
     header: f64,
     min_header_w: f64,
     min_area: f64,
+    /// `min_area * recurse`.
+    open_min: f64,
+    open_share: f64,
+    /// What a folder's area must be above to open: the larger of `open_min`
+    /// and `open_share` of the map, set once the map is known.
     open_area: f64,
     max_depth: u8,
     max_per_dir: usize,
@@ -394,7 +445,9 @@ impl Style {
             header: v(s.header).min(255.0),
             min_header_w: v(s.min_header_w),
             min_area,
-            open_area: min_area * v(s.recurse),
+            open_min: min_area * v(s.recurse),
+            open_share: v(s.open_share).min(1.0),
+            open_area: 0.0,
             max_depth: s.max_depth,
             // Room for UNSCANNED, the group and FREE: the top level never
             // goes over the cap.
@@ -501,6 +554,7 @@ struct Scratch {
     cells: Vec<(Item, BoxF)>,
     recs: Vec<Rec>,
     heap: BinaryHeap<Pending>,
+    stack: Vec<NodeId>,
 }
 
 /// One layout in progress.
@@ -509,6 +563,7 @@ struct Run<'a> {
     mode: SizeMode,
     st: Style,
     ranks: &'a mut HashMap<u32, Rank, BuildHasherDefault<IdHasher>>,
+    tints: &'a mut HashMap<u32, Tint, BuildHasherDefault<IdHasher>>,
     generation: u32,
     cats: &'a mut [u8],
     protected: &'a [u32],
@@ -543,6 +598,7 @@ impl Run<'_> {
         if !(map.w >= 1.0 && map.h >= 1.0) {
             return 0.0;
         }
+        self.st.open_area = self.st.open_min.max(self.st.open_share * map.w * map.h);
         let (unscanned, free) = if view == NodeId::ROOT {
             (
                 extras.unscanned.filter(|&u| u > UNSCANNED_MIN).unwrap_or(0),
@@ -565,6 +621,15 @@ impl Run<'_> {
                     self.s.recs[q.rec].kind = kind::DIR_LEAF;
                 }
                 break;
+            }
+        }
+        // Rule 6. Closed folders never contain each other, so this walks
+        // each node at most once.
+        for i in 0..self.s.recs.len() {
+            let r = &self.s.recs[i];
+            if r.kind == kind::DIR_LEAF {
+                let (id, size) = (NodeId(r.id), r.size);
+                self.s.recs[i].cat = self.tint(id, size);
             }
         }
         total as f64 / area
@@ -640,8 +705,55 @@ impl Run<'_> {
         }
     }
 
+    /// The category with the most bytes below a closed folder of `size`
+    /// (rule 6), from the cache while the size stays within 1/8 of the size
+    /// it was found at.
+    fn tint(&mut self, dir: NodeId, size: u64) -> u8 {
+        let (mode, generation) = (self.mode, self.generation);
+        if let Some(t) = self.tints.get_mut(&dir.0)
+            && t.mode == mode
+            && size.abs_diff(t.size) <= t.size / 8
+        {
+            t.used = generation;
+            return t.cat;
+        }
+        let tree = self.tree;
+        let mut tally = [0u64; category::COUNT];
+        let stack = &mut self.s.stack;
+        stack.clear();
+        stack.push(dir);
+        while let Some(d) = stack.pop() {
+            let mut c = tree.node(d).first_child;
+            while !c.is_none() {
+                let n = tree.node(c);
+                if !n.is_deleted() {
+                    if n.is_dir() {
+                        stack.push(c);
+                    } else {
+                        let cat = Self::cat(self.cats, tree, c, n);
+                        if let Some(t) = tally.get_mut(cat as usize) {
+                            *t += mode.of(n);
+                        }
+                    }
+                }
+                c = n.next_sibling;
+            }
+        }
+        let cat = main_category(&tally);
+        self.tints.insert(
+            dir.0,
+            Tint {
+                size,
+                mode,
+                cat,
+                used: generation,
+            },
+        );
+        cat
+    }
+
     /// Fills `s.items` with what `folder` shows in a box of `area` px², in
-    /// paint order (rules 1, 2, 6). Returns the total size.
+    /// paint order (rules 1, 2, 7). Returns the total size.
     fn collect(&mut self, folder: NodeId, area: f64, unscanned: u64, free: u64) -> u64 {
         let tree = self.tree;
         let mode = self.mode;
@@ -732,20 +844,10 @@ impl Run<'_> {
             size: k.size,
         }));
         if small_n > 0 {
-            // Most bytes wins; on a tie, the lower category.
-            let (best, bytes) =
-                tally.iter().enumerate().fold(
-                    (0, 0u64),
-                    |acc, (i, &b)| if b > acc.1 { (i, b) } else { acc },
-                );
             items.push(Item {
                 kind: ItemKind::Group {
                     count: small_n,
-                    cat: if bytes > 0 {
-                        best as u8
-                    } else {
-                        category::NONE
-                    },
+                    cat: main_category(&tally),
                 },
                 node: folder,
                 size: small_sum,
@@ -835,6 +937,7 @@ impl Run<'_> {
                             h: b.h - top - st.pad,
                         };
                         let opens = depth < st.max_depth
+                            && (header || st.header <= 0.0)
                             && b.w * b.h > st.open_area
                             && inner.w >= 3.0
                             && inner.h >= 3.0;
@@ -921,6 +1024,21 @@ impl Run<'_> {
         out[16..20].copy_from_slice(&(names.len() as u32).to_le_bytes());
         out.extend_from_slice(&names);
         out
+    }
+}
+
+/// The category with the most bytes in `tally`; on a tie, the lower
+/// category; [`category::NONE`] when it is all zero.
+fn main_category(tally: &[u64; category::COUNT]) -> u8 {
+    let (best, bytes) =
+        tally.iter().enumerate().fold(
+            (0, 0u64),
+            |acc, (i, &b)| if b > acc.1 { (i, b) } else { acc },
+        );
+    if bytes > 0 {
+        best as u8
+    } else {
+        category::NONE
     }
 }
 

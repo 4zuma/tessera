@@ -95,14 +95,18 @@ export class FluentPainter implements Painter {
     ctx.textBaseline = 'alphabetic';
     ctx.globalAlpha = 1;
 
+    // a closed folder is washed with the category that fills it most, lighter than any
+    // file, and keeps its outline and neutral ink so it never reads as a file
     const leafFill = (it: Item) => {
       const c = it.r.cat;
+      if (it.r.kind === Kind.DirLeaf) return c < CAT_COUNT ? th.tint[c] : t['tm-leafdir'];
       return c < CAT_COUNT ? th.fill[c] : t['tm-leafdir'];
     };
     const leafInk = (it: Item) => {
       const c = it.r.cat;
-      return c < CAT_COUNT ? th.ink[c] : t['tm-leafdir-ink'];
+      return c < CAT_COUNT && it.r.kind !== Kind.DirLeaf ? th.ink[c] : t['tm-leafdir-ink'];
     };
+    const outlined = (it: Item) => it.r.kind === Kind.DirLeaf || it.r.cat >= CAT_COUNT;
     const box = (it: Item) => {
       const x0 = snap(it.x);
       const y0 = snap(it.y);
@@ -151,7 +155,7 @@ export class FluentPainter implements Painter {
       if (!p) batches.set(col, (p = new Path2D()));
       if (b.w < 5 || b.h < 5) p.rect(b.x, b.y, b.w, b.h);
       else p.roundRect(b.x, b.y, b.w, b.h, RADIUS);
-      if (r.cat >= CAT_COUNT && b.w > 3 && b.h > 3) {
+      if (outlined(it) && b.w > 3 && b.h > 3) {
         // a closed folder: outlined like the open ones, so it never reads as a file type
         outlines.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, Math.min(RADIUS, b.w / 2, b.h / 2));
         hasOutlines = true;
@@ -181,7 +185,7 @@ export class FluentPainter implements Painter {
       else ctx.roundRect(b.x, b.y, b.w, b.h, RADIUS);
       ctx.fillStyle = leafFill(it);
       ctx.fill();
-      if (r.cat >= CAT_COUNT && b.w > 3 && b.h > 3) {
+      if (outlined(it) && b.w > 3 && b.h > 3) {
         ctx.beginPath();
         ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, Math.min(RADIUS, b.w / 2, b.h / 2));
         ctx.lineWidth = 1;

@@ -112,6 +112,8 @@ export interface Theme {
   /** fill and label ink per file category */
   fill: string[];
   ink: string[];
+  /** a light wash per category for closed folders, by what fills them most */
+  tint: string[];
 }
 
 function hexToRgb(h: string): [number, number, number] {
@@ -136,12 +138,14 @@ export function makeTheme(scheme: Scheme, accent: { light: string; dark: string 
   tok['tm-reveal'] = scheme === 'dark' ? 'rgba(255,255,255,0.7)' : rgba(tok.accent, 0.55);
   const fill: string[] = [];
   const ink: string[] = [];
+  const tint: string[] = [];
   for (let c = 0; c < CAT_COUNT; c++) {
     const base = CAT_BASE[c];
     fill.push(scheme === 'dark' ? mix(base, '#202020', 0.42) : mix(base, '#ffffff', 0.52));
     ink.push(scheme === 'dark' ? mix(base, '#ffffff', 0.82) : mix(base, '#000000', 0.62));
+    tint.push(scheme === 'dark' ? mix(base, '#202020', 0.74) : mix(base, '#ffffff', 0.8));
   }
-  return { scheme, tok, fill, ink };
+  return { scheme, tok, fill, ink, tint };
 }
 
 export function applyThemeCss(t: Theme, el: HTMLElement = document.documentElement) {
