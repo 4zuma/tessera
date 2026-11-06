@@ -1,0 +1,58 @@
+name: release notes
+
+# Keeps the notes of published releases the same as docs/releases/v<version>.md.
+# The release workflow publishes a release with its notes file as it is at that
+# moment. When a notes file changes on main later (a fix, a rewrite), this copies
+# it to the release that already exists. A notes file whose release does not
+# exist yet is skipped: the release workflow uses it when it publishes.
+#
+# Release notes are written in English.
+
+on:
+  push:
+    branches: [main]
+    paths: ["docs/releases/v*.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-notes
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Update the notes of published releases
+    # Run workflow can pick any branch; only main's notes are published.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Copy each notes file to its release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          summary=${GITHUB_STEP_SUMMARY:-/dev/null}
+          # fails the run if the releases cannot be listed, rather than skipping them all
+          released=$(gh release list --limit 1000 --json tagName --jq '.[].tagName')
+          shopt -s nullglob
+          for file in docs/releases/v*.md; do
+            tag=$(basename "$file" .md)
+            if ! grep -qxF -- "$tag" <<<"$released"; then
+              echo "$tag: not released yet, skipped"
+              continue
+            fi
+            # line endings differ between the Windows and Linux checkouts
+            current=$(gh release view "$tag" --json body --jq .body | tr -d '\r')
+            wanted=$(tr -d '\r' <"$file")
+            if [[ $current == "$wanted" ]]; then
+              echo "$tag: already up to date"
+            else
+              gh release edit "$tag" --notes-file "$file" >/dev/null
+              echo "$tag: notes updated from $file" | tee -a "$summary"
+            fi
+          done
