@@ -46,6 +46,32 @@ jobs:
           name: tessera-windows-x64
           path: target/release/tessera.exe
 
+  windows-arm64:
+    # Windows on Arm, cross-compiled on the x64 runner with Visual Studio's
+    # ARM64 tools. The exe can't run on this runner, so this checks that the
+    # core and the CLI build and pass clippy for Arm64; the tests run on x64.
+    name: Windows arm64 (cross build)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: arm64
+      - name: Clippy
+        run: cargo clippy --workspace --exclude tessera-app --all-targets --target aarch64-pc-windows-msvc -- -D warnings
+      - name: Build release
+        run: cargo build --release -p tessera-cli --target aarch64-pc-windows-msvc
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tessera-windows-arm64
+          path: target/aarch64-pc-windows-msvc/release/tessera.exe
+          if-no-files-found: error
+
   ntfs-images:
     # The only Linux job: it builds real NTFS images with ntfs-3g (hard links,
     # compression, sparse files, a fragmented MFT...) and checks the MFT
