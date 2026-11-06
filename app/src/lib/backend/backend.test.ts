@@ -4,7 +4,7 @@ import { categoryOf, Cat } from './categories';
 import { MockBackend } from './mock';
 import type { LayoutRequest, ScanProgress } from './types';
 
-const STYLE = { outer: 6, pad: 3, gap: 2, header: 21, minHeaderW: 60, minArea: 110, recurse: 3, maxDepth: 14, maxPerDir: 400, labelMinW: 44, labelMinH: 20 };
+const STYLE = { outer: 6, pad: 3, gap: 2, header: 21, minHeaderW: 60, minArea: 110, recurse: 60, openShare: 0.0025, maxDepth: 14, maxPerDir: 400, labelMinW: 44, labelMinH: 20 };
 const req = (view = 0): LayoutRequest => ({ view, width: 1200, height: 800, sizeMode: 'disk', style: STYLE });
 
 async function scanned(b: MockBackend, root = 'C:\\') {

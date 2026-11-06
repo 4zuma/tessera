@@ -108,6 +108,30 @@ fn lay(tree: &Tree, req: &LayoutRequest) -> Decoded {
     d
 }
 
+/// The category with the most bytes below `dir`, the slow way.
+fn main_cat_below(tree: &Tree, dir: NodeId, mode: SizeMode) -> u8 {
+    let mut bytes = [0u64; category::COUNT];
+    let mut stack = vec![dir];
+    while let Some(d) = stack.pop() {
+        for c in tree.children(d) {
+            if tree.node(c).is_dir() {
+                stack.push(c);
+            } else {
+                bytes[category::of_node(tree, c) as usize] += mode.of(tree.node(c));
+            }
+        }
+    }
+    let best = (0..category::COUNT)
+        .rev()
+        .max_by_key(|&i| bytes[i])
+        .unwrap();
+    if bytes[best] > 0 {
+        best as u8
+    } else {
+        category::NONE
+    }
+}
+
 fn inner_of(r: &Record, st: &LayoutStyle) -> (f32, f32, f32, f32) {
     let top = if r.header > 0 { st.header } else { st.pad };
     (
@@ -161,7 +185,12 @@ fn check(tree: &Tree, req: &LayoutRequest, d: &Decoded, extras: u64) {
                 let dir = tree.node(NodeId(r.id)).is_dir();
                 assert_eq!(dir, r.kind != kind::FILE);
                 if dir {
-                    assert_eq!(r.cat, 255);
+                    let cat = if r.kind == kind::DIR {
+                        category::NONE
+                    } else {
+                        main_cat_below(tree, NodeId(r.id), mode)
+                    };
+                    assert_eq!(r.cat, cat, "{r:?}");
                     let header = r.h >= st.header * 2.2 && r.w >= st.min_header_w;
                     assert_eq!(r.header, if header { st.header as u8 } else { 0 }, "{r:?}");
                     // The target is the folder itself or a descendant (fold).
@@ -197,7 +226,14 @@ fn check(tree: &Tree, req: &LayoutRequest, d: &Decoded, extras: u64) {
             kids.contains_key(&r.id) && r.kind != kind::FREE && r.kind != kind::UNSCANNED;
         assert_eq!(r.kind == kind::DIR, has_kids, "{r:?}");
         if r.kind == kind::DIR {
-            assert!(r.depth < st.max_depth && r.w * r.h > st.min_area * st.recurse);
+            let area = r.w * r.h;
+            assert!(r.depth < st.max_depth, "{r:?}");
+            assert!(
+                r.header > 0 || st.header <= 0.0,
+                "open without a header: {r:?}"
+            );
+            assert!(area > st.min_area * st.recurse, "{r:?}");
+            assert!(area > st.open_share * map.2 * map.3, "{r:?}");
         }
     }
     for (&parent, group) in &kids {
@@ -383,6 +419,7 @@ fn styles_are_respected() {
         min_header_w: 100.0,
         min_area: 400.0,
         recurse: 1.0,
+        open_share: 0.0,
         max_depth: 3,
         max_per_dir: 5,
         label_min_w: 80.0,
@@ -554,16 +591,15 @@ fn single_folder_chains_fold() {
     assert_eq!(nav(&t, NodeId::ROOT, SizeMode::Disk).up, None);
 }
 
-#[test]
-fn folders_open_by_size_and_depth() {
+/// A chain of 20 folders, each with a file beside the next folder that
+/// takes three quarters of it, so the area quarters at every level.
+fn chain_tree() -> (Tree, Vec<NodeId>) {
     let mut t = Tree::new(b"R:\\");
-    // A chain of folders, each with a file beside the next folder.
     let mut cur = NodeId::ROOT;
     let mut chain = vec![];
     for i in 0..20 {
         cur = t.add_child(cur, format!("d{i}").as_bytes(), 0, 0, NodeFlags::DIR, 0);
         chain.push(cur);
-        // Three quarters of each folder: the area quarters at every level.
         let size = 3u64 << (2 * (19 - i) + 10);
         t.add_child(cur, format!("f{i}").as_bytes(), size, 1, NodeFlags::NONE, 0);
     }
@@ -575,6 +611,12 @@ fn folders_open_by_size_and_depth() {
         NodeFlags::NONE,
         0,
     );
+    (t, chain)
+}
+
+#[test]
+fn folders_open_by_size_and_depth() {
+    let (t, chain) = chain_tree();
     let mut req = LayoutRequest::new(NodeId::ROOT, 3000.0, 3000.0);
     req.style.max_depth = 4;
     let d = lay(&t, &req);
@@ -595,6 +637,99 @@ fn folders_open_by_size_and_depth() {
         .unwrap();
     assert_eq!(last.kind, kind::DIR_LEAF);
     assert!(last.depth < 20);
+}
+
+#[test]
+fn open_share_keeps_the_depth_when_the_window_grows() {
+    let (t, chain) = chain_tree();
+    let open = |side: f32, share: f32| {
+        let mut req = LayoutRequest::new(NodeId::ROOT, side, side);
+        req.style.recurse = 1.0;
+        req.style.open_share = share;
+        req.style.max_depth = 255;
+        let d = lay(&t, &req);
+        let ids: Vec<u32> = d
+            .records
+            .iter()
+            .filter(|r| r.kind == kind::DIR)
+            .map(|r| r.id)
+            .collect();
+        ids
+    };
+    // Folders at 100 %, 25 %, 6.25 % and 1.6 % of the map open, the one
+    // at 0.4 % does not.
+    let small = open(1500.0, 0.01);
+    assert_eq!(small, [chain[0].0, chain[1].0, chain[2].0, chain[3].0]);
+    assert_eq!(open(6000.0, 0.01), small);
+    // Without the share, a bigger window opens more levels.
+    assert!(open(6000.0, 0.0).len() > open(1500.0, 0.0).len());
+}
+
+#[test]
+fn closed_folders_take_their_main_category() {
+    let mut t = Tree::new(b"R:\\");
+    let media = t.add_child(NodeId::ROOT, b"media", 0, 0, NodeFlags::DIR, 0);
+    let deep = t.add_child(media, b"deep", 0, 0, NodeFlags::DIR, 0);
+    t.add_child(deep, b"a.mp4", 1000, 10, NodeFlags::NONE, 0);
+    let jpg = t.add_child(media, b"b.jpg", 990, 990, NodeFlags::NONE, 0);
+    // A tie goes to the lower category (audio before archive).
+    let tie = t.add_child(NodeId::ROOT, b"tie", 0, 0, NodeFlags::DIR, 0);
+    t.add_child(tie, b"c.zip", 700, 700, NodeFlags::NONE, 0);
+    t.add_child(tie, b"d.mp3", 700, 700, NodeFlags::NONE, 0);
+    // Too small to open, so both folders are closed.
+    let req = LayoutRequest::new(NodeId::ROOT, 100.0, 100.0);
+    let mut eng = LayoutEngine::new();
+    let cat_of = |eng: &mut LayoutEngine, t: &Tree, req: &LayoutRequest, id: NodeId| {
+        let d = decode(&eng.layout(t, req, RootExtras::default(), 0)).unwrap();
+        let r = d.records.iter().find(|r| r.id == id.0).unwrap();
+        assert_eq!(r.kind, kind::DIR_LEAF);
+        r.cat
+    };
+    assert_eq!(cat_of(&mut eng, &t, &req, media), category::VIDEO);
+    assert_eq!(cat_of(&mut eng, &t, &req, tie), category::AUDIO);
+    // By logical size, the 10-byte video loses.
+    let logical = LayoutRequest {
+        size_mode: SizeMode::Logical,
+        ..req
+    };
+    assert_eq!(cat_of(&mut eng, &t, &logical, media), category::IMAGE);
+    assert_eq!(cat_of(&mut eng, &t, &req, media), category::VIDEO);
+    // Within 1/8 of the size it was found at, the answer is reused...
+    t.set_file_size(jpg, 1100, 1100);
+    assert_eq!(cat_of(&mut eng, &t, &req, media), category::VIDEO);
+    // ...beyond that, the folder is walked again.
+    t.set_file_size(jpg, 2000, 2000);
+    assert_eq!(cat_of(&mut eng, &t, &req, media), category::IMAGE);
+    // A fresh engine always walks.
+    t.set_file_size(jpg, 1100, 1100);
+    assert_eq!(
+        cat_of(&mut LayoutEngine::new(), &t, &req, media),
+        category::IMAGE
+    );
+}
+
+#[test]
+fn only_folders_with_a_header_open() {
+    let t = synthetic(5, 3_000, 4, 10, 0, 0);
+    let mut req = LayoutRequest::new(NodeId::ROOT, 1600.0, 1000.0);
+    let d = lay(&t, &req);
+    assert!(d.records.iter().any(|r| r.kind == kind::DIR));
+    // No folder is wide enough for a header, so none opens.
+    req.style.min_header_w = 10_000.0;
+    let d = lay(&t, &req);
+    assert!(
+        d.records
+            .iter()
+            .all(|r| r.depth == 1 && r.kind != kind::DIR)
+    );
+    // Without header bands at all, the rule is off.
+    req.style.header = 0.0;
+    let d = lay(&t, &req);
+    assert!(
+        d.records
+            .iter()
+            .any(|r| r.kind == kind::DIR && r.header == 0)
+    );
 }
 
 #[test]
