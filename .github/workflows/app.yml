@@ -3,18 +3,46 @@ name: app
 on:
   push:
     branches: [main]
-    paths: ["app/**", "crates/tessera-core/**", "Cargo.toml", "Cargo.lock", "docs/ipc.md", ".github/workflows/app.yml"]
   pull_request:
-    paths: ["app/**", "crates/tessera-core/**", "Cargo.toml", "Cargo.lock", "docs/ipc.md", ".github/workflows/app.yml"]
+    # labeled: adding the build-exe label to a pull request builds its exe
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
+# A new push to a pull request cancels the run of the previous one. Adding a
+# label waits for the run in progress instead, which is for the same commit
+# (cancelling it would leave a "cancelled" check on the pull request).
+# Runs on main are never cancelled.
 concurrency:
-  group: app-${{ github.ref }}
-  cancel-in-progress: true
+  group: app-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event.action != 'labeled' }}
 
 jobs:
+  changes:
+    name: What changed
+    runs-on: ubuntu-latest
+    outputs:
+      app: ${{ steps.changes.outputs.app }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: bash .github/scripts/ci-changes.sh
+
+  # The jobs below are skipped when the change cannot affect the app (only
+  # docs, only the CLI...; see .github/scripts/ci-changes.sh). A skipped job
+  # still reports its check as passed, so they can be required checks.
+
   ui:
     name: UI (type check, tests, build)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.app != 'false' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -38,6 +66,11 @@ jobs:
     defaults:
       run:
         working-directory: app
+    env:
+      # The exe is built on main and by Run workflow. A pull request only checks
+      # and tests the app, unless it has the build-exe label: then it builds a
+      # test exe too (adding the label starts a run).
+      BUILD_EXE: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'build-exe') }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -47,20 +80,28 @@ jobs:
           cache-dependency-path: app/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           key: app
+          # pull requests use main's cache but do not save their own
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: npm ci
       # the app crate embeds app/dist, so build the UI first
       - run: npm run build
+      # ci.yml skips changes that only touch the app, so the app's Rust
+      # formatting is checked here
+      - name: Format
+        run: cargo fmt -p tessera-app -- --check
       - name: Clippy
         run: cargo clippy -p tessera-app --all-targets -- -D warnings
       - name: Test
         run: cargo test -p tessera-app
       - name: Build (tauri build, no installer)
+        if: env.BUILD_EXE == 'true'
         run: npx tauri build
       - uses: actions/upload-artifact@v7
+        if: env.BUILD_EXE == 'true'
         with:
           name: tessera-app-windows-x64
           # the crate is a member of the root workspace, so it builds into ./target
