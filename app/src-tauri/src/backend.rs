@@ -4,7 +4,7 @@
 //! here, in Rust. The WebView only ever receives layout buffers (the rects on
 //! screen) and small records about single nodes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, Weak};
@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State, ipc::Response};
 use tessera_core::layout::{self, LayoutEngine, LayoutRequest, LayoutStyle, RootExtras, SizeMode};
 use tessera_core::scan::{self, ScanOptions, ScanProgress};
+use tessera_core::totals::{Totals, TotalsCache};
 use tessera_core::watch::{BatchReport, WatchOptions, Watcher};
 use tessera_core::{NodeFlags, NodeId, SharedTree, Tree, category, delete, tree::mtime_to_unix_ms};
 
@@ -124,8 +125,9 @@ struct Session {
     watcher: Mutex<Option<Watcher>>,
     /// Root size when `tree-changed` was last sent.
     last_root: AtomicU64,
-    /// Recursive file and folder counts per folder, with the rev they are for.
-    counts: Mutex<HashMap<u32, (u32, u64, u64)>>,
+    /// What is below big folders (counts, bytes per category), for the
+    /// details card and the legend; see [`TotalsCache`].
+    totals: Mutex<TotalsCache>,
     /// The layout the window last asked for, to tell which live changes show.
     shown: Mutex<Shown>,
     /// Changes came in while the window was minimized; tell it on restore.
@@ -164,7 +166,7 @@ impl Session {
             emit_lock: Mutex::new(()),
             watcher: Mutex::new(None),
             last_root: AtomicU64::new(0),
-            counts: Mutex::new(HashMap::new()),
+            totals: Mutex::new(TotalsCache::new()),
             shown: Mutex::new(Shown::default()),
             stale: AtomicBool::new(false),
         }
@@ -835,37 +837,21 @@ fn node_details(s: &Session, id: u32, mode: SizeMode) -> Option<Details> {
     })
 }
 
-/// Recursive file and folder counts, cached per tree revision. While the
-/// root is still being scanned the scanner's own counters are used.
+/// Recursive file and folder counts. While the root is still being scanned
+/// the scanner's own counters are used.
 fn counts(s: &Session, t: &Tree, id: NodeId) -> (u64, u64) {
     if id == NodeId::ROOT && !s.done.load(Relaxed) {
         let p = s.progress.snapshot();
         return (p.files, p.dirs);
     }
-    let rev = s.rev.load(Relaxed);
-    if let Some(&(r, f, d)) = lock(&s.counts).get(&id.0)
-        && r == rev
-    {
-        return (f, d);
-    }
-    let (mut files, mut dirs) = (0u64, 0u64);
-    let mut stack = vec![id];
-    while let Some(d) = stack.pop() {
-        for c in t.children(d) {
-            if t.node(c).is_dir() {
-                dirs += 1;
-                stack.push(c);
-            } else {
-                files += 1;
-            }
-        }
-    }
-    let mut cache = lock(&s.counts);
-    if cache.len() > 256 {
-        cache.clear();
-    }
-    cache.insert(id.0, (rev, files, dirs));
-    (files, dirs)
+    let tot = totals(s, t, id);
+    (tot.files, tot.dirs)
+}
+
+/// What is below `id` now. Only folders on the paths that changed since the
+/// last call are counted again, so asking after every live update is cheap.
+fn totals(s: &Session, t: &Tree, id: NodeId) -> Totals {
+    lock(&s.totals).get(t, id)
 }
 
 fn hint_for(name: &str, n: &tessera_core::Node) -> Option<String> {
@@ -920,26 +906,16 @@ pub async fn cat_stats(
     size_mode: Mode,
 ) -> Result<Vec<CatStat>, String> {
     let s = core.current()?;
-    Ok(cat_stats_of(&s.tree(), NodeId(view), size_mode.into()))
+    Ok(cat_stats_of(&s, NodeId(view), size_mode.into()))
 }
 
 /// Bytes per file category below `view`, largest first.
-fn cat_stats_of(t: &Tree, view: NodeId, mode: SizeMode) -> Vec<CatStat> {
-    if view.index() >= t.len() || t.is_deleted(view) {
+fn cat_stats_of(s: &Session, view: NodeId, mode: SizeMode) -> Vec<CatStat> {
+    let t = s.tree();
+    if view.index() >= t.len() || t.is_deleted(view) || !t.node(view).is_dir() {
         return Vec::new();
     }
-    let mut bytes = [0u64; category::COUNT];
-    let mut stack = vec![view];
-    while let Some(d) = stack.pop() {
-        for c in t.children(d) {
-            let n = t.node(c);
-            if n.is_dir() {
-                stack.push(c);
-            } else if let Some(b) = bytes.get_mut(category::of_node(t, c) as usize) {
-                *b += mode.of(n);
-            }
-        }
-    }
+    let bytes = *totals(s, &t, view).bytes(mode);
     let mut out: Vec<CatStat> = bytes
         .iter()
         .enumerate()
@@ -1187,7 +1163,7 @@ mod tests {
     #[test]
     fn categories_below_a_view() {
         let s = sample();
-        let stats = cat_stats_of(&s.tree(), NodeId::ROOT, SizeMode::Disk);
+        let stats = cat_stats_of(&s, NodeId::ROOT, SizeMode::Disk);
         let cats: Vec<u8> = stats.iter().map(|c| c.cat).collect();
         assert_eq!(
             cats,
@@ -1199,7 +1175,7 @@ mod tests {
             ]
         );
         let me = id_of(&s, &[b"Users", b"me"]);
-        assert_eq!(cat_stats_of(&s.tree(), me, SizeMode::Disk).len(), 3);
+        assert_eq!(cat_stats_of(&s, me, SizeMode::Disk).len(), 3);
     }
 
     #[test]
