@@ -24,6 +24,8 @@ concurrency:
 jobs:
   sync:
     name: Update the notes of published releases
+    # Run workflow can pick any branch; only main's notes are published.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
