@@ -66,10 +66,11 @@ mod imp {
         let mut label = text(&label);
         if label.is_empty() {
             label = if kind == DRIVE_FIXED {
-                "本地磁盘"
+                crate::i18n::text::LOCAL_DISK
             } else {
-                "可移动磁盘"
+                crate::i18n::text::REMOVABLE_DISK
             }
+            .get()
             .into();
         }
         Some(Volume {

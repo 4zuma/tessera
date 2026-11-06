@@ -1,6 +1,6 @@
 [package]
 name = "tessera-app"
-version = "1.0.0"
+version = "1.0.1"
 description = "Tessera: see what fills your disk, and clean it up"
 edition = "2024"
 rust-version = "1.90"
@@ -30,8 +30,10 @@ windows-version = "0.1"
 # the same version Tauri's WebView2 controller comes from (see Cargo.lock)
 webview2-com = "0.39"
 windows = { workspace = true, features = [
+  "System_UserProfile",
   "UI_ViewManagement",
   "Win32_Foundation",
+  "Win32_Globalization",
   "Win32_Security",
   "Win32_Storage_FileSystem",
   "Win32_System_Threading",

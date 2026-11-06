@@ -2,9 +2,11 @@
 //!
 //! [`backend`] serves the commands and events from `tessera-core`: the whole
 //! file tree stays here, the WebView only receives the rects it draws.
-//! [`platform`] covers the window itself (Mica, accent colour, elevation).
+//! [`platform`] covers the window itself (Mica, accent colour, elevation),
+//! [`i18n`] the UI language and the text Rust produces.
 
 mod backend;
+mod i18n;
 mod platform;
 mod volumes;
 
@@ -26,6 +28,9 @@ pub fn run() {
     tauri::Builder::default()
         .manage(backend::Core::new())
         .setup(|app| {
+            // the language, before anything produces text (here COM is already set up
+            // on this thread, as the WebView needs it)
+            i18n::choice();
             let window = app
                 .get_webview_window("main")
                 .ok_or("main window missing")?;
@@ -43,6 +48,16 @@ pub fn run() {
             }
             window.show()?;
             Ok(())
+        })
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Focused(f) => {
+                backend::window_state(window.app_handle(), Some(*f), None)
+            }
+            tauri::WindowEvent::Resized(_) => {
+                let minimized = window.is_minimized().unwrap_or(false);
+                backend::window_state(window.app_handle(), None, Some(minimized))
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             platform_info,

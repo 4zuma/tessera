@@ -442,6 +442,77 @@ fn styles_are_respected() {
 }
 
 #[test]
+fn size_labels_match_the_ui_formatter() {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    // fmtBytes: 1023 字节 / 1 KB / 1023 KB / 1.0 MB / 9.9 MB / 10 MB / 1.0 GB / 99.9 GB / 100 GB / 1.00 TB
+    assert_eq!(size_label(1023), (6, 1023));
+    assert_eq!(size_label(KB + 500), (5, 1));
+    assert_eq!(size_label(KB + 520), (5, 2));
+    assert_eq!(size_label(MB - 1), (5, 1024)); // "1024 KB", as fmtBytes shows it
+    assert_eq!(size_label(MB), (4, 10));
+    assert_eq!(size_label(10 * MB - 1), (4, 100)); // "10.0 MB"
+    assert_eq!(size_label(10 * MB), (3, 10));
+    assert_eq!(size_label(GB), (2, 10));
+    assert_eq!(size_label(100 * GB - GB / 20), (2, 1000));
+    assert_eq!(size_label(100 * GB), (1, 100));
+    assert_eq!(size_label(1024 * GB), (0, 100));
+    // the same label, however the bytes differ
+    assert_eq!(size_label(25 * GB + MB), size_label(25 * GB + 40 * MB));
+    assert_ne!(size_label(25 * GB), size_label(25 * GB + 60 * MB));
+}
+
+#[test]
+fn same_picture_ignores_changes_too_small_to_see() {
+    let mut t = synthetic(11, 3000, 4, 12, 0, 0);
+    let req = LayoutRequest::new(NodeId::ROOT, 1280.0, 800.0);
+    let mut eng = LayoutEngine::new();
+    let a = eng.layout(&t, &req, RootExtras::default(), 1);
+    // the same tree, another revision: the same picture
+    let again = eng.layout(&t, &req, RootExtras::default(), 2);
+    assert!(same_picture(&a, &again, 0.5));
+    assert!(header_bytes_per_px(&a).unwrap() > 0.0);
+
+    // a file that is not drawn on its own grows by a few bytes per px²
+    let d = decode(&a).unwrap();
+    let shown: std::collections::HashSet<u32> = d.records.iter().map(|r| r.id).collect();
+    let bpp = header_bytes_per_px(&a).unwrap() as f64;
+    let hidden = (1..t.len() as u32)
+        .map(NodeId)
+        .find(|&n| {
+            !t.node(n).is_dir() && !shown.contains(&n.0) && !shown.contains(&t.node(n).parent.0)
+        })
+        .expect("a file below what is drawn");
+    let n = *t.node(hidden);
+    let grow = (bpp * 0.2) as u64; // a fifth of a px²
+    t.set_file_size(hidden, n.size + grow, n.logical + grow);
+    let b = eng.layout(&t, &req, RootExtras::default(), 3);
+    assert!(same_picture(&a, &b, 0.5), "a fifth of a px² must not count");
+
+    // the biggest named tile doubles: that shows
+    let big = d
+        .records
+        .iter()
+        .filter(|r| r.kind == 0 && r.name.is_some() && (r.id as usize) < t.len())
+        .max_by_key(|r| r.size)
+        .expect("a named file tile");
+    let n = *t.node(NodeId(big.id));
+    t.set_file_size(NodeId(big.id), n.size * 2, n.logical * 2);
+    let c = eng.layout(&t, &req, RootExtras::default(), 4);
+    assert!(!same_picture(&a, &c, 0.5));
+    // a differently sized canvas is another picture
+    let wide = LayoutRequest::new(NodeId::ROOT, 1300.0, 800.0);
+    assert!(!same_picture(
+        &c,
+        &eng.layout(&t, &wide, RootExtras::default(), 5),
+        0.5
+    ));
+    // garbage never matches
+    assert!(!same_picture(&a, &a[..10], 0.5));
+}
+
+#[test]
 fn hysteresis_keeps_the_order_calm() {
     let mut t = Tree::new(b"R:\\");
     let a = t.add_child(NodeId::ROOT, b"a.bin", 100_000, 100_000, NodeFlags::NONE, 0);

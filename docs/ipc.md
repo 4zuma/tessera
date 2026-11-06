@@ -15,7 +15,7 @@ All sizes are bytes. All ids are `u32` node indices into the core's arena unless
 
 | Command | Args | Returns |
 | --- | --- | --- |
-| `platform_info` | – | `{ elevated: bool, backdrop: "mica" \| "none", accent: { light, dark } \| null, version: string, core: bool }` |
+| `platform_info` | – | `{ elevated: bool, backdrop: "mica" \| "none", accent: { light, dark } \| null, version: string, core: bool, lang: "en" \| "zh-CN", locale: string }` – `lang` is the UI language, `locale` the BCP 47 tag for dates and numbers (see below) |
 | `list_volumes` | – | `Volume[]` |
 | `scan_start` | `{ root: string }` | `{ scanId: u32, rootId: u32 }` – cancels any running scan |
 | `scan_cancel` | – | `()` |
@@ -77,17 +77,41 @@ interface DeleteResult {
 }
 ```
 
+## Language
+
+There is no language setting. At startup Rust reads the user's "Preferred languages" from
+Windows (`GlobalizationPreferences.Languages`, the ordered list in Settings › Time &
+language › Language & region; `GetUserPreferredUILanguages` if WinRT is unavailable) and
+takes the first one Tessera has a translation for: Simplified Chinese (`zh-Hans-*`, `zh`,
+`zh-CN`, `zh-SG`…) or any English. When none matches, the UI is English. Traditional Chinese
+has no translation yet, so it falls through to the next language in the list. The
+environment variable `TESSERA_LANG` (e.g. `en`) overrides the list, for testing.
+
+All user-facing text in commands' results (`lockReason`, `hint`, `failed[].reason`,
+volume labels, the names of the free, unscanned and grouped tiles, error strings) is in
+that language (`app/src-tauri/src/i18n.rs`); the WebView's own text is in
+`app/src/lib/locales/`. Text that comes from Windows itself (shell errors) is passed
+through as Windows worded it.
+
 ## Events (Rust → WebView)
 
 | Event | Payload | When |
 | --- | --- | --- |
 | `scan-progress` | `{ scanId, files, dirs, scanned, used, elapsedMs, done, rev, errors }` | every 100 ms while scanning, and once with `done: true` |
-| `tree-changed` | `{ rev, bytesDelta }` | live updates from the watcher, at most every 500 ms |
+| `tree-changed` | `{ rev, bytesDelta }` | live updates from the watcher that can show: at most every 500 ms (2 s while the window is in the background), never while it is minimized (one on restore) |
 
 `scanned` is bytes found so far, `used` is the volume's used bytes (known up front from
 `GetDiskFreeSpaceExW`), so `scanned / used` is the progress and `used - scanned` is the
 "not scanned yet" tile. The frontend asks for a new layout after each event, with at most
 one `layout` call in flight; there is no polling and no timer when nothing changes.
+
+`tree-changed` is held back while a change cannot move anything on screen: the backend keeps
+the last layout it sent and how many bytes changed since (`Tree::changed_bytes`). Below one
+px² of the shown view it stays silent; past that it lays the view out again and sends the
+event only when some edge moved by more than 0.5 px or a tile, colour or size label changed
+(`layout::same_picture`). Changes Windows keeps making on a system drive (logs, caches) thus
+cost no IPC, no layout in the WebView and no frame. `bytesDelta` covers everything since the
+last event.
 
 ## Layout buffer
 

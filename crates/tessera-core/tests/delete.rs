@@ -9,7 +9,8 @@
 //! recycle tests expect the items to land there and come back.
 //! `empty_recycle_bin` empties the whole bin of the drive, so its test only
 //! runs on GitHub Actions runners (`GITHUB_ACTIONS=true`), never on a
-//! developer's machine.
+//! developer's machine. Before the first recycle-bin test, `bin_lock` checks
+//! that the bin takes items at all (see `prime_bin`).
 //!
 //! Wine's shell does not implement `IFileOperation`, so under wine the
 //! shell-based tests print a note and return early. They must pass on real
@@ -17,8 +18,9 @@
 
 #![cfg(windows)]
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tessera_core::delete::{
@@ -142,10 +144,102 @@ fn shell_works() -> bool {
 }
 
 /// Serialises the tests that use the recycle bin, so emptying it cannot
-/// take another test's items.
+/// take another test's items. The first caller also primes the bin
+/// ([`prime_bin`]); if that fails, every caller fails with its report.
 fn bin_lock() -> MutexGuard<'static, ()> {
     static BIN: Mutex<()> = Mutex::new(());
-    BIN.lock().unwrap_or_else(PoisonError::into_inner)
+    static PRIMED: OnceLock<Result<(), String>> = OnceLock::new();
+    let guard = BIN.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Err(e) = PRIMED.get_or_init(prime_bin) {
+        panic!("{e}");
+    }
+    guard
+}
+
+/// Number of items and bytes in the recycle bin of the temp directory's
+/// drive, for failure reports.
+fn bin_contents() -> Option<(i64, i64)> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::UI::Shell::{SHQUERYRBINFO, SHQueryRecycleBinW};
+    use windows::core::PCWSTR;
+    let temp = std::env::temp_dir();
+    let drive = temp.ancestors().last()?;
+    let wide: Vec<u16> = drive.as_os_str().encode_wide().chain([0]).collect();
+    let mut info = SHQUERYRBINFO {
+        cbSize: std::mem::size_of::<SHQUERYRBINFO>() as u32,
+        ..Default::default()
+    };
+    unsafe { SHQueryRecycleBinW(PCWSTR(wide.as_ptr()), &mut info) }.ok()?;
+    Some((info.i64NumItems, info.i64Size))
+}
+
+/// Recycles `rel` of `dir` and returns the undo token. When the item did
+/// not land in the bin, returns what happened instead: the result, whether
+/// the file is still there, and the bin before and after.
+fn try_recycle(
+    dir: &TempDir,
+    tree: &SharedTree,
+    rel: &str,
+    undo: &UndoStore,
+) -> Result<u32, String> {
+    let id = find(tree, rel);
+    let before = bin_contents();
+    let res = recycle(tree, &[id], &silent(), undo).map_err(|e| format!("recycle failed: {e}"))?;
+    res.undo.ok_or_else(|| {
+        format!(
+            "{rel} did not land in the recycle bin: {res:?}; still on disk: {}; \
+             bin (items, bytes) before {before:?}, after {:?}",
+            dir.0.join(rel).exists(),
+            bin_contents()
+        )
+    })
+}
+
+/// Makes sure the recycle bin of the temp directory's drive takes items
+/// before the recycle-bin tests rely on it.
+///
+/// On fresh Windows on Arm runners the first recycle of the job sometimes
+/// came back without an undo token (the shell reported no item in the
+/// bin), while the later recycles of the same job worked. With `silent`,
+/// the shell deletes an item it decides it cannot recycle without asking.
+/// So this recycles a probe file (and restores it, so nothing is left in
+/// the bin) until one lands in the bin, up to five tries. Misses are
+/// written to stderr, which the test harness does not capture, so they show
+/// in the CI log. A bin that never takes an item fails the recycle-bin
+/// tests with the report of every try.
+fn prime_bin() -> Result<(), String> {
+    if under_wine() {
+        return Ok(()); // the tests skip themselves (`shell_works`)
+    }
+    let dir = TempDir::new("prime");
+    let mut misses = Vec::new();
+    for attempt in 1..=5u64 {
+        let rel = format!("probe{attempt}.txt");
+        dir.file(&rel, 100);
+        let tree = tree_of(&dir.0);
+        let undo = UndoStore::new();
+        match try_recycle(&dir, &tree, &rel, &undo) {
+            Ok(token) => {
+                let _ = restore(&tree, token, &silent(), &undo);
+                if !misses.is_empty() {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "note: the recycle bin took an item on try {attempt}; before that:\n{}",
+                        misses.join("\n")
+                    );
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                misses.push(format!("try {attempt}: {e}"));
+                std::thread::sleep(Duration::from_millis(200 * attempt));
+            }
+        }
+    }
+    Err(format!(
+        "the recycle bin never took an item:\n{}",
+        misses.join("\n")
+    ))
 }
 
 fn env_path(var: &str) -> Option<PathBuf> {
@@ -314,7 +408,9 @@ fn recycle_and_restore() {
     assert_eq!(res.ok, vec![doc, folder], "{res:?}");
     assert!(res.failed.is_empty());
     assert_eq!(res.bytes, 4096 + 8192);
-    let token = res.undo.expect("an undo token for recycled items");
+    let token = res
+        .undo
+        .unwrap_or_else(|| panic!("no undo token: {res:?}; bin {:?}", bin_contents()));
     assert!(undo.contains(token));
     assert!(!dir.0.join("doc.txt").exists() && !dir.0.join("folder").exists());
     {
@@ -361,10 +457,7 @@ fn restore_never_overwrites() {
     let tree = tree_of(&dir.0);
     let id = find(&tree, "x.txt");
     let undo = UndoStore::new();
-    let token = recycle(&tree, &[id], &silent(), &undo)
-        .unwrap()
-        .undo
-        .expect("recycled");
+    let token = try_recycle(&dir, &tree, "x.txt", &undo).unwrap_or_else(|e| panic!("{e}"));
     // Something new took the name in the meantime.
     std::fs::write(&x, b"new").unwrap();
     let res = restore(&tree, token, &silent(), &undo).unwrap();
@@ -426,7 +519,13 @@ fn works_from_com_initialised_threads() {
             let undo = UndoStore::new();
             let res = recycle(&tree, &[f], &silent(), &undo).unwrap();
             assert_eq!(res.ok, vec![f], "{coinit:?}");
-            let back = restore(&tree, res.undo.unwrap(), &silent(), &undo).unwrap();
+            let token = res.undo.unwrap_or_else(|| {
+                panic!(
+                    "{coinit:?}: no undo token: {res:?}; bin {:?}",
+                    bin_contents()
+                )
+            });
+            let back = restore(&tree, token, &silent(), &undo).unwrap();
             assert_eq!(back.ok, vec![f], "{coinit:?}");
             assert_eq!(purge(&tree, &[g], &silent()).unwrap().ok, vec![g]);
             // The thread's own COM initialisation is still intact.
@@ -488,12 +587,8 @@ fn empty_bin_on_ci_only() {
     let dir = TempDir::new("empty");
     dir.file("gone.bin", 5000);
     let tree = tree_of(&dir.0);
-    let id = find(&tree, "gone.bin");
     let undo = UndoStore::new();
-    let token = recycle(&tree, &[id], &silent(), &undo)
-        .unwrap()
-        .undo
-        .expect("recycled");
+    let token = try_recycle(&dir, &tree, "gone.bin", &undo).unwrap_or_else(|e| panic!("{e}"));
     let drive = PathBuf::from(format!("{}\\", std::env::var("SystemDrive").unwrap()));
     let res = empty_recycle_bin(&tree, &drive, &silent()).unwrap();
     assert!(res.bytes >= 5000, "{res:?}");
