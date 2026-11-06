@@ -8,11 +8,13 @@ on:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
-# A new push to a pull request cancels the run of the previous one.
+# A new push to a pull request cancels the run of the previous one. Adding a
+# label waits for the run in progress instead, which is for the same commit
+# (cancelling it would leave a "cancelled" check on the pull request).
 # Runs on main are never cancelled.
 concurrency:
   group: app-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event.action != 'labeled' }}
 
 jobs:
   changes:
