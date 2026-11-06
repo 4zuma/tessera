@@ -1,6 +1,6 @@
 name: release
 
-# Builds the Windows binaries and publishes a GitHub release.
+# Builds the Windows binaries (x64 and Arm64) and publishes a GitHub release.
 #
 # Normally it runs by itself: when a push to main changes the version in
 # app/src-tauri/tauri.conf.json (set it everywhere with
@@ -8,9 +8,14 @@ name: release
 # and publishes the release. It does nothing when the version did not change
 # or the tag v<version> already exists.
 #
+# When the release of the current version lacks an architecture (say one was
+# just added below), the next run on main builds it from that release's tag and
+# adds the files to the release, without a new version.
+#
 # It can still be started by hand from the Actions tab ("Run workflow",
 # version e.g. 0.1.0) or by pushing a tag v0.1.0. The version must match
-# tauri.conf.json, and a version that is already released is refused.
+# tauri.conf.json; for a version that is already released, it only adds
+# missing files. The decisions are made by .github/scripts/release-plan.sh.
 # The release notes come from docs/releases/v<version>.md when that file
 # exists, otherwise GitHub generates them from the merged pull requests.
 
@@ -25,7 +30,10 @@ on:
     # Tags pushed by this workflow use GITHUB_TOKEN, which starts no new run.
     tags: ["v*"]
     # Only checked for pushes to main (GitHub ignores paths for tag pushes).
-    paths: ["app/src-tauri/tauri.conf.json"]
+    paths:
+      - app/src-tauri/tauri.conf.json
+      - .github/workflows/release.yml
+      - .github/scripts/release-*.sh
 
 permissions:
   contents: write
@@ -35,12 +43,14 @@ jobs:
     name: Decide what to release
     runs-on: ubuntu-latest
     outputs:
-      release: ${{ steps.plan.outputs.release }}
+      mode: ${{ steps.plan.outputs.mode }}
       tag: ${{ steps.plan.outputs.tag }}
+      ref: ${{ steps.plan.outputs.ref }}
+      arches: ${{ steps.plan.outputs.arches }}
     steps:
       - uses: actions/checkout@v7
 
-      - name: Compare the version with the last push and the existing tags
+      - name: Compare the version with the last push and the existing releases
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
@@ -48,33 +58,28 @@ jobs:
           BEFORE: ${{ github.event.before }}
         run: bash .github/scripts/release-plan.sh
 
-  windows:
-    name: Build and publish
+  build:
+    name: Build ${{ matrix.arch }}
     needs: plan
-    if: needs.plan.outputs.release == 'true'
+    if: needs.plan.outputs.mode != 'none'
     runs-on: windows-latest
     timeout-minutes: 60
-    # One release at a time, in the order they were started.
-    concurrency:
-      group: release
-      cancel-in-progress: false
+    strategy:
+      matrix:
+        arch: ${{ fromJSON(needs.plan.outputs.arches) }}
     defaults:
       run:
         shell: pwsh
     env:
       TAG: ${{ needs.plan.outputs.tag }}
+      ARCH: ${{ matrix.arch }}
+      # Arm64 is cross-compiled on the x64 runner (Visual Studio's ARM64 tools)
+      TARGET: ${{ matrix.arch == 'arm64' && 'aarch64-pc-windows-msvc' || 'x86_64-pc-windows-msvc' }}
     steps:
       - uses: actions/checkout@v7
-
-      - name: Make sure no other run released it meanwhile
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if url=$(gh release view "$TAG" --json url --jq .url 2>/dev/null); then
-            echo "::error::$TAG was already released by another run: $url"
-            exit 1
-          fi
+        with:
+          # this commit for a new release, the release's tag when adding files
+          ref: ${{ needs.plan.outputs.ref }}
 
       - uses: actions/setup-node@v7
         with:
@@ -82,40 +87,54 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release
+          key: release-${{ matrix.arch }}
 
       - name: Build the app (tauri build, no installer)
         working-directory: app
         run: |
           npm ci
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npx tauri build
+          npx tauri build --target $env:TARGET
       - name: Build the command-line tool
-        run: cargo build --release -p tessera-cli
+        run: cargo build --release -p tessera-cli --target $env:TARGET
 
       - name: Package
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
           # asset names are all lowercase
-          Copy-Item target/release/tessera-app.exe "out/tessera-$env:TAG-windows-x64.exe"
-          Copy-Item target/release/tessera.exe "out/tessera-cli-$env:TAG-windows-x64.exe"
-          Get-ChildItem out/*.exe | ForEach-Object {
-            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
-          } | Set-Content -Encoding ascii out/SHA256SUMS.txt
-          Get-Content out/SHA256SUMS.txt
+          Copy-Item "target/$env:TARGET/release/tessera-app.exe" "out/tessera-$env:TAG-windows-$env:ARCH.exe"
+          Copy-Item "target/$env:TARGET/release/tessera.exe" "out/tessera-cli-$env:TAG-windows-$env:ARCH.exe"
+          Get-ChildItem out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.arch }}
+          path: out/*.exe
+          if-no-files-found: error
 
-      - name: Publish the release
+  publish:
+    name: Publish
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    # One publish at a time; the script checks the release again, so a run
+    # that waited here never publishes the same files twice.
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      # the workflow's own commit: the scripts and the current release notes
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: out
+          merge-multiple: true
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          $notes = "docs/releases/$env:TAG.md"
-          # PowerShell does not expand wildcards for native commands, so list the files
-          $files = (Get-ChildItem out -File).FullName
-          $ghArgs = @($env:TAG) + $files + @("--title", "Tessera $env:TAG", "--target", "$env:GITHUB_SHA")
-          if (Test-Path $notes) { $ghArgs += @("--notes-file", $notes) } else { $ghArgs += "--generate-notes" }
-          # a version like 0.4.0-beta.1 is a pre-release, so it never becomes "Latest"
-          if ($env:TAG -match '-') { $ghArgs += "--prerelease" }
-          gh release create @ghArgs
-          if ($LASTEXITCODE -ne 0) { throw "gh release create failed ($LASTEXITCODE)" }
+          MODE: ${{ needs.plan.outputs.mode }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: bash .github/scripts/release-publish.sh
