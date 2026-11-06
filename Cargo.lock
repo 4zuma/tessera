@@ -3179,7 +3179,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-app"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3192,7 +3192,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "tessera-core",
  "windows",
@@ -3200,7 +3200,7 @@ dependencies = [
 
 [[package]]
 name = "tessera-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "rayon",
  "windows",
