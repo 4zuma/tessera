@@ -17,6 +17,7 @@ use tessera_core::scan::{self, ScanOptions, ScanProgress};
 use tessera_core::watch::{BatchReport, WatchOptions, Watcher};
 use tessera_core::{NodeFlags, NodeId, SharedTree, Tree, category, delete, tree::mtime_to_unix_ms};
 
+use crate::i18n::{self, text};
 use crate::volumes;
 
 /// How often `scan-progress` is sent while scanning.
@@ -51,7 +52,7 @@ impl Core {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
-            .ok_or_else(|| "还没有开始扫描".to_string())
+            .ok_or_else(|| text::NO_SCAN.get().to_string())
     }
 
     fn is_current(&self, id: u32) -> bool {
@@ -343,7 +344,7 @@ pub async fn scan_start(
 ) -> Result<ScanStarted, String> {
     let path = PathBuf::from(&root);
     if !path.is_dir() {
-        return Err(format!("找不到 {root}"));
+        return Err(text::NOT_FOUND.get().replace("{}", &root));
     }
     let vol = volumes::describe(&root);
     let id = core.next_scan.fetch_add(1, Relaxed) + 1;
@@ -556,10 +557,10 @@ fn node_details(s: &Session, id: u32, mode: SizeMode) -> Option<Details> {
         return Some(blank(
             id,
             "free",
-            "可用空间",
+            text::FREE.get(),
             s.root_text.clone(),
             s.free.load(Relaxed),
-            "卷上还没被使用的空间",
+            text::FREE_HINT.get(),
         ));
     }
     if id == layout::ids::UNSCANNED {
@@ -567,10 +568,10 @@ fn node_details(s: &Session, id: u32, mode: SizeMode) -> Option<Details> {
         return Some(blank(
             id,
             "unscanned",
-            "尚未扫描",
+            text::UNSCANNED.get(),
             s.root_text.clone(),
             u,
-            "已用空间里还没扫描到的部分，会随扫描缩小",
+            text::UNSCANNED_HINT.get(),
         ));
     }
     let t = s.tree();
@@ -583,10 +584,10 @@ fn node_details(s: &Session, id: u32, mode: SizeMode) -> Option<Details> {
         let mut d = blank(
             id,
             "group",
-            "小项合并显示",
+            text::GROUP.get(),
             t.path_lossy(folder),
             0,
-            "太小、画不下的项目合并成一块；放大上级文件夹可以看到它们",
+            text::GROUP_HINT.get(),
         );
         d.share = 0.0;
         return Some(d);
@@ -619,9 +620,9 @@ fn node_details(s: &Session, id: u32, mode: SizeMode) -> Option<Details> {
     let mut flags = 0u8;
     let lock_reason = if bin == Some(nid) {
         flags |= layout::flags::RECYCLE_BIN;
-        Some("请使用“清空回收站”".to_string())
+        Some(text::RECYCLE_BIN.get().to_string())
     } else {
-        delete::lock_reason(&path).map(zh)
+        delete::lock_reason(&path).map(reason_text)
     };
     if lock_reason.is_some() && bin != Some(nid) {
         flags |= layout::flags::PROTECTED;
@@ -695,16 +696,14 @@ fn counts(s: &Session, t: &Tree, id: NodeId) -> (u64, u64) {
 
 fn hint_for(name: &str, n: &tessera_core::Node) -> Option<String> {
     let h = match name.to_ascii_lowercase().as_str() {
-        "hiberfil.sys" => "可以在管理员终端运行 powercfg /h off 关闭休眠来释放它",
-        "pagefile.sys" | "swapfile.sys" => "在“高级系统设置 › 性能 › 虚拟内存”里调整",
-        "windows.old" => "旧版 Windows 的备份，用系统的“磁盘清理”删除最稳妥",
-        _ if n.flags.contains(NodeFlags::CLOUD) => "云端文件：只算本机实际占用的部分",
-        _ if n.flags.contains(NodeFlags::INACCESSIBLE) => {
-            "没有权限读取，以管理员身份运行可以看到里面"
-        }
+        "hiberfil.sys" => text::HIBERFIL,
+        "pagefile.sys" | "swapfile.sys" => text::PAGEFILE,
+        "windows.old" => text::WINDOWS_OLD,
+        _ if n.flags.contains(NodeFlags::CLOUD) => text::CLOUD,
+        _ if n.flags.contains(NodeFlags::INACCESSIBLE) => text::NO_ACCESS,
         _ => return None,
     };
-    Some(h.into())
+    Some(h.get().into())
 }
 
 /// `C:\` -> `C:`
@@ -804,7 +803,7 @@ async fn shell_op(
             .into_iter()
             .map(|f| Failure {
                 id: f.id.0,
-                reason: zh(&f.reason),
+                reason: reason_text(&f.reason),
             })
             .collect(),
         bytes: r.bytes,
@@ -856,7 +855,7 @@ pub async fn reveal(core: State<'_, Core>, id: u32) -> Result<(), String> {
     let path = {
         let t = s.tree();
         if id as usize >= t.len() {
-            return Err("项目不存在".into());
+            return Err(text::NO_ITEM.get().into());
         }
         t.path(NodeId(id))
     };
@@ -880,42 +879,46 @@ fn open_in_explorer(path: &Path) -> Result<(), String> {
 
 #[cfg(not(windows))]
 fn open_in_explorer(_path: &Path) -> Result<(), String> {
-    Err("只在 Windows 上可用".into())
+    Err(text::WINDOWS_ONLY.get().into())
 }
 
 // ---------------------------------------------------------------------------
 // Text
 
-/// The core's user-facing reasons are English; the UI speaks Chinese.
-/// Anything else (e.g. a message from the shell) is passed through.
-fn zh(reason: &str) -> String {
+/// The core's user-facing reasons are fixed English strings; say them in the
+/// UI's language. Anything else (e.g. a message from the shell, which Windows
+/// already words in the user's language) is passed through.
+fn reason_text(reason: &str) -> String {
+    reason_in(i18n::lang(), reason)
+}
+
+fn reason_in(lang: i18n::Lang, reason: &str) -> String {
     use delete::reasons::*;
-    let s = match reason {
-        DRIVE_ROOT => "这是整个磁盘的根目录。",
-        SCAN_ROOT => "这是正在扫描的根文件夹。",
-        WINDOWS => "Windows 需要这个文件夹。",
-        PROGRAMS => "已安装的程序放在这个文件夹里。",
-        APP_DATA => "Windows 和各个应用的数据存放在这里。",
-        PROFILES => "这里存放着所有用户的个人文件夹。",
-        PROFILE => "这是一个用户的个人文件夹。",
-        // shown next to a lock: say why the folder stays, not that something may be deleted
-        PERSONAL => "这是你的个人文件夹，Windows 和应用要用到它。",
-        TEMP => "Windows 和应用把临时文件放在这个文件夹里。",
-        CONTAINS => "这个文件夹里有 Windows 或应用需要的文件夹。",
-        STILL_THERE => "没能删除这个项目。",
-        NOT_RESTORED => "没能还原这个项目。",
-        NAME_TAKEN => "原位置已经有同名的项目。",
-        CANCELLED => "已取消。",
-        SKIPPED => "已跳过。",
+    let t = match reason {
+        DRIVE_ROOT => text::DRIVE_ROOT,
+        SCAN_ROOT => text::SCAN_ROOT,
+        WINDOWS => text::WINDOWS,
+        PROGRAMS => text::PROGRAMS,
+        APP_DATA => text::APP_DATA,
+        PROFILES => text::PROFILES,
+        PROFILE => text::PROFILE,
+        PERSONAL => text::PERSONAL,
+        TEMP => text::TEMP,
+        CONTAINS => text::CONTAINS,
+        STILL_THERE => text::STILL_THERE,
+        NOT_RESTORED => text::NOT_RESTORED,
+        NAME_TAKEN => text::NAME_TAKEN,
+        CANCELLED => text::CANCELLED,
+        SKIPPED => text::SKIPPED,
         other => return other.to_string(),
     };
-    s.to_string()
+    t.of(lang).to_string()
 }
 
 fn error_text(e: &tessera_core::Error) -> String {
     match e {
-        tessera_core::Error::Cancelled => "已取消。".into(),
-        tessera_core::Error::Unsupported("unknown undo token") => "这次操作已经不能撤销了。".into(),
+        tessera_core::Error::Cancelled => text::CANCELLED.get().into(),
+        tessera_core::Error::Unsupported("unknown undo token") => text::UNDO_GONE.get().into(),
         other => other.to_string(),
     }
 }
@@ -926,8 +929,21 @@ mod tests {
 
     #[test]
     fn reasons_are_translated() {
-        assert_eq!(zh(delete::reasons::WINDOWS), "Windows 需要这个文件夹。");
-        assert_eq!(zh("Access is denied."), "Access is denied.");
+        use i18n::Lang::{En, ZhCn};
+        assert_eq!(
+            reason_in(ZhCn, delete::reasons::WINDOWS),
+            "Windows 需要这个文件夹。"
+        );
+        assert_eq!(
+            reason_in(En, delete::reasons::WINDOWS),
+            "Windows needs this folder."
+        );
+        // the app words these two differently from the core: no "delete what is inside"
+        assert_eq!(
+            reason_in(En, delete::reasons::PERSONAL),
+            "This is one of your personal folders. Windows and your apps use it."
+        );
+        assert_eq!(reason_in(ZhCn, "Access is denied."), "Access is denied.");
     }
 
     #[test]

@@ -2,20 +2,21 @@
   import { app } from '../lib/app.svelte';
   import Icon from './Icon.svelte';
   import Logo from './Logo.svelte';
+  import { t } from '../lib/i18n.svelte';
 </script>
 
 <!-- Browser preview only. In the app, Windows draws the real title bar over Mica. -->
 <header class="tb">
   <Logo />
   <span class="t">Tessera</span>
-  <span class="chip caption" title="这里是浏览器预览，用的是模拟的磁盘数据；在 Tessera 程序里会扫描真实的磁盘">预览 · 模拟数据</span>
+  <span class="chip caption" title={t('preview.chipTip')}>{t('preview.chip')}</span>
   <span class="sp"></span>
   {#if app.phase === 'map' && app.volume?.root === 'C:\\'}
-    <button class="sbtn caption" onclick={() => app.demoDownload()} disabled={app.scanning} title="模拟一个正在增长的下载文件，看实时更新时树图怎么动">
-      <Icon name="download" size={14} />模拟下载
+    <button class="sbtn caption" onclick={() => app.demoDownload()} disabled={app.scanning} title={t('preview.downloadTip')}>
+      <Icon name="download" size={14} />{t('preview.download')}
     </button>
   {/if}
-  <button class="sbtn caption" onclick={() => app.toggleHud()} aria-pressed={app.showHud} title="显示帧率和矩形数 (Ctrl+Shift+F)">性能</button>
+  <button class="sbtn caption" onclick={() => app.toggleHud()} aria-pressed={app.showHud} title={t('preview.perfTip')}>{t('preview.perf')}</button>
   <div class="wc" aria-hidden="true"><span class="min"></span><span class="max"></span><span class="close"></span></div>
 </header>
 

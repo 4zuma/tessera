@@ -12,6 +12,7 @@
   import Toast from './components/Toast.svelte';
   import Tooltip from './components/Tooltip.svelte';
   import { FLUENT } from './lib/treemap/ease';
+  import { t } from './lib/i18n.svelte';
 
   let width = $state(1200);
   let paneWanted = $state(true);
@@ -54,7 +55,7 @@
   {#if browser}<TitleBar />{/if}
   {#if app.error}
     <div class="fatal" role="alert">
-      <h1>Tessera 没能启动</h1>
+      <h1>{t('app.startFailed')}</h1>
       <p>{app.error}</p>
     </div>
   {:else if app.phase === 'boot'}

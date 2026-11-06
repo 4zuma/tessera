@@ -1,14 +1,15 @@
 <script lang="ts">
   import { app } from '../lib/app.svelte';
   import { fmtBytes } from '../lib/format';
+  import { t } from '../lib/i18n.svelte';
   import Icon from './Icon.svelte';
 
   const sorted = $derived([...app.volumes].sort((a, b) => a.root.localeCompare(b.root)));
 </script>
 
 <section class="pick">
-  <h1>选择要扫描的磁盘</h1>
-  <p class="sub">扫描时树图会边扫边长出来，扫完之前也可以开始浏览。</p>
+  <h1>{t('picker.title')}</h1>
+  <p class="sub">{t('picker.sub')}</p>
   <div class="drives">
     {#each sorted as v (v.root)}
       {@const used = v.capacity - v.free}
@@ -18,7 +19,7 @@
         <span class="info">
           <span class="name">{v.label} ({v.root.slice(0, 2)})</span>
           <span class="bar" class:low={pct > 0.9}><i style:width="{(pct * 100).toFixed(1)}%"></i></span>
-          <span class="meta caption tabular">{fmtBytes(v.free)} 可用，共 {fmtBytes(v.capacity)} · {v.fs}</span>
+          <span class="meta caption tabular">{t('picker.space', { free: fmtBytes(v.free), capacity: fmtBytes(v.capacity), fs: v.fs })}</span>
         </span>
       </button>
     {/each}
@@ -26,8 +27,8 @@
   {#if app.platform && !app.platform.elevated}
     <div class="hint" role="note">
       <span class="ti"><Icon name="info" /></span>
-      <p class="msg"><strong>以普通权限运行</strong>现在用多线程逐个目录扫描。以管理员身份运行时会直接读取 NTFS 的 MFT，通常快很多。</p>
-      <button class="btn" onclick={() => app.relaunchElevated()}><Icon name="shield" />以管理员身份重启</button>
+      <p class="msg"><strong>{t('picker.userTitle')}</strong>{t('picker.userBody')}</p>
+      <button class="btn" onclick={() => app.relaunchElevated()}><Icon name="shield" />{t('restartAdmin')}</button>
     </div>
   {/if}
 </section>

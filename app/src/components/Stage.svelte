@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { app } from '../lib/app.svelte';
   import { Kind } from '../lib/backend/codec';
-  import { fmtInt } from '../lib/format';
+  import { t, tn } from '../lib/i18n.svelte';
 
   let stage: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -74,7 +74,7 @@
   <canvas class="gpu" bind:this={gpu} aria-hidden="true"></canvas>
   <canvas
     bind:this={canvas}
-    aria-label="磁盘占用矩形树图。方向键移动选择，回车放大，Backspace 返回上级，Delete 移到回收站"
+    aria-label={t('stage.label')}
     tabindex="0"
     onpointermove={onMove}
     onpointerleave={onLeave}
@@ -85,9 +85,9 @@
   ></canvas>
   {#if app.showHud}
     <div class="hud caption tabular" aria-hidden="true">
-      <span>{fmtInt(app.stats.rects)} 个矩形</span>
-      <span class:busy={app.stats.busy}>{app.stats.busy ? `${app.stats.fps} fps` : '空闲 · 0 fps'}</span>
-      <span>绘制 {app.stats.frameMs.toFixed(1)} ms</span>
+      <span>{tn('stage.rects', app.stats.rects)}</span>
+      <span class:busy={app.stats.busy}>{app.stats.busy ? `${app.stats.fps} fps` : t('stage.idle')}</span>
+      <span>{t('stage.draw', { ms: app.stats.frameMs.toFixed(1) })}</span>
       <span>{app.stats.gpu ? 'WebGL' : '2D'}</span>
     </div>
   {/if}

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from '../lib/app.svelte';
   import { fmtBytes } from '../lib/format';
+  import { t } from '../lib/i18n.svelte';
   import Icon from './Icon.svelte';
 
   let { paneOpen, canTogglePane, onTogglePane }: { paneOpen: boolean; canTogglePane: boolean; onTogglePane: () => void } = $props();
@@ -27,10 +28,10 @@
       aria-haspopup="menu"
       aria-expanded={drivesOpen}
       onclick={() => (drivesOpen = !drivesOpen)}
-      title="选择磁盘"
+      title={t('cmd.chooseDrive')}
     >
       <Icon name="drive" />
-      <span>{app.volume?.root.slice(0, 2) ?? '磁盘'}</span>
+      <span>{app.volume?.root.slice(0, 2) ?? t('cmd.drive')}</span>
       <Icon name="chevDown" size={12} />
     </button>
     {#if drivesOpen}
@@ -39,22 +40,22 @@
           <button class="mi" role="menuitem" onclick={() => pickDrive(v.root)}>
             <Icon name="drive" />
             <span class="mi-l">{v.label} ({v.root.slice(0, 2)})</span>
-            <span class="mi-k caption tabular">{fmtBytes(v.free)} 可用</span>
+            <span class="mi-k caption tabular">{t('cmd.driveFree', { size: fmtBytes(v.free) })}</span>
           </button>
         {/each}
         <div class="ms" role="separator"></div>
         <button class="mi" role="menuitem" onclick={() => { drivesOpen = false; app.phase = 'pick'; }}>
-          <Icon name="more" /><span class="mi-l">全部磁盘…</span>
+          <Icon name="more" /><span class="mi-l">{t('cmd.allDrives')}</span>
         </button>
       </div>
     {/if}
   </div>
 
-  <button class="sbtn" onclick={() => app.zoomOut()} disabled={app.up == null} title="上一级 (Backspace)" aria-label="上一级">
+  <button class="sbtn" onclick={() => app.zoomOut()} disabled={app.up == null} title={t('cmd.upTip')} aria-label={t('cmd.up')}>
     <Icon name="up" />
   </button>
 
-  <nav class="crumbs" aria-label="路径">
+  <nav class="crumbs" aria-label={t('cmd.path')}>
     {#each app.crumbs as c, i (c.id)}
       {#if i > 0}<span class="sep" aria-hidden="true"><Icon name="chev" size={12} /></span>{/if}
       <button class="crumb" class:cur={i === app.crumbs.length - 1} onclick={() => app.zoomTo(c.id)} aria-current={i === app.crumbs.length - 1 ? 'location' : undefined}>
@@ -66,28 +67,28 @@
   <span class="sp"></span>
 
   {#if app.scanning}
-    <button class="btn" onclick={() => app.cancelScan()}><Icon name="stop" /><span class="lbl">停止</span></button>
+    <button class="btn" onclick={() => app.cancelScan()}><Icon name="stop" /><span class="lbl">{t('cmd.stop')}</span></button>
   {:else}
-    <button class="btn" onclick={() => app.rescan()} title="重新扫描 (F5)"><Icon name="refresh" /><span class="lbl">重新扫描</span></button>
+    <button class="btn" onclick={() => app.rescan()} title={t('cmd.rescanTip')}><Icon name="refresh" /><span class="lbl">{t('cmd.rescan')}</span></button>
   {/if}
 
-  <div class="seg" role="radiogroup" aria-label="大小口径">
-    <button role="radio" aria-checked={app.sizeMode === 'disk'} class:on={app.sizeMode === 'disk'} onclick={() => app.setSizeMode('disk')} title="文件在磁盘上实际占用的空间">占用空间</button>
-    <button role="radio" aria-checked={app.sizeMode === 'logical'} class:on={app.sizeMode === 'logical'} onclick={() => app.setSizeMode('logical')} title="文件内容的字节数">实际大小</button>
+  <div class="seg" role="radiogroup" aria-label={t('cmd.sizeMode')}>
+    <button role="radio" aria-checked={app.sizeMode === 'disk'} class:on={app.sizeMode === 'disk'} onclick={() => app.setSizeMode('disk')} title={t('cmd.diskTip')}>{t('sizeOnDisk')}</button>
+    <button role="radio" aria-checked={app.sizeMode === 'logical'} class:on={app.sizeMode === 'logical'} onclick={() => app.setSizeMode('logical')} title={t('cmd.logicalTip')}>{t('size')}</button>
   </div>
 
   {#if app.platform && !app.platform.elevated}
-    <button class="sbtn admin" onclick={() => app.relaunchElevated()} title="以管理员身份重启，直接读取 MFT 扫描更快" aria-label="以管理员身份重启">
+    <button class="sbtn admin" onclick={() => app.relaunchElevated()} title={t('cmd.adminTip')} aria-label={t('restartAdmin')}>
       <Icon name="shield" />
     </button>
   {/if}
   {#if canTogglePane}
-    <button class="sbtn" onclick={onTogglePane} aria-pressed={paneOpen} title={paneOpen ? '隐藏详情栏' : '显示详情栏'} aria-label="详情栏">
+    <button class="sbtn" onclick={onTogglePane} aria-pressed={paneOpen} title={paneOpen ? t('cmd.hidePane') : t('cmd.showPane')} aria-label={t('cmd.pane')}>
       <Icon name="pane" />
     </button>
   {/if}
 </div>
-<div class="prog" class:active={app.scanning} role="progressbar" aria-label="扫描进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(progress * 100)}>
+<div class="prog" class:active={app.scanning} role="progressbar" aria-label={t('cmd.progress')} aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(progress * 100)}>
   <i style:transform="scaleX({progress})"></i>
 </div>
 
