@@ -403,19 +403,21 @@ fn exercise(s: &mut Session) {
 /// counts the bytes, a new directory holding another name, a rename.
 fn exercise_links(s: &mut Session) {
     let root = s.root.clone();
+    // Its own directory: the sequence also runs after `exercise`.
+    fs::create_dir(root.join("links")).unwrap();
     write(&root.join("big.bin"), 64 * 1024);
     s.wait_synced("a new file");
     let before = s.root_bytes();
 
-    fs::hard_link(root.join("big.bin"), root.join("sub").join("alias.bin")).unwrap();
+    fs::hard_link(root.join("big.bin"), root.join("links").join("alias.bin")).unwrap();
     s.wait_links("a new hard link");
     assert_eq!(s.root_bytes(), before, "a hard link adds no bytes");
-    assert_eq!(s.counting(&["big.bin", r"sub\alias.bin"]), "big.bin");
+    assert_eq!(s.counting(&["big.bin", r"links\alias.bin"]), "big.bin");
 
     // Written through the name that does not count the bytes.
     let mut f = fs::OpenOptions::new()
         .append(true)
-        .open(root.join("sub").join("alias.bin"))
+        .open(root.join("links").join("alias.bin"))
         .unwrap();
     f.write_all(&[b'w'; 30_000]).unwrap();
     drop(f);
@@ -437,7 +439,7 @@ fn exercise_links(s: &mut Session) {
     // A new directory holding another name: counted once after its scan.
     fs::create_dir(root.join("made")).unwrap();
     fs::hard_link(
-        root.join("sub").join("alias.bin"),
+        root.join("links").join("alias.bin"),
         root.join("made").join("inner.bin"),
     )
     .unwrap();
@@ -455,7 +457,7 @@ fn exercise_links(s: &mut Session) {
 
     fs::remove_dir_all(root.join("made")).unwrap();
     s.wait_links("a deleted directory holding a hard link");
-    fs::remove_file(root.join("sub").join("alias.bin")).unwrap();
+    fs::remove_file(root.join("links").join("alias.bin")).unwrap();
     s.wait_synced("the last name removed");
     assert_eq!(s.root_bytes().1, before.1 - 64 * 1024);
 }
