@@ -263,7 +263,7 @@ impl Tree {
             if !out.is_empty() {
                 out.push(b'\\');
             }
-            out.extend_from_slice(self.name(n));
+            out.extend_from_slice(&self.name(n));
         }
         out
     }
@@ -285,10 +285,10 @@ impl Tree {
             // the name decides a file's category
             let parent = self.node(id).parent;
             self.touch(parent);
-            let off = self.names.push(new_name);
+            let (off, len) = self.names.push(new_name);
             let n = self.node_mut(id);
             n.name_off = off;
-            n.name_len = new_name.len() as u16;
+            n.name_len = len;
         }
         let n = *self.node(id);
         if n.parent == new_parent {
@@ -834,7 +834,7 @@ impl Applier<'_> {
                 return;
             };
             let n = *self.tree.node(id);
-            if n.parent != p || self.tree.name(id) != &c.name[..] {
+            if n.parent != p || self.tree.name(id) != c.name[..] {
                 match self.tree.find_child(p, &c.name) {
                     Some(other) if other != id => self.delete(other),
                     _ => {}

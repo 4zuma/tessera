@@ -190,7 +190,7 @@ pub fn restore(
             if exists(&item.path) {
                 let n = *t.node(item.node);
                 let parent_live = !t.is_deleted(n.parent);
-                let dup = parent_live && t.find_child(n.parent, t.name(item.node)).is_some();
+                let dup = parent_live && t.find_child(n.parent, &t.name(item.node)).is_some();
                 // A watcher event may already have added it again.
                 if dup || t.restore_deleted(item.node) {
                     res.bytes = res.bytes.wrapping_add(if dup { 0 } else { n.size() });
@@ -234,7 +234,7 @@ pub fn empty_recycle_bin(
     };
     let bin = {
         let t = tree.read().unwrap_or_else(PoisonError::into_inner);
-        let same_drive = is_root_name(t.name(NodeId::ROOT))
+        let same_drive = is_root_name(&t.name(NodeId::ROOT))
             && resolved_key(&wide(&node_path(&t, NodeId::ROOT))) == resolved_key(&wide(root));
         same_drive
             .then(|| t.find_child(NodeId::ROOT, b"$Recycle.Bin"))
@@ -482,7 +482,7 @@ fn reconcile(
             }
             kids.extend(
                 t.children(d)
-                    .map(|c| (c, name_os(t.name(c)), t.node(c).is_dir())),
+                    .map(|c| (c, name_os(&t.name(c)), t.node(c).is_dir())),
             );
         }
         if kids.len() > *budget {
@@ -532,9 +532,9 @@ fn node_path(t: &Tree, id: NodeId) -> PathBuf {
         // `Tree::path` joins with `\`; build a native path instead.
         let mut chain: Vec<NodeId> = std::iter::once(id).chain(t.ancestors(id)).collect();
         chain.reverse();
-        let mut p = PathBuf::from(name_os(t.name(chain[0])));
+        let mut p = PathBuf::from(name_os(&t.name(chain[0])));
         for &n in &chain[1..] {
-            p.push(name_os(t.name(n)));
+            p.push(name_os(&t.name(n)));
         }
         p
     }

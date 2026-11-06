@@ -15,7 +15,7 @@ use rayon::slice::ParallelSliceMut;
 
 use super::parser::*;
 use crate::scan::{FrnIndex, ScanProgress};
-use crate::tree::{ChunkedVec, NamePool, Node, NodeFlags, NodeId, Tree};
+use crate::tree::{ChunkedVec, Encoder, NamePool, Node, NodeFlags, NodeId, Tree};
 
 /// One name of a record, waiting to become a node.
 #[derive(Clone, Copy, Debug)]
@@ -38,7 +38,8 @@ struct Extra {
 
 /// Per-record facts merged from all parsed batches, in record order.
 pub(crate) struct Accum {
-    root_name: Vec<u8>,
+    /// Where the root's name is in `names`.
+    root: (u32, u16),
     names: NamePool,
     /// On-disk bytes of the unnamed stream, per record.
     size: Vec<u64>,
@@ -68,9 +69,9 @@ impl Accum {
     /// hint (records in use).
     pub fn new(root_name: &[u8], records: usize, expected_names: usize) -> Accum {
         let mut names = NamePool::with_dedup();
-        names.push(root_name);
+        let root = names.push(root_name);
         Accum {
-            root_name: root_name.to_vec(),
+            root,
             names,
             size: vec![0; records],
             logical: vec![0; records],
@@ -81,6 +82,11 @@ impl Accum {
             extras: HashMap::new(),
             corrupt: 0,
         }
+    }
+
+    /// The name pool's encoder once it encodes names, for the parser threads.
+    pub fn name_encoder(&self) -> Option<Encoder> {
+        self.names.encoder()
     }
 
     /// Merges one parsed batch. Batches may arrive in any order; merging is
@@ -109,16 +115,19 @@ impl Accum {
             self.logical[i] = self.logical[i].wrapping_add(r.logical);
             bytes = bytes.wrapping_add(r.size);
         }
-        for nf in &b.names {
+        for (k, nf) in b.names.iter().enumerate() {
             if nf.rec as usize >= n {
                 continue;
             }
-            let name_off = self.names.push(b.name(nf));
+            let (name_off, name_len) = match b.encoded_name(k) {
+                Some((encoded, enc)) => self.names.push_encoded(b.name(nf), encoded, enc),
+                None => self.names.push(b.name(nf)),
+            };
             self.entries.push(Entry {
                 parent: nf.parent,
                 rec: nf.rec,
                 name_off,
-                name_len: nf.len,
+                name_len,
                 parent_seq: nf.parent_seq,
             });
         }
@@ -169,7 +178,7 @@ impl Tree {
     /// from the root are not in the tree.
     fn build_from_mft(acc: Accum) -> Built {
         let Accum {
-            root_name,
+            root,
             names,
             size,
             logical,
@@ -196,8 +205,8 @@ impl Tree {
             NodeId::NONE,
             NodeId(RECORD_ROOT),
             NodeId::NONE,
-            0,
-            root_name.len() as u16,
+            root.0,
+            root.1,
             NodeFlags::DIR,
         ));
         let mut frn = vec![u32::MAX; records];

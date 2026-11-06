@@ -9,7 +9,7 @@
 //! [`parse_record`] reduces one record to a few compact facts (sizes, flags,
 //! names) appended to a [`ParsedBatch`]; nothing else of the record is kept.
 
-use crate::tree::NodeFlags;
+use crate::tree::{Encoder, NodeFlags};
 use crate::wtf8;
 
 // ---- Attribute type codes -------------------------------------------------
@@ -159,6 +159,11 @@ pub(crate) struct ParsedBatch {
     pub extras: Vec<ExtraFacts>,
     /// In-use records that could not be parsed (torn or corrupt).
     pub corrupt: u32,
+    /// The names encoded ahead of time by [`ParsedBatch::encode_names`]:
+    /// the encoder, the encodings back to back, and where each one ends.
+    pub encoded_by: Option<Encoder>,
+    pub encoded: Vec<u8>,
+    pub encoded_ends: Vec<u32>,
 }
 
 impl ParsedBatch {
@@ -169,7 +174,36 @@ impl ParsedBatch {
             name_bytes: Vec::with_capacity(records * 24),
             extras: Vec::new(),
             corrupt: 0,
+            encoded_by: None,
+            encoded: Vec::new(),
+            encoded_ends: Vec::new(),
         }
+    }
+
+    /// Encodes every name for the tree's name pool (on a parser thread, so
+    /// that merging does not have to).
+    pub fn encode_names(&mut self, enc: &Encoder) {
+        self.encoded.clear();
+        self.encoded_ends.clear();
+        self.encoded.reserve(self.name_bytes.len());
+        for n in &self.names {
+            let name = &self.name_bytes[n.start as usize..n.start as usize + n.len as usize];
+            enc.encode(name, &mut self.encoded);
+            self.encoded_ends.push(self.encoded.len() as u32);
+        }
+        self.encoded_by = Some(enc.clone());
+    }
+
+    /// The `k`-th name as [`ParsedBatch::encode_names`] encoded it.
+    pub fn encoded_name(&self, k: usize) -> Option<(&[u8], &Encoder)> {
+        let enc = self.encoded_by.as_ref()?;
+        let end = *self.encoded_ends.get(k)? as usize;
+        let start = if k == 0 {
+            0
+        } else {
+            self.encoded_ends[k - 1] as usize
+        };
+        Some((&self.encoded[start..end], enc))
     }
 
     pub fn name(&self, n: &NameFacts) -> &[u8] {

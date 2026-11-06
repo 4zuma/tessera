@@ -20,10 +20,11 @@ as a treemap, delete what you don't need.
   builds the same tree in a couple of seconds.
 * **Compact tree.** Every file or folder is a 32-byte node in a chunked
   arena; names are stored once in a shared pool (identical names are
-  de-duplicated during a scan). Each node keeps its size on disk, logical
-  size and flags; a file's last-write time is read from disk when its
-  details are shown. The full tree stays in Rust; the UI only ever receives
-  the rectangles it draws.
+  de-duplicated during a scan) and compressed with a symbol table trained on
+  the first megabyte of names, which saves about a third. Each node keeps
+  its size on disk, logical size and flags; a file's last-write time is read
+  from disk when its details are shown. The full tree stays in Rust; the UI
+  only ever receives the rectangles it draws.
 * **Live updates.** After a scan, `ReadDirectoryChangesExW` (or the NTFS
   USN journal after an MFT scan) keeps the tree current, applied in batches
   at most every 500 ms. Idle CPU use is near zero.

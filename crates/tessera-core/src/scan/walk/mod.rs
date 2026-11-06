@@ -22,7 +22,8 @@
 //!   their provider for anything.
 //! * Entries go into a worker-local [`EntryBatch`]. The batch is inserted
 //!   with one [`Tree::add_children`](crate::Tree::add_children) call under
-//!   the tree's write lock, which is never held during a system call. Huge
+//!   the tree's write lock, which is never held during a system call. Once
+//!   the tree compresses names, workers encode them before taking the lock. Huge
 //!   directories are inserted in slices of 4096 entries to bound the
 //!   batch's memory. The returned id range names the new child
 //!   directories, which become new tasks.
@@ -49,6 +50,7 @@ use std::sync::{Mutex, PoisonError, RwLockWriteGuard};
 use std::time::Instant;
 
 use super::{ScanMode, ScanOptions, ScanProgress, ScanSummary};
+use crate::tree::Encoder;
 use crate::{EntryBatch, Error, NodeFlags, NodeId, Result, SharedTree, Tree};
 
 use links::LinkSet;
@@ -289,6 +291,9 @@ struct Pending {
     files: u64,
     dirs: u64,
     bytes: u64,
+    /// The tree's name encoder once it has one: names are encoded here,
+    /// outside the tree's lock.
+    encoder: Option<Encoder>,
 }
 
 impl Scratch {
@@ -540,7 +545,17 @@ impl Sink<'_, '_, '_, '_> {
         if p.batch.is_empty() {
             return;
         }
-        let ids = self.ctx.write_tree().add_children(self.job.node, &p.batch);
+        if let Some(enc) = &p.encoder {
+            p.batch.encode_names(enc);
+        }
+        let ids = {
+            let mut tree = self.ctx.write_tree();
+            let ids = tree.add_children(self.job.node, &p.batch);
+            if p.encoder.is_none() {
+                p.encoder = tree.name_encoder();
+            }
+            ids
+        };
         let ctx = self.ctx;
         ctx.files.fetch_add(p.files, Relaxed);
         ctx.dirs.fetch_add(p.dirs, Relaxed);

@@ -214,6 +214,9 @@ fn cmd_scan(args: &Args) -> Result<(), String> {
         j.num("size_on_disk", root.size());
         j.num("logical_size", root.logical());
         j.num("tree_bytes", tmem.total() as u64);
+        j.num("node_bytes", tmem.nodes as u64);
+        j.num("name_bytes", tmem.names as u64);
+        j.num("name_bytes_uncompressed", tmem.names_raw as u64);
         j.num("working_set", mem.working_set);
         j.num("peak_working_set", mem.peak_working_set);
         j.num("private_bytes", mem.private_bytes);
@@ -250,10 +253,11 @@ fn cmd_scan(args: &Args) -> Result<(), String> {
         );
     }
     println!(
-        "  tree memory    {} ({} nodes, {} names)",
+        "  tree memory    {} ({} nodes, {} names; names uncompressed {})",
         human(tmem.total() as u64),
         human(tmem.nodes as u64),
-        human(tmem.names as u64)
+        human(tmem.names as u64),
+        human(tmem.names_raw as u64)
     );
     println!(
         "  process memory {} working set, {} peak, {} private",
@@ -378,7 +382,11 @@ fn cmd_bench(args: &Args) -> Result<(), String> {
     if let Some(v) = &summary.volume {
         j.num("volume_used", v.total_bytes.saturating_sub(v.free_bytes));
     }
-    j.num("tree_bytes", t.memory().total() as u64);
+    let tmem = t.memory();
+    j.num("tree_bytes", tmem.total() as u64);
+    j.num("node_bytes", tmem.nodes as u64);
+    j.num("name_bytes", tmem.names as u64);
+    j.num("name_bytes_uncompressed", tmem.names_raw as u64);
     j.num("working_set_after_scan", after_scan.working_set);
     j.num("private_bytes_after_scan", after_scan.private_bytes);
     j.num("peak_working_set", after_scan.peak_working_set);

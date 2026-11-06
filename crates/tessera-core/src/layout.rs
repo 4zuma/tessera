@@ -380,7 +380,7 @@ impl LayoutEngine {
 
 /// The `$Recycle.Bin` folder, if the tree root is a volume root.
 fn recycle_bin(tree: &Tree) -> Option<NodeId> {
-    if !crate::delete::is_root_name(tree.name(NodeId::ROOT)) {
+    if !crate::delete::is_root_name(&tree.name(NodeId::ROOT)) {
         return None;
     }
     tree.find_child(NodeId::ROOT, b"$Recycle.Bin")
@@ -1061,9 +1061,9 @@ fn push_name(out: &mut Vec<u8>, tree: &Tree, top: NodeId, bottom: NodeId) {
             out.extend_from_slice(" \u{203A} ".as_bytes());
         }
         let raw = tree.name(n);
-        match std::str::from_utf8(raw) {
+        match std::str::from_utf8(&raw) {
             Ok(s) => out.extend_from_slice(s.as_bytes()),
-            Err(_) => out.extend_from_slice(wtf8::to_string_lossy(raw).as_bytes()),
+            Err(_) => out.extend_from_slice(wtf8::to_string_lossy(&raw).as_bytes()),
         }
     }
     if out.len() - start > u16::MAX as usize {
@@ -1384,7 +1384,7 @@ pub fn nav(tree: &Tree, id: NodeId, mode: SizeMode) -> Nav {
     let crumbs = chain
         .iter()
         .filter(|&&n| !skip(n))
-        .map(|&n| (n, wtf8::to_string_lossy(tree.name(n))))
+        .map(|&n| (n, wtf8::to_string_lossy(&tree.name(n))))
         .collect();
     let up = tree.ancestors(id).find(|&a| !skip(a));
     Nav { crumbs, up }

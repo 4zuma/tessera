@@ -201,8 +201,8 @@ pub fn of_node(tree: &Tree, id: NodeId) -> u8 {
         return SYSTEM;
     }
     let name = tree.name(id);
-    let cat = of_name(name);
-    if cat == VIDEO && n.logical() < TS_VIDEO_MIN && is_ts(name) {
+    let cat = of_name(&name);
+    if cat == VIDEO && n.logical() < TS_VIDEO_MIN && is_ts(&name) {
         DEV
     } else {
         cat

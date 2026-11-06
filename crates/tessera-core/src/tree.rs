@@ -2,9 +2,9 @@
 //!
 //! Every file and directory is one 32-byte [`Node`] in a chunked arena, and
 //! nodes refer to each other by 32-bit [`NodeId`] instead of pointers. Names
-//! live in a separate WTF-8 [`NamePool`]. Nothing is allocated per node, and
-//! the arena grows in fixed chunks, so growing it never copies the existing
-//! nodes and never over-allocates by more than one chunk.
+//! live in a separate, compressed [`NamePool`]. Nothing is allocated per
+//! node, and the arena grows in fixed chunks, so growing it never copies the
+//! existing nodes and never over-allocates by more than one chunk.
 //!
 //! Invariants (checked by [`Tree::check_invariants`] in tests):
 //! * node 0 is the root directory; it has no parent;
@@ -15,6 +15,7 @@
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
 
+pub use crate::names::{Encoder, Name, NamePool};
 use crate::wtf8;
 
 /// Index of a node in the [`Tree`] arena.
@@ -152,7 +153,8 @@ pub struct Node {
     pub name_off: u32,
     size_hi: u16,
     logical_hi: u16,
-    /// Length of the name in WTF-8 bytes.
+    /// Length of the name as stored in the [`NamePool`] (compressed, so
+    /// not the length of the name itself).
     pub name_len: u16,
     pub flags: NodeFlags,
 }
@@ -299,188 +301,17 @@ impl<T> ChunkedVec<T> {
     }
 }
 
-/// All names, concatenated as WTF-8 in 1 MiB chunks. A name never straddles
-/// two chunks; the few bytes left at the end of a full chunk are wasted.
-///
-/// While a scan runs, identical names are stored once (`__init__.py`,
-/// `LICENSE`, `index.js`... repeat hundreds of thousands of times on a
-/// typical system drive). The lookup table for that is only kept during the
-/// scan ([`NamePool::end_dedup`] frees it); names added later are appended.
-pub struct NamePool {
-    chunks: Vec<Vec<u8>>,
-    dedup: Option<Dedup>,
-}
-
-const NAME_CHUNK_SHIFT: u32 = 20; // 1 MiB
-const NAME_CHUNK: usize = 1 << NAME_CHUNK_SHIFT;
-
-/// Open-addressing set of stored names. A slot packs the name's offset
-/// (bits 0..32), its length + 1 (bits 32..48, 0 = empty slot) and 16 more
-/// bits of its hash (bits 48..64) to skip most byte comparisons.
-struct Dedup {
-    slots: Vec<u64>,
-    used: usize,
-}
-
-impl Dedup {
-    fn new() -> Self {
-        Dedup {
-            slots: vec![0; 1 << 16],
-            used: 0,
-        }
-    }
-}
-
-#[inline]
-fn name_hash(b: &[u8]) -> u64 {
-    const K: u64 = 0x517c_c1b7_2722_0a95;
-    let mut h = b.len() as u64;
-    let mut words = b.chunks_exact(8);
-    for w in &mut words {
-        h = (h.rotate_left(5) ^ u64::from_le_bytes(w.try_into().unwrap())).wrapping_mul(K);
-    }
-    let rest = words.remainder();
-    if !rest.is_empty() {
-        let mut buf = [0u8; 8];
-        buf[..rest.len()].copy_from_slice(rest);
-        h = (h.rotate_left(5) ^ u64::from_le_bytes(buf)).wrapping_mul(K);
-    }
-    // Final avalanche so the low bits used for the slot index are well mixed.
-    h ^= h >> 33;
-    h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
-    h ^ (h >> 33)
-}
-
-impl NamePool {
-    /// A pool that appends every name (no de-duplication).
-    pub const fn new() -> Self {
-        NamePool {
-            chunks: Vec::new(),
-            dedup: None,
-        }
-    }
-
-    /// A pool that stores identical names once until [`NamePool::end_dedup`].
-    pub fn with_dedup() -> Self {
-        NamePool {
-            chunks: Vec::new(),
-            dedup: Some(Dedup::new()),
-        }
-    }
-
-    /// Frees the de-duplication table (call when a scan ends). Names that
-    /// are already shared stay shared.
-    pub fn end_dedup(&mut self) {
-        self.dedup = None;
-    }
-
-    /// Stores `name` (or finds an identical stored copy) and returns its offset.
-    ///
-    /// # Panics
-    /// If `name` is longer than `u16::MAX` bytes or the pool exceeds 4 GiB.
-    pub fn push(&mut self, name: &[u8]) -> u32 {
-        assert!(name.len() <= u16::MAX as usize, "name too long");
-        let Some(mut d) = self.dedup.take() else {
-            return self.append(name);
-        };
-        // Names of 65,535 bytes don't fit the packed length; just append.
-        if name.len() >= u16::MAX as usize {
-            self.dedup = Some(d);
-            return self.append(name);
-        }
-        if (d.used + 1) * 4 > d.slots.len() * 3 {
-            self.grow(&mut d);
-        }
-        let h = name_hash(name);
-        let mask = d.slots.len() - 1;
-        let tag = h >> 48;
-        let want = ((name.len() as u64 + 1) << 32) | (tag << 48);
-        let mut i = h as usize & mask;
-        let off = loop {
-            let slot = d.slots[i];
-            if slot == 0 {
-                let off = self.append(name);
-                d.slots[i] = want | off as u64;
-                d.used += 1;
-                break off;
-            }
-            if slot & !0xFFFF_FFFF == want {
-                let off = slot as u32;
-                if self.get(off, name.len() as u16) == name {
-                    break off;
-                }
-            }
-            i = (i + 1) & mask;
-        };
-        self.dedup = Some(d);
-        off
-    }
-
-    /// Doubles the table and re-inserts every stored name.
-    fn grow(&self, d: &mut Dedup) {
-        let mut slots = vec![0u64; d.slots.len() * 2];
-        let mask = slots.len() - 1;
-        for &slot in d.slots.iter().filter(|&&s| s != 0) {
-            let len = ((slot >> 32) & 0xFFFF) as u16 - 1;
-            let h = name_hash(self.get(slot as u32, len));
-            let mut i = h as usize & mask;
-            while slots[i] != 0 {
-                i = (i + 1) & mask;
-            }
-            slots[i] = slot;
-        }
-        d.slots = slots;
-    }
-
-    fn append(&mut self, name: &[u8]) -> u32 {
-        let need_new = match self.chunks.last() {
-            Some(c) => c.len() + name.len() > c.capacity(),
-            None => true,
-        };
-        if need_new {
-            self.chunks
-                .push(Vec::with_capacity(NAME_CHUNK.max(name.len())));
-        }
-        let ci = self.chunks.len() - 1;
-        let chunk = &mut self.chunks[ci];
-        let off = (ci << NAME_CHUNK_SHIFT) + chunk.len();
-        chunk.extend_from_slice(name);
-        u32::try_from(off).expect("name pool exceeds 4 GiB")
-    }
-
-    #[inline]
-    pub fn get(&self, off: u32, len: u16) -> &[u8] {
-        let off = off as usize;
-        let c = &self.chunks[off >> NAME_CHUNK_SHIFT];
-        let start = off & (NAME_CHUNK - 1);
-        &c[start..start + len as usize]
-    }
-
-    /// Heap bytes held, including the de-duplication table while it exists.
-    pub fn heap_bytes(&self) -> usize {
-        self.chunks.iter().map(|c| c.capacity()).sum::<usize>()
-            + self.chunks.capacity() * std::mem::size_of::<Vec<u8>>()
-            + self.dedup.as_ref().map_or(0, |d| d.slots.capacity() * 8)
-    }
-
-    /// Bytes of name data actually stored (excluding unused chunk tails).
-    pub fn stored_bytes(&self) -> usize {
-        self.chunks.iter().map(|c| c.len()).sum()
-    }
-}
-
-impl Default for NamePool {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// A reusable buffer of directory entries, filled by a scanner for one
 /// directory and handed to [`Tree::add_children`] in a single call.
 #[derive(Default)]
 pub struct EntryBatch {
     entries: Vec<BatchEntry>,
     names: Vec<u8>,
+    /// The names encoded ahead of time by [`EntryBatch::encode_names`]:
+    /// the encoder, the encodings back to back, and where each one ends.
+    encoded_by: Option<Encoder>,
+    encoded: Vec<u8>,
+    encoded_ends: Vec<u32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -500,6 +331,24 @@ impl EntryBatch {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.names.clear();
+        self.encoded_by = None;
+        self.encoded.clear();
+        self.encoded_ends.clear();
+    }
+
+    /// Encodes all names for the tree's name pool now (outside the tree's
+    /// lock), with the encoder from [`Tree::name_encoder`]. Entries added
+    /// afterwards are encoded when the batch is inserted.
+    pub fn encode_names(&mut self, enc: &Encoder) {
+        self.encoded.clear();
+        self.encoded_ends.clear();
+        for e in &self.entries {
+            let name =
+                &self.names[e.name_start as usize..e.name_start as usize + e.name_len as usize];
+            enc.encode(name, &mut self.encoded);
+            self.encoded_ends.push(self.encoded.len() as u32);
+        }
+        self.encoded_by = Some(enc.clone());
     }
 
     pub fn len(&self) -> usize {
@@ -594,6 +443,8 @@ pub type SharedTree = Arc<RwLock<Tree>>;
 pub struct TreeMemory {
     pub nodes: usize,
     pub names: usize,
+    /// What the names would take uncompressed (not part of the total).
+    pub names_raw: usize,
 }
 
 impl TreeMemory {
@@ -612,7 +463,7 @@ impl Tree {
             changed: 0,
             journal: Journal::default(),
         };
-        let name_off = t.names.push(root_name);
+        let (name_off, name_len) = t.names.push(root_name);
         t.nodes.push(Node::new(
             0,
             0,
@@ -620,7 +471,7 @@ impl Tree {
             NodeId::NONE,
             NodeId::NONE,
             name_off,
-            root_name.len() as u16,
+            name_len,
             NodeFlags::DIR,
         ));
         t
@@ -638,6 +489,12 @@ impl Tree {
         {
             Tree::new(root.to_string_lossy().as_bytes())
         }
+    }
+
+    /// The name pool's encoder once it encodes names; see
+    /// [`EntryBatch::encode_names`].
+    pub fn name_encoder(&self) -> Option<Encoder> {
+        self.names.encoder()
     }
 
     /// Releases memory only needed while scanning (the name
@@ -679,14 +536,14 @@ impl Tree {
 
     /// The node's own name as WTF-8 (for the root: the scanned path).
     #[inline]
-    pub fn name(&self, id: NodeId) -> &[u8] {
+    pub fn name(&self, id: NodeId) -> Name<'_> {
         let n = self.node(id);
         self.names.get(n.name_off, n.name_len)
     }
 
     /// The node's own name for display.
     pub fn name_lossy(&self, id: NodeId) -> String {
-        wtf8::to_string_lossy(self.name(id))
+        wtf8::to_string_lossy(&self.name(id))
     }
 
     /// Live children (deleted ones skipped), in no particular order.
@@ -728,7 +585,7 @@ impl Tree {
             if i > 0 && !matches!(out.last(), Some(b'\\') | Some(b'/')) {
                 out.push(b'\\');
             }
-            out.extend_from_slice(self.name(n));
+            out.extend_from_slice(&self.name(n));
         }
         out
     }
@@ -760,7 +617,7 @@ impl Tree {
     /// Linear in the number of children; meant for incremental updates.
     pub fn find_child(&self, parent: NodeId, name: &[u8]) -> Option<NodeId> {
         self.children(parent)
-            .find(|&c| wtf8::eq_ignore_case(self.name(c), name))
+            .find(|&c| wtf8::eq_ignore_case(&self.name(c), name))
     }
 
     /// Resolves a path below the root (components separated by `\` or `/`)
@@ -787,9 +644,25 @@ impl Tree {
         }
         let old_first = self.node(parent).first_child;
         let (mut dsize, mut dlogical) = (0u64, 0u64);
+        let encoded = match &batch.encoded_by {
+            Some(enc) if batch.encoded_ends.len() == batch.entries.len() => Some(enc),
+            _ => None,
+        };
         for (i, e) in batch.entries.iter().enumerate() {
             let name = batch.name(e);
-            let name_off = self.names.push(name);
+            let (name_off, name_len) = match encoded {
+                Some(enc) => {
+                    let start = if i == 0 {
+                        0
+                    } else {
+                        batch.encoded_ends[i - 1] as usize
+                    };
+                    let end = batch.encoded_ends[i] as usize;
+                    self.names
+                        .push_encoded(name, &batch.encoded[start..end], enc)
+                }
+                None => self.names.push(name),
+            };
             let id = start + i as u32;
             let next = if id + 1 < start + n {
                 NodeId(id + 1)
@@ -803,7 +676,7 @@ impl Tree {
                 NodeId::NONE,
                 next,
                 name_off,
-                e.name_len,
+                name_len,
                 e.flags,
             ));
             dsize = dsize.wrapping_add(e.size);
@@ -954,6 +827,7 @@ impl Tree {
         TreeMemory {
             nodes: self.nodes.heap_bytes(),
             names: self.names.heap_bytes(),
+            names_raw: self.names.raw_bytes(),
         }
     }
 
@@ -1218,45 +1092,8 @@ mod tests {
         let m = t.memory();
         // 200k nodes need 4 chunks of 65,536 nodes.
         assert!(
-            m.nodes >= 200_001 * 40 && m.nodes < 5 * 65_536 * 40,
+            m.nodes >= 200_001 * 32 && m.nodes < 5 * 65_536 * 32,
             "{m:?}"
         );
-    }
-
-    #[test]
-    fn name_pool_dedups_while_scanning() {
-        let mut p = NamePool::with_dedup();
-        let a = p.push(b"__init__.py");
-        let b = p.push(b"LICENSE");
-        assert_eq!(p.push(b"__init__.py"), a);
-        assert_ne!(p.push(b"license"), b, "names are case sensitive here");
-        assert_eq!(p.push(b""), p.push(b""));
-        // Enough distinct names to force several table growths.
-        let offs: Vec<u32> = (0..200_000)
-            .map(|i| p.push(format!("f{i}.txt").as_bytes()))
-            .collect();
-        for (i, &o) in offs.iter().enumerate().step_by(997) {
-            let n = format!("f{i}.txt");
-            assert_eq!(p.push(n.as_bytes()), o);
-            assert_eq!(p.get(o, n.len() as u16), n.as_bytes());
-        }
-        let stored = p.stored_bytes();
-        p.end_dedup();
-        assert_ne!(p.push(b"LICENSE"), b, "after the scan, names are appended");
-        assert_eq!(p.stored_bytes(), stored + 7);
-    }
-
-    #[test]
-    fn name_pool_does_not_straddle_chunks() {
-        let mut p = NamePool::new();
-        let long = vec![b'x'; 60_000];
-        let mut offs = Vec::new();
-        for _ in 0..40 {
-            offs.push(p.push(&long));
-        }
-        for &o in &offs {
-            assert_eq!(p.get(o, 60_000).len(), 60_000);
-        }
-        assert!(p.heap_bytes() >= 40 * 60_000);
     }
 }
