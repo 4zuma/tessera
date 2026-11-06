@@ -30,6 +30,7 @@ pub fn run() {
                 .get_webview_window("main")
                 .ok_or("main window missing")?;
             let backdrop = platform::apply_backdrop(&window);
+            platform::trim_when_minimized(&window);
             app.manage(platform::Info::detect(
                 backdrop,
                 app.package_info().version.to_string(),

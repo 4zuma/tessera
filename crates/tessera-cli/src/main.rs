@@ -309,10 +309,12 @@ fn cmd_bench(args: &Args) -> Result<(), String> {
     // Idle: keep the tree alive (and, with --watch, live updates running)
     // and do nothing else; any CPU time is overhead.
     let batches = Arc::new(AtomicUsize::new(0));
+    let rescans = Arc::new(AtomicUsize::new(0));
     let watcher = if args.watch {
-        let b = batches.clone();
-        Some(start_watcher(args, &tree, &mut summary, move |_| {
+        let (b, r) = (batches.clone(), rescans.clone());
+        Some(start_watcher(args, &tree, &mut summary, move |rep| {
             b.fetch_add(1, Ordering::Relaxed);
+            r.fetch_add(rep.rescan_needed.len(), Ordering::Relaxed);
         })?)
     } else {
         None
@@ -320,7 +322,29 @@ fn cmd_bench(args: &Args) -> Result<(), String> {
     let backend = watcher.as_ref().map(|w| format!("{:?}", w.backend()));
     let cpu_before = sys::cpu_time();
     let idle_start = Instant::now();
-    std::thread::sleep(Duration::from_secs(args.idle_secs));
+    // Live updates only ever add nodes (deleted ones keep their slot), so a
+    // long idle shows how fast the tree grows: one line per minute on stderr.
+    let idle = Duration::from_secs(args.idle_secs);
+    loop {
+        let left = idle.saturating_sub(idle_start.elapsed());
+        if left.is_zero() {
+            break;
+        }
+        std::thread::sleep(left.min(Duration::from_secs(60)));
+        if args.idle_secs >= 120 {
+            let t = tree.read().map_err(|_| "tree lock poisoned")?;
+            eprintln!(
+                "idle {:>4} s: {} nodes, {} live, tree {}, private {}, {} batches, {} rescans needed",
+                idle_start.elapsed().as_secs(),
+                t.len(),
+                live_nodes(&t),
+                human(t.memory().total() as u64),
+                human(sys::memory().private_bytes),
+                batches.load(Ordering::Relaxed),
+                rescans.load(Ordering::Relaxed),
+            );
+        }
+    }
     let idle_wall = idle_start.elapsed();
     let idle_cpu = sys::cpu_time().saturating_sub(cpu_before);
     let idle_mem = sys::memory();
@@ -359,8 +383,13 @@ fn cmd_bench(args: &Args) -> Result<(), String> {
     j.float("layout_4k_ms", layout.uhd_ms);
     j.num("layout_1080p_bytes", layout.fhd_bytes as u64);
     j.num("working_set_idle", idle_mem.working_set);
+    j.num("private_bytes_idle", idle_mem.private_bytes);
+    j.num("nodes_after_idle", t.len() as u64);
+    j.num("live_nodes_after_idle", live_nodes(&t) as u64);
+    j.num("tree_bytes_after_idle", t.memory().total() as u64);
     j.str("watcher", backend.as_deref().unwrap_or("off"));
     j.num("watch_batches", batches.load(Ordering::Relaxed) as u64);
+    j.num("rescans_needed", rescans.load(Ordering::Relaxed) as u64);
     j.num("idle_secs", idle_wall.as_secs());
     j.float(
         "idle_cpu_percent_of_one_core",
@@ -487,6 +516,17 @@ fn largest_files(tree: &Tree, n: usize) -> Vec<NodeId> {
     v.retain(|&(_, id)| !tree.is_deleted(id));
     v.sort_by(|a, b| b.cmp(a));
     v.into_iter().map(|(_, id)| id).collect()
+}
+
+/// Nodes reachable from the root without passing a deleted one.
+fn live_nodes(t: &Tree) -> usize {
+    let mut stack = vec![NodeId::ROOT];
+    let mut n = 0;
+    while let Some(d) = stack.pop() {
+        n += 1;
+        stack.extend(t.children(d));
+    }
+    n
 }
 
 fn human(bytes: u64) -> String {
