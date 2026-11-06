@@ -37,11 +37,20 @@ pr_notes() { # pr_notes <commit>
     echo "::error::could not look up the pull request of $1"
     exit 1
   }
+  # the text between the markers; exit 2 when the end marker is missing, so a
+  # typo never publishes the rest of the description
+  local rc=0
   text=$(tr -d '\r' <<<"$body" | awk -v start="$start" -v end="$end" '
     { line = $0; gsub(/^[ \t]+|[ \t]+$/, "", line) }
-    line == end { exit }
-    on { print }
-    line == start { on = 1 }' | sed '/[^[:space:]]/,$!d')
+    on && line == end { done = 1; exit }
+    on { text = text $0 "\n" }
+    !on && line == start { on = 1 }
+    END { if (on && !done) exit 2; printf "%s", text }') || rc=$?
+  if ((rc == 2)); then
+    echo "::warning::the pull request of $1 has a $start line but no $end line, so its notes are not used"
+    return 1
+  fi
+  text=$(sed '/[^[:space:]]/,$!d' <<<"$text")
   [[ -n $text ]] || return 1
   printf '%s\n' "$text" >"$notes"
 }
