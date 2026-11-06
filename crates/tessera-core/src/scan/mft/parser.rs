@@ -159,7 +159,10 @@ pub(crate) struct ParsedBatch {
     pub extras: Vec<ExtraFacts>,
     /// In-use records that could not be parsed (torn or corrupt).
     pub corrupt: u32,
-    /// The names encoded ahead of time by [`ParsedBatch::encode_names`]:
+    /// [`category::name_code`](crate::category::name_code) of each name,
+    /// from [`ParsedBatch::prepare_names`].
+    pub name_codes: Vec<u8>,
+    /// The names encoded ahead of time by [`ParsedBatch::prepare_names`]:
     /// the encoder, the encodings back to back, and where each one ends.
     pub encoded_by: Option<Encoder>,
     pub encoded: Vec<u8>,
@@ -174,27 +177,35 @@ impl ParsedBatch {
             name_bytes: Vec::with_capacity(records * 24),
             extras: Vec::new(),
             corrupt: 0,
+            name_codes: Vec::new(),
             encoded_by: None,
             encoded: Vec::new(),
             encoded_ends: Vec::new(),
         }
     }
 
-    /// Encodes every name for the tree's name pool (on a parser thread, so
-    /// that merging does not have to).
-    pub fn encode_names(&mut self, enc: &Encoder) {
+    /// Works out what merging needs from each name (on a parser thread, so
+    /// that merging does not have to): its category code and, once the
+    /// tree's name pool compresses names, its encoding.
+    pub fn prepare_names(&mut self, enc: Option<&Encoder>) {
+        self.name_codes.clear();
         self.encoded.clear();
         self.encoded_ends.clear();
-        self.encoded.reserve(self.name_bytes.len());
+        if enc.is_some() {
+            self.encoded.reserve(self.name_bytes.len());
+        }
         for n in &self.names {
             let name = &self.name_bytes[n.start as usize..n.start as usize + n.len as usize];
-            enc.encode(name, &mut self.encoded);
-            self.encoded_ends.push(self.encoded.len() as u32);
+            self.name_codes.push(crate::category::name_code(name));
+            if let Some(enc) = enc {
+                enc.encode(name, &mut self.encoded);
+                self.encoded_ends.push(self.encoded.len() as u32);
+            }
         }
-        self.encoded_by = Some(enc.clone());
+        self.encoded_by = enc.cloned();
     }
 
-    /// The `k`-th name as [`ParsedBatch::encode_names`] encoded it.
+    /// The `k`-th name as [`ParsedBatch::prepare_names`] encoded it.
     pub fn encoded_name(&self, k: usize) -> Option<(&[u8], &Encoder)> {
         let enc = self.encoded_by.as_ref()?;
         let end = *self.encoded_ends.get(k)? as usize;

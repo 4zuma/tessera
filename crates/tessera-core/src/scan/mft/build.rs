@@ -14,6 +14,7 @@ use std::sync::atomic::Ordering;
 use rayon::slice::ParallelSliceMut;
 
 use super::parser::*;
+use crate::category;
 use crate::scan::{FrnIndex, ScanProgress};
 use crate::tree::{ChunkedVec, Encoder, NamePool, Node, NodeFlags, NodeId, Tree};
 
@@ -23,7 +24,10 @@ struct Entry {
     parent: u32,
     rec: u32,
     name_off: u32,
-    name_len: u16,
+    /// Stored length of the name (bits 0..12; an NTFS name has at most 255
+    /// UTF-16 units, so at most 1,530 bytes stored) and its
+    /// [`category::name_code`] (bits 12..16).
+    len_code: u16,
     parent_seq: u16,
 }
 
@@ -119,15 +123,21 @@ impl Accum {
             if nf.rec as usize >= n {
                 continue;
             }
+            let name = b.name(nf);
             let (name_off, name_len) = match b.encoded_name(k) {
-                Some((encoded, enc)) => self.names.push_encoded(b.name(nf), encoded, enc),
-                None => self.names.push(b.name(nf)),
+                Some((encoded, enc)) => self.names.push_encoded(name, encoded, enc),
+                None => self.names.push(name),
             };
+            let code = match b.name_codes.get(k) {
+                Some(&c) => c,
+                None => category::name_code(name),
+            };
+            debug_assert!(name_len < 1 << 12);
             self.entries.push(Entry {
                 parent: nf.parent,
                 rec: nf.rec,
                 name_off,
-                name_len,
+                len_code: name_len | u16::from(code) << 12,
                 parent_seq: nf.parent_seq,
             });
         }
@@ -289,8 +299,8 @@ impl Tree {
                     NodeId(stash),
                     NodeId(id as u32 + 1),
                     e.name_off,
-                    e.name_len,
-                    flags,
+                    e.len_code & 0x0FFF,
+                    flags.with_name_cat((e.len_code >> 12) as u8),
                 ));
             }
             let last = tree.nodes.len();
@@ -412,6 +422,7 @@ mod tests {
         assert_eq!((b.files, b.dirs, b.skipped), (4, 2, 0));
         let a = t.lookup_relative(b"Users\\me\\a.bin").unwrap();
         assert_eq!((t.node(a).size(), t.node(a).logical()), (8192, 5000));
+        assert_eq!(t.node(a).name_cat(), crate::category::name_code(b"a.bin"));
         let me = t.lookup_relative(b"users\\ME").unwrap();
         assert_eq!((t.node(me).size(), t.node(me).logical()), (12288, 5010));
         let users = t.lookup_relative(b"Users").unwrap();

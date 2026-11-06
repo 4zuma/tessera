@@ -67,6 +67,15 @@ impl NodeFlags {
     pub const COMPRESSED: NodeFlags = NodeFlags(1 << 8);
     /// An NTFS metadata file such as `$MFT` (only seen by the MFT scanner).
     pub const METAFILE: NodeFlags = NodeFlags(1 << 9);
+    /// Not a flag: bits 12..16 hold [`Node::name_cat`]. The tree sets them
+    /// whenever it stores a name and ignores them in flags handed to it.
+    pub const NAME_CAT: NodeFlags = NodeFlags(0xF000);
+
+    /// These flags with [`NodeFlags::NAME_CAT`] set to `code`.
+    #[inline]
+    pub(crate) const fn with_name_cat(self, code: u8) -> NodeFlags {
+        NodeFlags(self.0 & !Self::NAME_CAT.0 | (code as u16 & 0xF) << 12)
+    }
 
     #[inline]
     pub const fn contains(self, other: NodeFlags) -> bool {
@@ -194,6 +203,14 @@ impl Node {
         n.set_size(size);
         n.set_logical(logical);
         n
+    }
+
+    /// What the node's name says about its category
+    /// ([`category::name_code`](crate::category::name_code)); see
+    /// [`category::of`](crate::category::of) for the category itself.
+    #[inline]
+    pub fn name_cat(&self) -> u8 {
+        (self.flags.0 >> 12) as u8
     }
 
     /// Size on disk (allocated bytes). For directories, the sum over live
@@ -376,10 +393,11 @@ impl EntryBatch {
     fn push_raw(&mut self, start: usize, size: u64, logical: u64, flags: NodeFlags) {
         let len = self.names.len() - start;
         let name_len = u16::try_from(len).expect("name too long");
+        let code = crate::category::name_code(&self.names[start..]);
         self.entries.push(BatchEntry {
             size,
             logical,
-            flags,
+            flags: flags.with_name_cat(code),
             name_start: start as u32,
             name_len,
         });
@@ -791,10 +809,10 @@ impl Tree {
         // a file's flags decide its category (NTFS metafiles)
         let parent = self.node(id).parent;
         self.touch(if parent.is_none() { id } else { parent });
-        let deleted = self.node(id).flags.contains(NodeFlags::DELETED);
-        let mut f = flags;
+        let old = self.node(id).flags;
+        let mut f = flags.with_name_cat(self.node(id).name_cat());
         f.remove(NodeFlags::DELETED);
-        if deleted {
+        if old.contains(NodeFlags::DELETED) {
             f.insert(NodeFlags::DELETED);
         }
         self.node_mut(id).flags = f;

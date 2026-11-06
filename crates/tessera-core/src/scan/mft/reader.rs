@@ -516,9 +516,7 @@ fn parse_chunk(layout: &MftLayout, chunk: &mut Chunk, enc: Option<&Encoder>) -> 
                     parse_record(no as u32, rec, &mut out);
                 }
             }
-            if let Some(enc) = enc {
-                out.encode_names(enc);
-            }
+            out.prepare_names(enc);
             out
         })
         .collect()

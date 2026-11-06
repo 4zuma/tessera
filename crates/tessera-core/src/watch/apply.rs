@@ -289,6 +289,7 @@ impl Tree {
             let n = self.node_mut(id);
             n.name_off = off;
             n.name_len = len;
+            n.flags = n.flags.with_name_cat(crate::category::name_code(new_name));
         }
         let n = *self.node(id);
         if n.parent == new_parent {

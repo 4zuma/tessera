@@ -291,14 +291,11 @@ pub struct LayoutEngine {
     /// Main category of closed folders (rule 6), by folder id.
     tints: HashMap<u32, Tint, BuildHasherDefault<IdHasher>>,
     generation: u32,
-    /// Category per node id, [`CAT_UNKNOWN`] until first needed.
-    cats: Vec<u8>,
     /// Protected node ids (sorted) and the tree length they were found at.
     protected: Option<(usize, Vec<u32>)>,
     scratch: Scratch,
 }
 
-const CAT_UNKNOWN: u8 = 254;
 /// Rank entries unused for this many layouts may be dropped.
 const RANK_TTL: u32 = 64;
 
@@ -326,7 +323,6 @@ impl LayoutEngine {
     pub fn reset(&mut self) {
         self.ranks.clear();
         self.tints.clear();
-        self.cats.clear();
         self.protected = None;
     }
 
@@ -341,9 +337,6 @@ impl LayoutEngine {
         rev: u32,
     ) -> Vec<u8> {
         self.generation = self.generation.wrapping_add(1);
-        if self.cats.len() < tree.len() {
-            self.cats.resize(tree.len(), CAT_UNKNOWN);
-        }
         let protected = match self.protected.take() {
             Some((len, ids)) if len == tree.len() => ids,
             _ => crate::delete::protected_nodes(tree),
@@ -355,7 +348,6 @@ impl LayoutEngine {
             ranks: &mut self.ranks,
             tints: &mut self.tints,
             generation: self.generation,
-            cats: &mut self.cats,
             protected: &protected,
             recycle_bin: recycle_bin(tree),
             s: std::mem::take(&mut self.scratch),
@@ -565,7 +557,6 @@ struct Run<'a> {
     ranks: &'a mut HashMap<u32, Rank, BuildHasherDefault<IdHasher>>,
     tints: &'a mut HashMap<u32, Tint, BuildHasherDefault<IdHasher>>,
     generation: u32,
-    cats: &'a mut [u8],
     protected: &'a [u32],
     recycle_bin: Option<NodeId>,
     s: Scratch,
@@ -666,22 +657,6 @@ impl Run<'_> {
         true
     }
 
-    /// Category of a node, cached.
-    #[inline]
-    fn cat(cats: &mut [u8], tree: &Tree, id: NodeId, n: &Node) -> u8 {
-        if n.is_dir() {
-            return category::NONE;
-        }
-        match cats.get_mut(id.index()) {
-            Some(c) if *c != CAT_UNKNOWN => *c,
-            Some(c) => {
-                *c = category::of_node(tree, id);
-                *c
-            }
-            None => category::of_node(tree, id),
-        }
-    }
-
     /// The rank size of a node, with 25 % hysteresis (rule 1).
     #[inline]
     fn rank(&mut self, id: NodeId, size: u64) -> u64 {
@@ -730,7 +705,7 @@ impl Run<'_> {
                     if n.is_dir() {
                         stack.push(c);
                     } else {
-                        let cat = Self::cat(self.cats, tree, c, n);
+                        let cat = category::of(n);
                         if let Some(t) = tally.get_mut(cat as usize) {
                             *t += mode.of(n);
                         }
@@ -792,7 +767,7 @@ impl Run<'_> {
                             rank: 0,
                             node: c,
                         });
-                        let cat = Self::cat(self.cats, tree, c, n);
+                        let cat = category::of(n);
                         if (cat as usize) < category::COUNT {
                             tally[cat as usize] += size;
                         }
@@ -821,7 +796,7 @@ impl Run<'_> {
             for k in &kids[keep..] {
                 small_n += 1;
                 small_sum = small_sum.saturating_add(k.size);
-                let cat = Self::cat(self.cats, tree, k.node, tree.node(k.node));
+                let cat = category::of(tree.node(k.node));
                 if (cat as usize) < category::COUNT {
                     tally[cat as usize] += k.size;
                 }
@@ -954,7 +929,7 @@ impl Run<'_> {
                             rec.kind = kind::DIR_LEAF;
                         }
                     } else {
-                        rec.cat = Self::cat(self.cats, tree, it.node, n);
+                        rec.cat = category::of(n);
                     }
                 }
             }
