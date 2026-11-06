@@ -898,12 +898,9 @@ fn zh(reason: &str) -> String {
         APP_DATA => "Windows 和各个应用的数据存放在这里。",
         PROFILES => "这里存放着所有用户的个人文件夹。",
         PROFILE => "这是一个用户的个人文件夹。",
-        // the folder itself stays; say so before saying what may go, or "可以删除" reads as
-        // permission to delete the folder
-        PERSONAL => {
-            "这是你的个人文件夹，Windows 和应用要用到它。里面的内容可以删除，双击进入后选择。"
-        }
-        TEMP => "Windows 和应用把临时文件放在这个文件夹里。里面的内容可以删除，双击进入后选择。",
+        // shown next to a lock: say why the folder stays, not that something may be deleted
+        PERSONAL => "这是你的个人文件夹，Windows 和应用要用到它。",
+        TEMP => "Windows 和应用把临时文件放在这个文件夹里。",
         CONTAINS => "这个文件夹里有 Windows 或应用需要的文件夹。",
         STILL_THERE => "没能删除这个项目。",
         NOT_RESTORED => "没能还原这个项目。",
