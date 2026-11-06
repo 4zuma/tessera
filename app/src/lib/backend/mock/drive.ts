@@ -9,7 +9,8 @@ export const KB = 1024;
 export const MB = KB * 1024;
 export const GB = MB * 1024;
 
-export type Lock = '' | 'os' | 'acl' | 'sys';
+/** os: a folder Windows needs; mine / temp: a personal or temp folder (kept, its contents may go) */
+export type Lock = '' | 'os' | 'acl' | 'sys' | 'mine' | 'temp';
 
 export interface MNode {
   id: number;
@@ -295,13 +296,13 @@ export function buildC(): Drive {
 
   const users = D(root, 'Users', { lock: 'os' });
   const me = D(users, 'User', { lock: 'os' });
-  const appdata = D(me, 'AppData');
-  const local = D(appdata, 'Local');
+  const appdata = D(me, 'AppData', { lock: 'os' });
+  const local = D(appdata, 'Local', { lock: 'os' });
   F(D(D(D(local, 'Docker'), 'wsl'), 'disk'), 'docker_data.vhdx', 41.5 * GB, { age: 0 });
   const pkgs = D(local, 'Packages');
   F(D(D(pkgs, 'CanonicalGroupLimited.Ubuntu24.04LTS_79rhkp1fndgsc'), 'LocalState'), 'ext4.vhdx', 18.6 * GB, { age: 1 });
   fill(pkgs, 1.2 * GB, 120, { ext: ['dat', 'db', 'tmp'], age: [0, 200], dirs: { n: 14, name: () => `Microsoft.${pick(['WindowsTerminal', 'Windows.Photos', 'GamingApp', 'XboxApp', 'ScreenSketch', 'Paint', 'StorePurchaseApp'])}_8wekyb3d8bbwe` } });
-  fill(D(local, 'Temp'), 6.8 * GB, 900, { ext: ['tmp', 'tmp', 'log', 'zip', 'exe', 'cab'], cat: Cat.Cache, age: [0, 60], dirs: { n: 40, sigma: 1.4, name: () => pick([`${hex(8)}-${hex(4)}`, `nsx${hex(4)}.tmp`, `chrome_drag${int(9999)}`, `vscode-${hex(6)}`, `msedge_url_fetcher_${int(99999)}`]) } });
+  fill(D(local, 'Temp', { lock: 'temp' }), 6.8 * GB, 900, { ext: ['tmp', 'tmp', 'log', 'zip', 'exe', 'cab'], cat: Cat.Cache, age: [0, 60], dirs: { n: 40, sigma: 1.4, name: () => pick([`${hex(8)}-${hex(4)}`, `nsx${hex(4)}.tmp`, `chrome_drag${int(9999)}`, `vscode-${hex(6)}`, `msedge_url_fetcher_${int(99999)}`]) } });
   fill(D(local, 'npm-cache'), 3.4 * GB, 700, { ext: ['tmp'], cat: Cat.Cache, age: [0, 200], name: () => hex(40), dirs: { n: 1, name: () => '_cacache', next: { n: 1, name: () => 'content-v2', next: { n: 64, name: () => hex(2) } } } });
   fill(D(D(local, 'pip'), 'cache'), 2.1 * GB, 300, { ext: ['whl', 'tmp'], cat: Cat.Cache, age: [2, 300] });
   fill(D(local, 'JetBrains'), 4.0 * GB, 380, { ext: ['dat', 'cache', 'jar'], cat: Cat.Cache, age: [0, 60], dirs: { n: 3, name: i => ['RustRover2025.2', 'PyCharm2025.2', 'RustRover2025.1'][i] } });
@@ -313,33 +314,33 @@ export function buildC(): Drive {
   fill(D(progs, 'Microsoft VS Code'), 0.6 * GB, 140, { ext: ['dll', 'exe', 'js', 'node'], age: [3, 30] });
   fill(D(progs, 'Python'), 1.1 * GB, 280, { ext: ['pyd', 'dll', 'exe', 'whl'], age: [60, 300] });
   fill(D(D(local, 'Unity'), 'cache'), 2.7 * GB, 300, { ext: ['bundle', 'cache'], cat: Cat.Cache, age: [20, 300] });
-  const roam = D(appdata, 'Roaming');
+  const roam = D(appdata, 'Roaming', { lock: 'os' });
   fill(D(roam, 'Code'), 1.6 * GB, 300, { ext: ['json', 'db', 'cache', 'log'], age: [0, 60], dirs: { n: 4, name: i => ['User', 'CachedData', 'logs', 'CachedExtensionVSIXs'][i] } });
   fill(D(roam, 'discord'), 0.9 * GB, 140, { ext: ['cache', 'dll', 'tmp'], cat: Cat.Cache, age: [0, 40] });
   fill(D(roam, 'Adobe'), 2.1 * GB, 160, { ext: ['cache', 'db', 'psd'], age: [10, 300] });
   fill(D(roam, 'Tencent'), 1.2 * GB, 120, { ext: ['db', 'dat', 'log'], age: [1, 100] });
-  fill(D(appdata, 'LocalLow'), 1.3 * GB, 160, { ext: ['dat', 'cache', 'log'], age: [3, 400] });
+  fill(D(appdata, 'LocalLow', { lock: 'os' }), 1.3 * GB, 160, { ext: ['dat', 'cache', 'log'], age: [3, 400] });
 
-  const dl = D(me, 'Downloads');
+  const dl = D(me, 'Downloads', { lock: 'mine' });
   F(dl, 'Win11_24H2_Chinese_Simplified_x64.iso', 5.6 * GB, { age: 210 });
   F(dl, 'ubuntu-24.04.1-desktop-amd64.iso', 5.9 * GB, { age: 340 });
   F(dl, 'cuda_12.6.2_560.94_windows.exe', 3.2 * GB, { age: 280 });
   F(dl, 'DaVinci_Resolve_19.1_Windows.zip', 3.9 * GB, { age: 150 });
   F(dl, 'VisualStudioSetup.exe', 4.2 * MB, { age: 400 });
 
-  const vid = D(me, 'Videos');
+  const vid = D(me, 'Videos', { lock: 'mine' });
   fill(D(vid, 'Captures'), 8.0 * GB, 120, { ext: ['mp4'], age: [5, 700], name: () => `${pick(['Cyberpunk 2077', 'Counter-Strike 2', 'Stardew Valley'])} 2025-${pad2(1 + int(12))}-${pad2(1 + int(28))} ${pad2(int(24))}-${pad2(int(60))}-${pad2(int(60))}.mp4` });
   const obs = D(vid, 'OBS');
   for (const [d, s] of [['2025-03-02 20-11-43', 4.4], ['2025-04-19 21-36-02', 3.7], ['2025-06-07 19-02-58', 2.9], ['2025-08-14 21-03-55', 3.1], ['2025-09-30 22-47-10', 2.3], ['2025-10-26 20-15-31', 1.8]] as const)
     F(obs, `${d}.mkv`, s * GB, { age: Math.max(10, (Date.UTC(2026, 10, 5) - Date.parse(d.slice(0, 10))) / 864e5) });
   fill(vid, 5.3 * GB, 40, { ext: ['mp4', 'mov'], age: [30, 1500] });
 
-  const pic = D(me, 'Pictures');
+  const pic = D(me, 'Pictures', { lock: 'mine' });
   fill(D(pic, 'Screenshots'), 2.1 * GB, 900, { ext: ['png'], age: [0, 700], sigma: 0.9, name: () => `屏幕截图 2025-${pad2(1 + int(12))}-${pad2(1 + int(28))} ${pad2(int(24))}${pad2(int(60))}${pad2(int(60))}.png` });
   fill(D(pic, 'Photos'), 8.6 * GB, 360, { ext: ['arw', 'arw', 'jpg'], age: [200, 1400], sigma: 0.5, name: (_i, e) => `DSC0${1000 + int(8999)}.${e.toUpperCase()}`, dirs: { n: 6, name: i => ['2021 京都', '2022 大理', '2023 冰岛', '2024 青岛', '2024 年会', '2025 上海'][i] } });
   fill(pic, 1.7 * GB, 140, { ext: ['jpg', 'png', 'psd', 'webp'], age: [10, 1200] });
 
-  const docs = D(me, 'Documents');
+  const docs = D(me, 'Documents', { lock: 'mine' });
   const wx = D(D(D(docs, 'WeChat Files'), `wxid_${hex(14)}`), 'FileStorage');
   const month = () => `2025-${pad2(1 + int(12))}`;
   fill(D(wx, 'Video'), 6.1 * GB, 260, { ext: ['mp4'], age: [10, 900], name: () => `${hex(32)}.mp4`, dirs: { n: 14, name: month } });
@@ -350,7 +351,7 @@ export function buildC(): Drive {
   fill(D(docs, 'My Games'), 0.6 * GB, 80, { ext: ['dat', 'json'], cat: Cat.Game, age: [2, 600] });
   fill(docs, 4.6 * GB, 260, { ext: ['pdf', 'docx', 'xlsx', 'pptx', 'zip', 'md'], age: [10, 2400], name: (_i, e) => `${pick(['季度总结', '读书笔记', '旅行计划', '简历', '租房合同', '体检报告', '毕业设计', '预算表'])}${pick(['', '_2023', '_2024', '_2025', '_草稿'])}.${e}` });
 
-  fill(D(me, 'Music'), 4.8 * GB, 160, { ext: ['flac', 'flac', 'mp3'], age: [300, 2000], sigma: 0.6 });
+  fill(D(me, 'Music', { lock: 'mine' }), 4.8 * GB, 160, { ext: ['flac', 'flac', 'mp3'], age: [300, 2000], sigma: 0.6 });
 
   const repos = D(D(me, 'source'), 'repos');
   const tess = D(repos, 'tessera');
@@ -364,8 +365,8 @@ export function buildC(): Drive {
   fill(D(D(me, '.nuget'), 'packages'), 2.4 * GB, 300, { ext: ['dll', 'lib'], cat: Cat.Dev, age: [30, 700] });
   fill(D(me, '.gradle'), 1.6 * GB, 200, { ext: ['jar', 'lib'], cat: Cat.Dev, age: [60, 500] });
   fill(D(D(me, '.vscode'), 'extensions'), 0.9 * GB, 200, { ext: ['js', 'json', 'node'], cat: Cat.Dev, age: [3, 200] });
-  fill(D(me, 'OneDrive'), 7.8 * GB, 320, { ext: ['jpg', 'pdf', 'docx', 'mp4', 'xlsx'], age: [30, 1500], cloud: true, dirs: { n: 5, name: i => ['文档', '图片', '桌面', '备份', '共享'][i] } });
-  fill(D(me, 'Desktop'), 1.6 * GB, 60, { ext: ['zip', 'pdf', 'png', 'exe', 'docx'], age: [1, 300] });
+  fill(D(me, 'OneDrive', { lock: 'mine' }), 7.8 * GB, 320, { ext: ['jpg', 'pdf', 'docx', 'mp4', 'xlsx'], age: [30, 1500], cloud: true, dirs: { n: 5, name: i => ['文档', '图片', '桌面', '备份', '共享'][i] } });
+  fill(D(me, 'Desktop', { lock: 'mine' }), 1.6 * GB, 60, { ext: ['zip', 'pdf', 'png', 'exe', 'docx'], age: [1, 300] });
   fill(D(users, 'Public'), 0.4 * GB, 40, { ext: ['jpg', 'mp4', 'lnk'], age: [300, 900] });
 
   F(root, 'pagefile.sys', 16.0 * GB, { lock: 'sys', age: 0, cat: Cat.System });

@@ -20,6 +20,8 @@ const LIGHT = {
   'ctl-stroke': 'rgba(0,0,0,0.0578)',
   'ctl-stroke-2': 'rgba(0,0,0,0.1622)',
   'ctl-strong': 'rgba(0,0,0,0.4458)',
+  // ControlAltFillColorSecondary: the sunken track of a segmented control or toggle
+  'ctl-alt': 'rgba(0,0,0,0.0241)',
   'subtle-hover': 'rgba(0,0,0,0.0373)',
   'subtle-press': 'rgba(0,0,0,0.0241)',
   divider: 'rgba(0,0,0,0.0803)',
@@ -72,6 +74,7 @@ const DARK: Tokens = {
   'ctl-stroke': 'rgba(255,255,255,0.0698)',
   'ctl-stroke-2': 'rgba(255,255,255,0.093)',
   'ctl-strong': 'rgba(255,255,255,0.5442)',
+  'ctl-alt': 'rgba(0,0,0,0.1)',
   'subtle-hover': 'rgba(255,255,255,0.0605)',
   'subtle-press': 'rgba(255,255,255,0.0419)',
   divider: 'rgba(255,255,255,0.0837)',

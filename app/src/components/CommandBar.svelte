@@ -192,52 +192,67 @@
     flex: 1;
     min-width: 8px;
   }
+  /*
+   * Segmented control, as Windows 11 draws it (Community Toolkit "Segmented"): a sunken
+   * track, the chosen segment raised like a button with a short accent pill under its label.
+   * The raised segment covers the track's border, so no edge is drawn twice, and both labels
+   * keep the primary text colour: the surface says which one is on, not the ink.
+   */
   .seg {
     display: inline-flex;
     flex: none;
-    padding: 2px;
-    margin: 0 4px 0 6px;
-    border-radius: 6px;
-    background: var(--subtle-press);
+    height: 32px;
+    /* with the bar's 4 px gap: 8 px to the neighbours on both sides */
+    margin: 0 4px;
     border: 1px solid var(--ctl-stroke);
+    border-radius: var(--r-ctl);
+    background: var(--ctl-alt);
   }
   .seg button {
     position: relative;
-    height: 26px;
-    padding: 0 10px;
-    border: 0;
+    margin: -1px;
+    padding: 0 12px;
+    border: 1px solid transparent;
     border-radius: var(--r-ctl);
     background: transparent;
-    color: var(--text-2);
+    color: var(--text);
     white-space: nowrap;
-    transition: background var(--t-fast) linear, color var(--t-fast) linear;
+    transition: background var(--t-fast) linear, border-color var(--t-fast) linear;
   }
   .seg button:hover:not(.on) {
-    color: var(--text);
     background: var(--subtle-hover);
   }
-  .seg button.on {
-    background: var(--ctl);
-    color: var(--text);
-    box-shadow: 0 0 0 1px var(--ctl-stroke), 0 1px 1px var(--ctl-stroke-2);
+  .seg button:active:not(.on) {
+    background: var(--subtle-press);
+    color: var(--text-2);
   }
-  .seg button.on::after {
+  .seg button.on {
+    z-index: 1;
+    background: var(--ctl);
+    border-color: var(--ctl-stroke);
+    border-bottom-color: var(--ctl-stroke-2);
+  }
+  /* the pill grows from 4 to 16 px when a segment is chosen, and shrinks while it is pressed */
+  .seg button::after {
     content: '';
     position: absolute;
     left: 50%;
     bottom: 1px;
-    width: 14px;
+    width: 16px;
     height: 3px;
-    margin-left: -7px;
-    border-radius: 2px;
+    margin-left: -8px;
+    border-radius: 1.5px;
     background: var(--accent);
-    animation: pill var(--t-slow) var(--ease-fast);
+    opacity: 0;
+    transform: scaleX(0.25);
+    transition: transform var(--t-fast) var(--ease-decel), opacity var(--t-fast) linear;
   }
-  @keyframes pill {
-    from {
-      width: 0;
-      margin-left: 0;
-    }
+  .seg button.on::after {
+    opacity: 1;
+    transform: none;
+  }
+  .seg button.on:active::after {
+    transform: scaleX(0.5);
   }
   .sbtn[aria-pressed='true'] {
     color: var(--accent);

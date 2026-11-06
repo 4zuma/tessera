@@ -128,6 +128,9 @@ export class MockBackend implements Backend {
     const d = this.d;
     if (n.lock === 'sys') return '系统正在使用的文件，不能删除';
     if (n.lock === 'acl') return '没有访问权限';
+    // the same words as the core's reasons (src-tauri backend.rs, zh)
+    if (n.lock === 'mine') return '这是你的个人文件夹，Windows 和应用要用到它。';
+    if (n.lock === 'temp') return 'Windows 和应用把临时文件放在这个文件夹里。';
     if (n.lock === 'os' || n.id === 0) return '系统目录，受保护';
     if (n.id === d.binId || n.id === d.binUserId) return '请使用“清空回收站”';
     return null;

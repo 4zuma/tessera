@@ -86,7 +86,8 @@ let toastSeq = 0;
 function lockFromFlags(flags: number): string | null {
   if (flags & Flag.InUse) return '系统正在使用的文件，不能删除';
   if (flags & Flag.NoAccess) return '没有访问权限';
-  if (flags & Flag.Protected) return '系统目录，受保护';
+  // the flag says only that it is locked; the core's details say why (Windows, a personal folder…)
+  if (flags & Flag.Protected) return '受保护，不能删除';
   if (flags & Flag.RecycleBin) return '请使用“清空回收站”';
   return null;
 }
@@ -131,6 +132,8 @@ export class App implements EngineHost {
 
   engine: TreemapEngine | null = null;
   private ro: ResizeObserver | null = null;
+  /** until this time, the next stage resize comes from the details pane (see paneToggled) */
+  private paneUntil = 0;
   private pending: { kind: MotionKind; opt: ApplyOpts } | null = null;
   private inFlight = false;
   private scanLayoutTimer: ReturnType<typeof setTimeout> | null = null;
@@ -216,7 +219,11 @@ export class App implements EngineHost {
       const r = stage.getBoundingClientRect();
       const changed = this.engine!.resize(Math.max(50, Math.floor(r.width)), Math.max(50, Math.floor(r.height)), Math.min(3, window.devicePixelRatio || 1));
       if (changed) {
-        this.requestLayout(first ? 'instant' : this.scanning ? 'scan' : 'instant');
+        this.engine!.drawNow();
+        // dragging the window edge snaps; the details pane opening or closing glides
+        const pane = performance.now() < this.paneUntil;
+        this.paneUntil = 0;
+        this.requestLayout(first ? 'instant' : this.scanning ? 'scan' : pane ? 'update' : 'instant');
         first = false;
       }
     };
@@ -232,6 +239,15 @@ export class App implements EngineHost {
     };
     watchDpr();
     measure();
+  }
+
+  /**
+   * The details pane is about to open or close. The stage changes width once (at once when
+   * it opens, after the pane has slid out when it closes), and that resize animates the map
+   * into its new size instead of snapping.
+   */
+  paneToggled() {
+    this.paneUntil = performance.now() + 1000;
   }
 
   detach() {
@@ -446,8 +462,9 @@ export class App implements EngineHost {
       }
     }
     this.selInfo = { count: ids.length, bytes, lockReason: lock };
-    if (!this.backend || lock || ids.length > 24) return;
-    // the core knows reasons the flags do not carry (files in use, ACLs)
+    if (!this.backend || ids.length > 24) return;
+    // the core knows reasons the flags do not carry (files in use, ACLs) and says why a
+    // protected folder is locked, which the flag alone cannot
     const ds = await Promise.all(ids.map(id => this.backend!.details(id, this.view, this.sizeMode)));
     if (seq !== this.selSeq) return;
     const why = ds.map(d => d?.lockReason).find(Boolean) ?? null;
@@ -786,7 +803,10 @@ export class App implements EngineHost {
       if (r.flags & Flag.RecycleBin) {
         rows.push({ type: 'item', icon: 'sweep', label: '清空回收站…', danger: true, run: () => this.confirmEmptyBin() });
       } else {
-        const why = ids.map(x => lockFromFlags(this.rectOf(x)?.flags ?? 0)).find(Boolean) ?? null;
+        const flagged = ids.find(x => lockFromFlags(this.rectOf(x)?.flags ?? 0));
+        // the details card usually already holds the core's reason for the item under the pointer
+        const d = this.details;
+        const why = flagged == null ? null : (d?.id === flagged && d.lockReason) || lockFromFlags(this.rectOf(flagged)?.flags ?? 0);
         rows.push({ type: 'item', icon: 'trash', label: '移到回收站', key: 'Del', disabled: !!why, run: () => void this.recycle(ids) });
         rows.push({ type: 'item', icon: 'purge', label: '永久删除…', key: 'Shift+Del', danger: true, disabled: !!why, run: () => this.confirmPurge(ids) });
         if (why) rows.push({ type: 'note', label: why, lock: true });

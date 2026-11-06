@@ -57,7 +57,7 @@ export function mainCat(drive: Drive, n: MNode, mode: SizeMode): number {
 
 export function flagsOf(drive: Drive, n: MNode): number {
   let f = 0;
-  if (n.lock === 'os' || n.id === 0) f |= Flag.Protected;
+  if (n.lock === 'os' || n.lock === 'mine' || n.lock === 'temp' || n.id === 0) f |= Flag.Protected;
   if (n.lock === 'acl') f |= Flag.NoAccess;
   if (n.lock === 'sys') f |= Flag.InUse;
   if (n.cloud) f |= Flag.Cloud;
