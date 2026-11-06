@@ -132,7 +132,7 @@ fn scan_tree(root: &Path, threads: usize) -> (SharedTree, ScanSummary) {
     assert_eq!(snap.files, summary.files);
     assert_eq!(snap.dirs, summary.dirs);
     assert_eq!(snap.inaccessible, summary.inaccessible);
-    assert_eq!(snap.bytes, tree.read().unwrap().node(NodeId::ROOT).size);
+    assert_eq!(snap.bytes, tree.read().unwrap().node(NodeId::ROOT).size());
     (tree, summary)
 }
 
@@ -273,7 +273,7 @@ fn walk_matches_what_was_built() {
     assert_eq!(summary.mode, ScanMode::Walk);
     assert!(summary.volume.is_some());
 
-    let logical = |rel: &str| t.node(node(&t, rel)).logical;
+    let logical = |rel: &str| t.node(node(&t, rel)).logical();
     assert_eq!(logical("a.txt"), 1000);
     assert_eq!(logical("empty.bin"), 0);
     assert_eq!(logical("sub1/b.bin"), 5000);
@@ -283,22 +283,13 @@ fn walk_matches_what_was_built() {
     assert!(t.node(node(&t, "empty dir")).is_dir());
     assert_eq!(t.child_count(node(&t, "empty dir")), 0);
     assert!(!t.node(node(&t, "a.txt")).is_dir());
-    // Last write time comes from the directory listing (no extra I/O).
-    let now_min = (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
-        + 11_644_473_600)
-        / 60;
-    let mt = t.node(node(&t, "a.txt")).mtime as i64;
-    assert!((now_min - mt).abs() <= 60, "mtime {mt} vs now {now_min}");
-    assert!(t.node(node(&t, "a.txt")).size >= 1000 || wine);
+    assert!(t.node(node(&t, "a.txt")).size() >= 1000 || wine);
 
     // Unicode names survive exactly.
     if unicode {
         let uni = node(&t, &format!("{uni_dir}/{uni_file}"));
         assert_eq!(t.name(uni), uni_file.as_bytes());
-        assert_eq!(t.node(uni).logical, 777);
+        assert_eq!(t.node(uni).logical(), 777);
         assert_eq!(t.path(uni), root.join(uni_dir).join(uni_file));
     } else {
         assert!(wine, "cannot create a Unicode file name on Windows");
@@ -306,7 +297,7 @@ fn walk_matches_what_was_built() {
     }
 
     let long_id = node(&t, &long_rel);
-    assert_eq!(t.node(long_id).logical, 4242);
+    assert_eq!(t.node(long_id).logical(), 4242);
     assert_eq!(t.path(long_id), long_file);
 
     // The hard-linked file is counted once.
@@ -315,7 +306,7 @@ fn walk_matches_what_was_built() {
     if !supports_hard_links(&root) {
         assert!(wine, "NTFS reports hard-link support on Windows");
         println!("note: volume reports no hard links (wine); dedup check skipped");
-        assert_eq!((a.logical, b.logical), (20_000, 20_000));
+        assert_eq!((a.logical(), b.logical()), (20_000, 20_000));
     } else {
         assert_eq!(
             a.flags.contains(NodeFlags::HARDLINK) as u32
@@ -330,8 +321,8 @@ fn walk_matches_what_was_built() {
         } else {
             (a, b)
         };
-        assert_eq!(counted.logical, 20_000);
-        assert_eq!((extra.size, extra.logical), (0, 0));
+        assert_eq!(counted.logical(), 20_000);
+        assert_eq!((extra.size(), extra.logical()), (0, 0));
         assert_eq!(logical("links"), 20_000);
     }
 
@@ -348,7 +339,7 @@ fn walk_matches_what_was_built() {
             0,
             "a junction must not be followed"
         );
-        assert_eq!(j.logical, 0);
+        assert_eq!(j.logical(), 0);
     } else {
         assert!(wine, "mklink /J failed on Windows");
         println!("note: no junction support here (wine); junction check skipped");
@@ -359,7 +350,7 @@ fn walk_matches_what_was_built() {
             .children(NodeId::ROOT)
             .find(|&c| t.path(c).file_name() == Some(odd_name.as_os_str()))
             .expect("ill-formed UTF-16 name lost");
-        assert_eq!(t.node(id).logical, 10);
+        assert_eq!(t.node(id).logical(), 10);
     } else {
         println!("note: cannot create a file with an ill-formed UTF-16 name here; check skipped");
     }
@@ -382,7 +373,7 @@ fn walk_matches_what_was_built() {
         Totals {
             files: summary.files,
             dirs: summary.dirs,
-            logical: t.node(NodeId::ROOT).logical,
+            logical: t.node(NodeId::ROOT).logical(),
         },
         reference
     );
@@ -396,7 +387,7 @@ fn shape(tree: &Tree) -> (Vec<(String, bool)>, u64, u64) {
         .collect();
     v.sort();
     let r = tree.node(NodeId::ROOT);
-    (v, r.size, r.logical)
+    (v, r.size(), r.logical())
 }
 
 #[test]
@@ -458,7 +449,7 @@ fn scan_into_fills_a_subdirectory() {
     let sub = tree
         .write()
         .unwrap()
-        .add_child(NodeId::ROOT, b"sub", 0, 0, NodeFlags::DIR, 0);
+        .add_child(NodeId::ROOT, b"sub", 0, 0, NodeFlags::DIR);
     let progress = ScanProgress::new();
     let summary = walk::scan_into(&tree, sub, &root.join("sub"), &opts(0), &progress).unwrap();
     assert_eq!(
@@ -469,9 +460,9 @@ fn scan_into_fills_a_subdirectory() {
 
     let t = tree.read().unwrap();
     t.check_invariants().unwrap();
-    assert_eq!(t.node(NodeId::ROOT).logical, 300);
-    assert_eq!(t.node(sub).logical, 300);
-    assert_eq!(t.node(node(&t, "sub/inner/y.bin")).logical, 200);
+    assert_eq!(t.node(NodeId::ROOT).logical(), 300);
+    assert_eq!(t.node(sub).logical(), 300);
+    assert_eq!(t.node(node(&t, "sub/inner/y.bin")).logical(), 200);
     assert_eq!(t.node(node(&t, "sub/inner")).parent, sub);
     assert!(t.lookup_relative(b"other.bin").is_none());
     assert_eq!(t.len(), 5);
@@ -482,7 +473,7 @@ fn scan_into_fills_a_subdirectory() {
     let leaf = tree
         .write()
         .unwrap()
-        .add_child(inner_id, b"new", 0, 0, NodeFlags::DIR, 0);
+        .add_child(inner_id, b"new", 0, 0, NodeFlags::DIR);
     std::fs::create_dir(root.join("sub/inner/new")).unwrap();
     write_file(&root.join("sub/inner/new/z.bin"), 7);
     let s = walk::scan_into(
@@ -496,7 +487,7 @@ fn scan_into_fills_a_subdirectory() {
     assert_eq!((s.files, s.dirs), (1, 0));
     let t = tree.read().unwrap();
     t.check_invariants().unwrap();
-    assert_eq!(t.node(NodeId::ROOT).logical, 307);
+    assert_eq!(t.node(NodeId::ROOT).logical(), 307);
 }
 
 #[test]
@@ -570,7 +561,7 @@ fn bench_scan_windows_directory() {
         } else {
             threads
         },
-        t.node(NodeId::ROOT).size as f64 / 1e9,
+        t.node(NodeId::ROOT).size() as f64 / 1e9,
         mem.total() as f64 / 1048576.0,
         mem.nodes as f64 / 1048576.0,
         mem.names as f64 / 1048576.0,

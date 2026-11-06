@@ -202,7 +202,7 @@ pub fn of_node(tree: &Tree, id: NodeId) -> u8 {
     }
     let name = tree.name(id);
     let cat = of_name(name);
-    if cat == VIDEO && n.logical < TS_VIDEO_MIN && is_ts(name) {
+    if cat == VIDEO && n.logical() < TS_VIDEO_MIN && is_ts(name) {
         DEV
     } else {
         cat
@@ -267,22 +267,15 @@ mod tests {
     #[test]
     fn nodes() {
         let mut t = Tree::new(b"C:\\");
-        let d = t.add_child(NodeId::ROOT, b"music.mp3", 0, 0, NodeFlags::DIR, 0);
-        let m = t.add_child(NodeId::ROOT, b"$MFT", 1, 1, NodeFlags::METAFILE, 0);
-        let f = t.add_child(NodeId::ROOT, b"a.mp3", 1, 1, NodeFlags::NONE, 0);
+        let d = t.add_child(NodeId::ROOT, b"music.mp3", 0, 0, NodeFlags::DIR);
+        let m = t.add_child(NodeId::ROOT, b"$MFT", 1, 1, NodeFlags::METAFILE);
+        let f = t.add_child(NodeId::ROOT, b"a.mp3", 1, 1, NodeFlags::NONE);
         assert_eq!(of_node(&t, d), NONE);
         assert_eq!(of_node(&t, m), SYSTEM);
         assert_eq!(of_node(&t, f), AUDIO);
         // Small .ts files are TypeScript; big ones are video.
-        let small = t.add_child(NodeId::ROOT, b"index.d.TS", 4096, 900, NodeFlags::NONE, 0);
-        let big = t.add_child(
-            NodeId::ROOT,
-            b"rec.ts",
-            8 << 20,
-            8 << 20,
-            NodeFlags::NONE,
-            0,
-        );
+        let small = t.add_child(NodeId::ROOT, b"index.d.TS", 4096, 900, NodeFlags::NONE);
+        let big = t.add_child(NodeId::ROOT, b"rec.ts", 8 << 20, 8 << 20, NodeFlags::NONE);
         assert_eq!(of_node(&t, small), DEV);
         assert_eq!(of_node(&t, big), VIDEO);
     }

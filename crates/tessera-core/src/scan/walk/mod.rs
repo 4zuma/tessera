@@ -522,8 +522,7 @@ impl Sink<'_, '_, '_, '_> {
             p.subdirs
                 .push((p.batch.len() as u32, start..p.names.len(), open));
         }
-        let mtime = crate::tree::mtime_from_filetime(e.last_write);
-        p.batch.push_utf16(e.name, size, logical, flags, mtime);
+        p.batch.push_utf16(e.name, size, logical, flags);
         if is_dir {
             p.dirs += 1;
         } else {

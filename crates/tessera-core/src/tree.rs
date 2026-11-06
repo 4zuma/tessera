@@ -1,6 +1,6 @@
 //! The compact in-memory file tree.
 //!
-//! Every file and directory is one 40-byte [`Node`] in a chunked arena, and
+//! Every file and directory is one 32-byte [`Node`] in a chunked arena, and
 //! nodes refer to each other by 32-bit [`NodeId`] instead of pointers. Names
 //! live in a separate WTF-8 [`NamePool`]. Nothing is allocated per node, and
 //! the arena grows in fixed chunks, so growing it never copies the existing
@@ -134,47 +134,99 @@ impl std::fmt::Debug for NodeFlags {
     }
 }
 
-/// One file or directory: exactly 40 bytes.
+/// One file or directory: exactly 32 bytes.
+///
+/// The two sizes are stored in 48 bits each (up to 256 TiB). Size arithmetic
+/// wraps modulo 2^48, so adding and later removing the same amount always
+/// cancels out; a total beyond 256 TiB would read wrong, but no Windows volume
+/// gets there. Read them with [`Node::size`] and [`Node::logical`].
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct Node {
-    /// Size on disk (allocated bytes). For directories, the sum over live children.
-    pub size: u64,
-    /// Logical file length. For directories, the sum over live children.
-    pub logical: u64,
+    size_lo: u32,
+    logical_lo: u32,
     pub parent: NodeId,
     pub first_child: NodeId,
     pub next_sibling: NodeId,
     /// Offset of the name in the [`NamePool`].
     pub name_off: u32,
+    size_hi: u16,
+    logical_hi: u16,
     /// Length of the name in WTF-8 bytes.
     pub name_len: u16,
     pub flags: NodeFlags,
-    /// Last write time in whole minutes since 1601-01-01 UTC (a Windows
-    /// FILETIME divided by 60 s); 0 means unknown. See [`mtime_from_filetime`].
-    /// Both scanners get it from data they already read, at no extra I/O.
-    pub mtime: u32,
 }
 
-/// 100-ns FILETIME ticks per minute.
-const TICKS_PER_MINUTE: u64 = 600_000_000;
-/// Minutes between 1601-01-01 and 1970-01-01.
-const UNIX_EPOCH_MINUTES: i64 = 11_644_473_600 / 60;
+/// The largest size a [`Node`] holds, plus one.
+pub const SIZE_LIMIT: u64 = 1 << 48;
+const SIZE_MASK: u64 = SIZE_LIMIT - 1;
 
-/// Converts a FILETIME (100-ns ticks since 1601) to [`Node::mtime`].
-#[inline]
-pub fn mtime_from_filetime(ticks: u64) -> u32 {
-    u32::try_from(ticks / TICKS_PER_MINUTE).unwrap_or(u32::MAX)
-}
-
-/// Converts [`Node::mtime`] to Unix time in milliseconds (`None` if unknown).
-pub fn mtime_to_unix_ms(mtime: u32) -> Option<i64> {
-    (mtime != 0).then(|| (mtime as i64 - UNIX_EPOCH_MINUTES) * 60_000)
-}
-
-const _: () = assert!(std::mem::size_of::<Node>() == 40);
+const _: () = assert!(std::mem::size_of::<Node>() == 32);
 
 impl Node {
+    /// A node with the given sizes (taken modulo [`SIZE_LIMIT`]) and links.
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    pub(crate) fn new(
+        size: u64,
+        logical: u64,
+        parent: NodeId,
+        first_child: NodeId,
+        next_sibling: NodeId,
+        name_off: u32,
+        name_len: u16,
+        flags: NodeFlags,
+    ) -> Node {
+        let mut n = Node {
+            size_lo: 0,
+            logical_lo: 0,
+            parent,
+            first_child,
+            next_sibling,
+            name_off,
+            size_hi: 0,
+            logical_hi: 0,
+            name_len,
+            flags,
+        };
+        n.set_size(size);
+        n.set_logical(logical);
+        n
+    }
+
+    /// Size on disk (allocated bytes). For directories, the sum over live
+    /// children.
+    #[inline]
+    pub fn size(&self) -> u64 {
+        (self.size_hi as u64) << 32 | self.size_lo as u64
+    }
+
+    /// Logical file length. For directories, the sum over live children.
+    #[inline]
+    pub fn logical(&self) -> u64 {
+        (self.logical_hi as u64) << 32 | self.logical_lo as u64
+    }
+
+    #[inline]
+    pub(crate) fn set_size(&mut self, v: u64) {
+        self.size_lo = v as u32;
+        self.size_hi = (v >> 32) as u16;
+    }
+
+    #[inline]
+    pub(crate) fn set_logical(&mut self, v: u64) {
+        self.logical_lo = v as u32;
+        self.logical_hi = (v >> 32) as u16;
+    }
+
+    /// Adds to both sizes, wrapping modulo [`SIZE_LIMIT`] (so a negative
+    /// delta, `x.wrapping_neg()`, subtracts).
+    #[inline]
+    pub(crate) fn add_sizes(&mut self, dsize: u64, dlogical: u64) {
+        self.set_size(self.size().wrapping_add(dsize) & SIZE_MASK);
+        self.set_logical(self.logical().wrapping_add(dlogical) & SIZE_MASK);
+    }
+
     #[inline]
     pub fn is_dir(&self) -> bool {
         self.flags.contains(NodeFlags::DIR)
@@ -193,7 +245,7 @@ pub(crate) struct ChunkedVec<T> {
     len: usize,
 }
 
-const NODE_CHUNK_SHIFT: u32 = 16; // 65,536 nodes (2.5 MiB) per chunk
+const NODE_CHUNK_SHIFT: u32 = 16; // 65,536 nodes (2 MiB) per chunk
 const NODE_CHUNK: usize = 1 << NODE_CHUNK_SHIFT;
 const NODE_CHUNK_MASK: usize = NODE_CHUNK - 1;
 
@@ -436,7 +488,6 @@ pub struct BatchEntry {
     pub size: u64,
     pub logical: u64,
     pub flags: NodeFlags,
-    pub mtime: u32,
     name_start: u32,
     name_len: u16,
 }
@@ -460,42 +511,26 @@ impl EntryBatch {
     }
 
     /// Adds an entry whose name is (possibly ill-formed) UTF-16.
-    /// `mtime` is in [`Node::mtime`] units (0 = unknown).
-    pub fn push_utf16(
-        &mut self,
-        name: &[u16],
-        size: u64,
-        logical: u64,
-        flags: NodeFlags,
-        mtime: u32,
-    ) {
+    pub fn push_utf16(&mut self, name: &[u16], size: u64, logical: u64, flags: NodeFlags) {
         let start = self.names.len();
         wtf8::push_utf16(&mut self.names, name);
-        self.push_raw(start, size, logical, flags, mtime);
+        self.push_raw(start, size, logical, flags);
     }
 
     /// Adds an entry whose name is already WTF-8 (or UTF-8).
-    pub fn push_wtf8(
-        &mut self,
-        name: &[u8],
-        size: u64,
-        logical: u64,
-        flags: NodeFlags,
-        mtime: u32,
-    ) {
+    pub fn push_wtf8(&mut self, name: &[u8], size: u64, logical: u64, flags: NodeFlags) {
         let start = self.names.len();
         self.names.extend_from_slice(name);
-        self.push_raw(start, size, logical, flags, mtime);
+        self.push_raw(start, size, logical, flags);
     }
 
-    fn push_raw(&mut self, start: usize, size: u64, logical: u64, flags: NodeFlags, mtime: u32) {
+    fn push_raw(&mut self, start: usize, size: u64, logical: u64, flags: NodeFlags) {
         let len = self.names.len() - start;
         let name_len = u16::try_from(len).expect("name too long");
         self.entries.push(BatchEntry {
             size,
             logical,
             flags,
-            mtime,
             name_start: start as u32,
             name_len,
         });
@@ -578,17 +613,16 @@ impl Tree {
             journal: Journal::default(),
         };
         let name_off = t.names.push(root_name);
-        t.nodes.push(Node {
-            size: 0,
-            logical: 0,
-            parent: NodeId::NONE,
-            first_child: NodeId::NONE,
-            next_sibling: NodeId::NONE,
+        t.nodes.push(Node::new(
+            0,
+            0,
+            NodeId::NONE,
+            NodeId::NONE,
+            NodeId::NONE,
             name_off,
-            name_len: root_name.len() as u16,
-            flags: NodeFlags::DIR,
-            mtime: 0,
-        });
+            root_name.len() as u16,
+            NodeFlags::DIR,
+        ));
         t
     }
 
@@ -762,17 +796,16 @@ impl Tree {
             } else {
                 old_first
             };
-            self.nodes.push(Node {
-                size: e.size,
-                logical: e.logical,
+            self.nodes.push(Node::new(
+                e.size,
+                e.logical,
                 parent,
-                first_child: NodeId::NONE,
-                next_sibling: next,
+                NodeId::NONE,
+                next,
                 name_off,
-                name_len: e.name_len,
-                flags: e.flags,
-                mtime: e.mtime,
-            });
+                e.name_len,
+                e.flags,
+            ));
             dsize = dsize.wrapping_add(e.size);
             dlogical = dlogical.wrapping_add(e.logical);
         }
@@ -790,22 +823,16 @@ impl Tree {
         size: u64,
         logical: u64,
         flags: NodeFlags,
-        mtime: u32,
     ) -> NodeId {
         let mut b = EntryBatch::new();
-        b.push_wtf8(name, size, logical, flags, mtime);
+        b.push_wtf8(name, size, logical, flags);
         NodeId(self.add_children(parent, &b).start)
     }
 
     /// Number of live children. Linear in the length of the sibling list
-    /// (the count is not stored, so that each node stays 40 bytes).
+    /// (the count is not stored, so that each node stays 32 bytes).
     pub fn child_count(&self, id: NodeId) -> usize {
         self.children(id).count()
-    }
-
-    /// Sets a node's last write time ([`Node::mtime`] units).
-    pub fn set_mtime(&mut self, id: NodeId, mtime: u32) {
-        self.node_mut(id).mtime = mtime;
     }
 
     /// Adds `dsize` / `dlogical` (wrapping, so negative deltas work) to
@@ -826,8 +853,7 @@ impl Tree {
         let mut cur = from;
         while !cur.is_none() {
             let n = self.node_mut(cur);
-            n.size = n.size.wrapping_add(dsize);
-            n.logical = n.logical.wrapping_add(dlogical);
+            n.add_sizes(dsize, dlogical);
             if n.is_deleted() {
                 break;
             }
@@ -877,10 +903,10 @@ impl Tree {
     pub fn set_file_size(&mut self, id: NodeId, size: u64, logical: u64) {
         let n = self.node_mut(id);
         debug_assert!(!n.is_dir(), "directory sizes are derived from children");
-        let dsize = size.wrapping_sub(n.size);
-        let dlogical = logical.wrapping_sub(n.logical);
-        n.size = size;
-        n.logical = logical;
+        let dsize = size.wrapping_sub(n.size());
+        let dlogical = logical.wrapping_sub(n.logical());
+        n.set_size(size & SIZE_MASK);
+        n.set_logical(logical & SIZE_MASK);
         let (parent, deleted) = (n.parent, n.is_deleted());
         if !deleted {
             self.add_to_ancestors(parent, dsize, dlogical);
@@ -910,7 +936,7 @@ impl Tree {
         }
         let n = self.node_mut(id);
         n.flags.insert(NodeFlags::DELETED);
-        let (size, logical, parent) = (n.size, n.logical, n.parent);
+        let (size, logical, parent) = (n.size(), n.logical(), n.parent);
         self.add_to_ancestors(parent, size.wrapping_neg(), logical.wrapping_neg());
         true
     }
@@ -953,8 +979,8 @@ impl Tree {
                 return Err(format!("node {i} has a non-directory parent {p}"));
             }
             if !node.is_deleted() {
-                size[p] = size[p].wrapping_add(node.size);
-                logical[p] = logical[p].wrapping_add(node.logical);
+                size[p] = size[p].wrapping_add(node.size()) & SIZE_MASK;
+                logical[p] = logical[p].wrapping_add(node.logical()) & SIZE_MASK;
                 count[p] += 1;
             }
         }
@@ -969,12 +995,12 @@ impl Tree {
                     count[i]
                 ));
             }
-            if node.is_dir() && (node.size != size[i] || node.logical != logical[i]) {
+            if node.is_dir() && (node.size() != size[i] || node.logical() != logical[i]) {
                 return Err(format!(
                     "dir {i} ({}) has size {}/{} but children sum to {}/{}",
                     self.path_lossy(id),
-                    node.size,
-                    node.logical,
+                    node.size(),
+                    node.logical(),
                     size[i],
                     logical[i]
                 ));
@@ -1014,15 +1040,14 @@ mod tests {
     fn sample() -> Tree {
         let mut t = Tree::new(b"C:\\");
         let mut b = EntryBatch::new();
-        b.push_wtf8(b"Users", 0, 0, NodeFlags::DIR, 0);
+        b.push_wtf8(b"Users", 0, 0, NodeFlags::DIR);
         b.push_wtf8(
             b"pagefile.sys",
             4096 * 100,
             409_000,
             NodeFlags::HIDDEN | NodeFlags::SYSTEM,
-            mtime_from_filetime(133_000_000_000_000_000),
         );
-        b.push_wtf8(b"Windows", 0, 0, NodeFlags::DIR, 0);
+        b.push_wtf8(b"Windows", 0, 0, NodeFlags::DIR);
         let r = t.add_children(NodeId::ROOT, &b);
         assert_eq!(r, 1..4);
         b.clear();
@@ -1031,39 +1056,45 @@ mod tests {
             8192,
             8000,
             NodeFlags::NONE,
-            0,
         );
-        b.push_wtf8(b"notes.txt", 4096, 12, NodeFlags::NONE, 0);
+        b.push_wtf8(b"notes.txt", 4096, 12, NodeFlags::NONE);
         t.add_children(NodeId(1), &b);
         t
     }
 
     #[test]
-    fn node_is_40_bytes() {
-        assert_eq!(std::mem::size_of::<Node>(), 40);
+    fn node_is_32_bytes() {
+        assert_eq!(std::mem::size_of::<Node>(), 32);
     }
 
     #[test]
-    fn mtime_round_trip() {
-        // 2024-01-01T00:00:00Z = 1_704_067_200 s after the Unix epoch.
-        let ft = (1_704_067_200u64 + 11_644_473_600) * 10_000_000 + 59 * 10_000_000;
-        let m = mtime_from_filetime(ft);
-        assert_eq!(mtime_to_unix_ms(m), Some(1_704_067_200_000));
-        assert_eq!(mtime_to_unix_ms(0), None);
-        let t = sample();
-        let pf = t.lookup_relative(b"pagefile.sys").unwrap();
-        assert_eq!(
-            t.node(pf).mtime,
-            mtime_from_filetime(133_000_000_000_000_000)
-        );
+    fn sizes_use_48_bits_and_wrap_consistently() {
+        let mut t = Tree::new(b"X:\\");
+        let d = t.add_child(NodeId::ROOT, b"d", 0, 0, NodeFlags::DIR);
+        let big = SIZE_LIMIT - 4096;
+        let f = t.add_child(d, b"big", big, big - 1, NodeFlags::NONE);
+        assert_eq!(t.node(f).size(), big);
+        assert_eq!(t.node(f).logical(), big - 1);
+        assert_eq!(t.node(NodeId::ROOT).size(), big);
+        let g = t.add_child(d, b"small", 4096 * 3, 100, NodeFlags::NONE);
+        // past 256 TiB the total wraps, but removing the file again cancels
+        assert_eq!(t.node(d).size(), 4096 * 2);
+        t.check_invariants().unwrap();
+        t.mark_deleted(g);
+        assert_eq!(t.node(d).size(), big);
+        assert_eq!(t.node(NodeId::ROOT).logical(), big - 1);
+        t.set_file_size(f, 1 << 40, 5);
+        assert_eq!(t.node(NodeId::ROOT).size(), 1 << 40);
+        assert_eq!(t.node(NodeId::ROOT).logical(), 5);
+        t.check_invariants().unwrap();
     }
 
     #[test]
     fn sizes_propagate_to_ancestors() {
         let t = sample();
-        assert_eq!(t.node(NodeId::ROOT).size, 409_600 + 8192 + 4096);
-        assert_eq!(t.node(NodeId::ROOT).logical, 409_000 + 8000 + 12);
-        assert_eq!(t.node(NodeId(1)).size, 8192 + 4096);
+        assert_eq!(t.node(NodeId::ROOT).size(), 409_600 + 8192 + 4096);
+        assert_eq!(t.node(NodeId::ROOT).logical(), 409_000 + 8000 + 12);
+        assert_eq!(t.node(NodeId(1)).size(), 8192 + 4096);
         assert_eq!(t.child_count(NodeId::ROOT), 3);
         t.check_invariants().unwrap();
     }
@@ -1084,7 +1115,7 @@ mod tests {
         let mut t = sample();
         let notes = t.lookup_relative(b"Users\\notes.txt").unwrap();
         t.set_file_size(notes, 8192, 5000);
-        assert_eq!(t.node(NodeId(1)).size, 8192 + 8192);
+        assert_eq!(t.node(NodeId(1)).size(), 8192 + 8192);
         t.check_invariants().unwrap();
 
         assert!(t.mark_deleted(NodeId(1)));
@@ -1093,7 +1124,7 @@ mod tests {
             !t.mark_deleted(notes),
             "descendant of a deleted node is already deleted"
         );
-        assert_eq!(t.node(NodeId::ROOT).size, 409_600);
+        assert_eq!(t.node(NodeId::ROOT).size(), 409_600);
         assert_eq!(t.child_count(NodeId::ROOT), 2);
         assert_eq!(t.children(NodeId::ROOT).count(), 2);
         assert!(t.is_deleted(notes));
@@ -1118,7 +1149,7 @@ mod tests {
         t.set_file_size(notes, 4096, 12);
         assert_eq!(t.changed_bytes(), before, "no change, nothing counted");
         let w = t.lookup_relative(b"Windows").unwrap();
-        t.add_child(w, b"new.log", 4096, 100, NodeFlags::NONE, 7);
+        t.add_child(w, b"new.log", 4096, 100, NodeFlags::NONE);
         assert_eq!(t.changed_bytes() - before, 4096);
         let before = t.changed_bytes();
         assert!(t.mark_deleted(NodeId(1)));
@@ -1134,7 +1165,7 @@ mod tests {
         let seq = t.change_seq();
         assert_eq!(t.touched_since(seq).unwrap().count(), 0);
         // an empty file moves no bytes but is a change
-        t.add_child(w, b"empty.log", 0, 0, NodeFlags::NONE, 0);
+        t.add_child(w, b"empty.log", 0, 0, NodeFlags::NONE);
         // the same folder twice in a row is one entry
         t.set_file_size(notes, 8192, 5000);
         t.set_file_size(notes, 4096, 12);
@@ -1146,7 +1177,7 @@ mod tests {
         let seq = t.change_seq();
         for i in 0..=JOURNAL_LEN {
             let parent = if i % 2 == 0 { users } else { NodeId::ROOT };
-            t.add_child(parent, format!("f{i}").as_bytes(), 1, 1, NodeFlags::NONE, 0);
+            t.add_child(parent, format!("f{i}").as_bytes(), 1, 1, NodeFlags::NONE);
         }
         assert!(t.touched_since(seq).is_none());
         assert!(t.touched_since(seq + 1).is_some());
@@ -1157,10 +1188,10 @@ mod tests {
     fn add_child_after_batch() {
         let mut t = sample();
         let w = t.lookup_relative(b"Windows").unwrap();
-        let f = t.add_child(w, b"new.log", 4096, 100, NodeFlags::NONE, 7);
+        let f = t.add_child(w, b"new.log", 4096, 100, NodeFlags::NONE);
         assert_eq!(t.path_lossy(f), "C:\\Windows\\new.log");
         let users = t.lookup_relative(b"Users").unwrap();
-        let g = t.add_child(users, b"later.bin", 4096, 4096, NodeFlags::NONE, 0);
+        let g = t.add_child(users, b"later.bin", 4096, 4096, NodeFlags::NONE);
         assert_eq!(t.children(users).count(), 3);
         assert_eq!(t.children(users).next(), Some(g));
         t.check_invariants().unwrap();
@@ -1176,12 +1207,11 @@ mod tests {
                 4096,
                 i as u64,
                 NodeFlags::NONE,
-                0,
             );
         }
         t.add_children(NodeId::ROOT, &b);
         assert_eq!(t.len(), 200_001);
-        assert_eq!(t.node(NodeId::ROOT).size, 4096 * 200_000);
+        assert_eq!(t.node(NodeId::ROOT).size(), 4096 * 200_000);
         assert_eq!(t.name(NodeId(150_001)), b"file-150000.dat");
         assert_eq!(t.children(NodeId::ROOT).count(), 200_000);
         t.check_invariants().unwrap();

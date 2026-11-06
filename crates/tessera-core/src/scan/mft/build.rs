@@ -46,8 +46,6 @@ pub(crate) struct Accum {
     logical: Vec<u64>,
     /// Sequence number (low 16 bits) and parser flags (high 16 bits).
     meta: Vec<u32>,
-    /// Last write time per record ([`crate::Node::mtime`] units).
-    mtime: Vec<u32>,
     entries: Vec<Entry>,
     extras: HashMap<u32, Extra>,
     corrupt: u64,
@@ -77,7 +75,6 @@ impl Accum {
             size: vec![0; records],
             logical: vec![0; records],
             meta: vec![0; records],
-            mtime: vec![0; records],
             // Headroom for hard links (WinSxS has many); capacity that is
             // never touched is never resident.
             entries: Vec::with_capacity(expected_names + expected_names / 4 + 16),
@@ -110,9 +107,6 @@ impl Accum {
             self.meta[i] = m | (u32::from(r.flags) << 16);
             self.size[i] = self.size[i].wrapping_add(r.size);
             self.logical[i] = self.logical[i].wrapping_add(r.logical);
-            if r.mtime != 0 {
-                self.mtime[i] = r.mtime;
-            }
             bytes = bytes.wrapping_add(r.size);
         }
         for nf in &b.names {
@@ -166,8 +160,9 @@ impl Tree {
     /// Record 5 (the root directory) becomes node 0 and keeps the scanned
     /// root's name. Every directory's children are appended in one go, so
     /// sibling lists are runs of consecutive ids. While a node waits in
-    /// the queue (the arena itself is the queue), its `mtime` field holds
-    /// its record number; the real time replaces it when it is dequeued. A record reached through a second name becomes a
+    /// the queue (the arena itself is the queue), its `first_child` field
+    /// holds its record number until it is dequeued. A record reached
+    /// through a second name becomes a
     /// `HARDLINK` node with zero sizes (or is skipped if it is a directory,
     /// which can only happen on a corrupt volume), so every record is
     /// counted once and cycles cannot be entered. Records never reached
@@ -179,7 +174,6 @@ impl Tree {
             size,
             logical,
             meta,
-            mtime,
             mut entries,
             extras,
             corrupt,
@@ -196,17 +190,16 @@ impl Tree {
             changed: 0,
             journal: Default::default(),
         };
-        tree.nodes.push(Node {
-            size: 0,
-            logical: 0,
-            parent: NodeId::NONE,
-            first_child: NodeId::NONE,
-            next_sibling: NodeId::NONE,
-            name_off: 0,
-            name_len: root_name.len() as u16,
-            flags: NodeFlags::DIR,
-            mtime: RECORD_ROOT,
-        });
+        tree.nodes.push(Node::new(
+            0,
+            0,
+            NodeId::NONE,
+            NodeId(RECORD_ROOT),
+            NodeId::NONE,
+            0,
+            root_name.len() as u16,
+            NodeFlags::DIR,
+        ));
         let mut frn = vec![u32::MAX; records];
         if (RECORD_ROOT as usize) < records {
             frn[RECORD_ROOT as usize] = 0;
@@ -216,8 +209,8 @@ impl Tree {
         let mut i = 0usize;
         while i < tree.nodes.len() {
             let node = *tree.nodes.get(i);
-            let rec = node.mtime;
-            tree.nodes.get_mut(i).mtime = mtime.get(rec as usize).copied().unwrap_or(0);
+            let rec = node.first_child.0;
+            tree.nodes.get_mut(i).first_child = NodeId::NONE;
             let expandable = node.is_dir()
                 && !node.flags.contains(NodeFlags::HARDLINK)
                 && (rec as usize) < records;
@@ -280,17 +273,16 @@ impl Tree {
                 } else {
                     files += 1;
                 }
-                tree.nodes.push(Node {
-                    size: s,
-                    logical: l,
-                    parent: NodeId(i as u32),
-                    first_child: NodeId::NONE,
-                    next_sibling: NodeId(id as u32 + 1),
-                    name_off: e.name_off,
-                    name_len: e.name_len,
+                tree.nodes.push(Node::new(
+                    s,
+                    l,
+                    NodeId(i as u32),
+                    NodeId(stash),
+                    NodeId(id as u32 + 1),
+                    e.name_off,
+                    e.name_len,
                     flags,
-                    mtime: stash,
-                });
+                ));
             }
             let last = tree.nodes.len();
             let p = tree.nodes.get_mut(i);
@@ -303,16 +295,13 @@ impl Tree {
         drop(entries);
         drop(size);
         drop(logical);
-        drop(mtime);
         drop(extras);
 
         // Parents precede children, so one reverse pass sums every directory.
         for id in (1..tree.nodes.len()).rev() {
             let n = tree.nodes.get(id);
-            let (s, l, p) = (n.size, n.logical, n.parent.index());
-            let parent = tree.nodes.get_mut(p);
-            parent.size = parent.size.wrapping_add(s);
-            parent.logical = parent.logical.wrapping_add(l);
+            let (s, l, p) = (n.size(), n.logical(), n.parent.index());
+            tree.nodes.get_mut(p).add_sizes(s, l);
         }
 
         let unplaced = meta
@@ -413,12 +402,12 @@ mod tests {
         assert_eq!(t.len(), 7);
         assert_eq!((b.files, b.dirs, b.skipped), (4, 2, 0));
         let a = t.lookup_relative(b"Users\\me\\a.bin").unwrap();
-        assert_eq!((t.node(a).size, t.node(a).logical), (8192, 5000));
+        assert_eq!((t.node(a).size(), t.node(a).logical()), (8192, 5000));
         let me = t.lookup_relative(b"users\\ME").unwrap();
-        assert_eq!((t.node(me).size, t.node(me).logical), (12288, 5010));
+        assert_eq!((t.node(me).size(), t.node(me).logical()), (12288, 5010));
         let users = t.lookup_relative(b"Users").unwrap();
-        assert_eq!(t.node(users).logical, 5010 + 42);
-        assert_eq!(t.node(NodeId::ROOT).size, 12288 + (1 << 20));
+        assert_eq!(t.node(users).logical(), 5010 + 42);
+        assert_eq!(t.node(NodeId::ROOT).size(), 12288 + (1 << 20));
         assert_eq!(b.frn.get(22), Some(a));
         assert_eq!(b.frn.get(5), Some(NodeId::ROOT));
         assert_eq!(b.frn.get(30), None);
@@ -458,15 +447,15 @@ mod tests {
         t.check_invariants().unwrap();
         // Breadth first: the link closest to the root gets the bytes.
         let root_link = t.lookup_relative(b"link-root.bin").unwrap();
-        assert_eq!(t.node(root_link).size, 4096);
+        assert_eq!(t.node(root_link).size(), 4096);
         assert!(!t.node(root_link).flags.contains(NodeFlags::HARDLINK));
         for p in ["a\\link-shallow.bin", "a\\deeper\\link-deep.bin"] {
             let n = t.lookup_relative(p.as_bytes()).unwrap();
             assert!(t.node(n).flags.contains(NodeFlags::HARDLINK), "{p}");
-            assert_eq!((t.node(n).size, t.node(n).logical), (0, 0));
+            assert_eq!((t.node(n).size(), t.node(n).logical()), (0, 0));
         }
         assert!(t.lookup_relative(b"a\\LINK-S~1.BIN").is_none());
-        assert_eq!(t.node(NodeId::ROOT).size, 4096);
+        assert_eq!(t.node(NodeId::ROOT).size(), 4096);
         assert_eq!(b.frn.get(30), Some(root_link));
         assert_eq!(b.files, 3);
     }
@@ -494,7 +483,7 @@ mod tests {
         t.check_invariants().unwrap();
         assert_eq!(t.len(), 3, "root, ok, kept");
         assert_eq!(b.skipped, 6);
-        assert_eq!(t.node(NodeId::ROOT).logical, 7);
+        assert_eq!(t.node(NodeId::ROOT).logical(), 7);
     }
 
     #[test]
@@ -581,13 +570,13 @@ mod tests {
         t.check_invariants().unwrap();
         let mft = t.lookup_relative(b"$MFT").unwrap();
         assert!(t.node(mft).flags.contains(NodeFlags::METAFILE));
-        assert_eq!(t.node(mft).size, 1 << 20);
+        assert_eq!(t.node(mft).size(), 1 << 20);
         let usn = t.lookup_relative(b"$Extend\\$UsnJrnl").unwrap();
         assert!(t.node(usn).flags.contains(NodeFlags::METAFILE));
-        assert_eq!(t.node(usn).size, 1 << 22, "metafile named streams count");
-        assert_eq!(t.node(usn).logical, 1 << 22, "sparse: logical = on disk");
+        assert_eq!(t.node(usn).size(), 1 << 22, "metafile named streams count");
+        assert_eq!(t.node(usn).logical(), 1 << 22, "sparse: logical = on disk");
         let user = t.lookup_relative(b"user-with-stream").unwrap();
-        assert_eq!((t.node(user).size, t.node(user).logical), (4096, 100));
+        assert_eq!((t.node(user).size(), t.node(user).logical()), (4096, 100));
         assert!(!t.node(user).flags.contains(NodeFlags::METAFILE));
         let j = t.lookup_relative(b"junction").unwrap();
         assert!(
@@ -598,9 +587,9 @@ mod tests {
         let c = t.lookup_relative(b"cloud.docx").unwrap();
         assert!(t.node(c).flags.contains(NodeFlags::CLOUD));
         assert!(!t.node(c).flags.contains(NodeFlags::REPARSE));
-        assert_eq!((t.node(c).size, t.node(c).logical), (0, 1 << 20));
+        assert_eq!((t.node(c).size(), t.node(c).logical()), (0, 1 << 20));
         let w = t.lookup_relative(b"wof.dll").unwrap();
-        assert_eq!((t.node(w).size, t.node(w).logical), (8192, 30_000));
+        assert_eq!((t.node(w).size(), t.node(w).logical()), (8192, 30_000));
         assert!(t.node(w).flags.contains(NodeFlags::COMPRESSED));
     }
 }

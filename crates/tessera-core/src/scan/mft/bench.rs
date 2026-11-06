@@ -257,7 +257,7 @@ fn synthetic_mft() {
         .filter(|r| (r - 16) % 10 != 0)
         .map(|r| (r % 50_000) * 7)
         .sum::<u64>();
-    assert_eq!(t.node(NodeId::ROOT).logical, expected + (n * RS as u64));
+    assert_eq!(t.node(NodeId::ROOT).logical(), expected + (n * RS as u64));
     let t1 = Instant::now();
     t.check_invariants().unwrap();
     eprintln!("check_invariants: {:?}", t1.elapsed());

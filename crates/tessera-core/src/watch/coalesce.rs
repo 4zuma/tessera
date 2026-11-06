@@ -374,7 +374,6 @@ mod tests {
             reparse_tag: 0,
             size,
             logical: size,
-            mtime: 0,
         })
     }
 

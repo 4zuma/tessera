@@ -31,7 +31,6 @@ pub(crate) const FILE_ACTION_RENAMED_NEW_NAME: u32 = 5;
 const PLAIN_NAME_LEN: usize = 8;
 const PLAIN_NAME: usize = 12;
 /// `FILE_NOTIFY_EXTENDED_INFORMATION` field offsets.
-const EXT_MODIFIED: usize = 16;
 const EXT_ALLOCATED: usize = 40;
 const EXT_SIZE: usize = 48;
 const EXT_ATTRIBUTES: usize = 56;
@@ -90,7 +89,6 @@ fn record(rec: &[u8], extended: bool) -> Option<Record> {
             },
             size: u64_at(rec, EXT_ALLOCATED)?,
             logical: u64_at(rec, EXT_SIZE)?,
-            mtime: crate::tree::mtime_from_filetime(u64_at(rec, EXT_MODIFIED)?),
         };
         (Some(stat), u64_at(rec, EXT_FILE_ID)?)
     } else {
@@ -440,7 +438,6 @@ pub(crate) mod tests {
             reparse_tag: 0,
             size: 4096,
             logical: size,
-            mtime: 0,
         }
     }
 
@@ -491,7 +488,6 @@ pub(crate) mod tests {
             reparse_tag: 0xA000_0003,
             size: 0,
             logical: 0,
-            mtime: 0,
         };
         let buf = buffer(
             &[

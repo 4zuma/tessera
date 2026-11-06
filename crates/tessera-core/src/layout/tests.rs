@@ -49,13 +49,7 @@ fn synthetic(
             let s = rng.file_size() / 64;
             name.clear();
             write!(name, "h{h}-{i}.{}", EXTS[i % EXTS.len()]).unwrap();
-            b.push_wtf8(
-                name.as_bytes(),
-                s.div_ceil(4096) * 4096,
-                s,
-                NodeFlags::NONE,
-                0,
-            );
+            b.push_wtf8(name.as_bytes(), s.div_ceil(4096) * 4096, s, NodeFlags::NONE);
         }
         let d = t.add_child(
             NodeId::ROOT,
@@ -63,7 +57,6 @@ fn synthetic(
             0,
             0,
             NodeFlags::DIR,
-            0,
         );
         t.add_children(d, &b);
     }
@@ -81,7 +74,7 @@ fn synthetic(
         };
         let nf = rng.below(files_per_dir + 1);
         for i in 0..nd {
-            b.push_wtf8(format!("d{i}").as_bytes(), 0, 0, NodeFlags::DIR, 0);
+            b.push_wtf8(format!("d{i}").as_bytes(), 0, 0, NodeFlags::DIR);
         }
         for i in 0..nf {
             let s = rng.file_size();
@@ -93,7 +86,7 @@ fn synthetic(
             };
             name.clear();
             write!(name, "f{i}.{}", EXTS[rng.below(8) as usize]).unwrap();
-            b.push_wtf8(name.as_bytes(), s.div_ceil(4096) * 4096, s, flags, 0);
+            b.push_wtf8(name.as_bytes(), s.div_ceil(4096) * 4096, s, flags);
         }
         let r = t.add_children(dir, &b);
         queue.extend((r.start..r.start + nd as u32).map(NodeId));
@@ -280,15 +273,14 @@ fn check(tree: &Tree, req: &LayoutRequest, d: &Decoded, extras: u64) {
 #[test]
 fn buffer_conformance() {
     let mut t = Tree::new(b"C:\\");
-    let d = t.add_child(NodeId::ROOT, b"Games", 0, 0, NodeFlags::DIR, 0);
-    let f = t.add_child(d, b"big.pak", 600 << 20, 600 << 20, NodeFlags::NONE, 0);
+    let d = t.add_child(NodeId::ROOT, b"Games", 0, 0, NodeFlags::DIR);
+    let f = t.add_child(d, b"big.pak", 600 << 20, 600 << 20, NodeFlags::NONE);
     let v = t.add_child(
         NodeId::ROOT,
         b"movie.mkv",
         400 << 20,
         400 << 20,
         NodeFlags::CLOUD,
-        0,
     );
     let req = LayoutRequest::new(NodeId::ROOT, 800.0, 600.0);
     let buf = LayoutEngine::new().layout(&t, &req, RootExtras::default(), 42);
@@ -486,7 +478,7 @@ fn same_picture_ignores_changes_too_small_to_see() {
         .expect("a file below what is drawn");
     let n = *t.node(hidden);
     let grow = (bpp * 0.2) as u64; // a fifth of a px²
-    t.set_file_size(hidden, n.size + grow, n.logical + grow);
+    t.set_file_size(hidden, n.size() + grow, n.logical() + grow);
     let b = eng.layout(&t, &req, RootExtras::default(), 3);
     assert!(same_picture(&a, &b, 0.5), "a fifth of a px² must not count");
 
@@ -498,7 +490,7 @@ fn same_picture_ignores_changes_too_small_to_see() {
         .max_by_key(|r| r.size)
         .expect("a named file tile");
     let n = *t.node(NodeId(big.id));
-    t.set_file_size(NodeId(big.id), n.size * 2, n.logical * 2);
+    t.set_file_size(NodeId(big.id), n.size() * 2, n.logical() * 2);
     let c = eng.layout(&t, &req, RootExtras::default(), 4);
     assert!(!same_picture(&a, &c, 0.5));
     // a differently sized canvas is another picture
@@ -515,8 +507,8 @@ fn same_picture_ignores_changes_too_small_to_see() {
 #[test]
 fn hysteresis_keeps_the_order_calm() {
     let mut t = Tree::new(b"R:\\");
-    let a = t.add_child(NodeId::ROOT, b"a.bin", 100_000, 100_000, NodeFlags::NONE, 0);
-    let b = t.add_child(NodeId::ROOT, b"b.bin", 90_000, 90_000, NodeFlags::NONE, 0);
+    let a = t.add_child(NodeId::ROOT, b"a.bin", 100_000, 100_000, NodeFlags::NONE);
+    let b = t.add_child(NodeId::ROOT, b"b.bin", 90_000, 90_000, NodeFlags::NONE);
     let req = LayoutRequest::new(NodeId::ROOT, 400.0, 300.0);
     let mut eng = LayoutEngine::new();
     let first = |t: &Tree, eng: &mut LayoutEngine| {
@@ -542,16 +534,16 @@ fn hysteresis_keeps_the_order_calm() {
 #[test]
 fn small_and_surplus_children_are_grouped() {
     let mut t = Tree::new(b"R:\\");
-    let d = t.add_child(NodeId::ROOT, b"dir", 0, 0, NodeFlags::DIR, 0);
-    t.add_child(d, b"big.iso", 100_000, 100_000, NodeFlags::NONE, 0);
+    let d = t.add_child(NodeId::ROOT, b"dir", 0, 0, NodeFlags::DIR);
+    t.add_child(d, b"big.iso", 100_000, 100_000, NodeFlags::NONE);
     let mut b = EntryBatch::new();
     for i in 0..600 {
-        b.push_wtf8(format!("s{i}.mp3").as_bytes(), 10, 10, NodeFlags::NONE, 0);
+        b.push_wtf8(format!("s{i}.mp3").as_bytes(), 10, 10, NodeFlags::NONE);
     }
     for i in 0..400 {
-        b.push_wtf8(format!("p{i}.JPG").as_bytes(), 20, 20, NodeFlags::NONE, 0);
+        b.push_wtf8(format!("p{i}.JPG").as_bytes(), 20, 20, NodeFlags::NONE);
     }
-    b.push_wtf8(b"empty.txt", 0, 0, NodeFlags::NONE, 0);
+    b.push_wtf8(b"empty.txt", 0, 0, NodeFlags::NONE);
     t.add_children(d, &b);
     t.add_child(
         NodeId::ROOT,
@@ -559,7 +551,6 @@ fn small_and_surplus_children_are_grouped() {
         100_000,
         100_000,
         NodeFlags::NONE,
-        0,
     );
     let req = LayoutRequest::new(NodeId::ROOT, 800.0, 600.0);
     let dd = lay(&t, &req);
@@ -581,7 +572,6 @@ fn small_and_surplus_children_are_grouped() {
             1000 + i,
             1000 + i,
             NodeFlags::NONE,
-            0,
         );
     }
     t.add_children(NodeId::ROOT, &b);
@@ -602,8 +592,8 @@ fn small_and_surplus_children_are_grouped() {
 #[test]
 fn a_lone_small_child_is_shown_as_itself() {
     let mut t = Tree::new(b"R:\\");
-    t.add_child(NodeId::ROOT, b"big", 10_000_000, 1, NodeFlags::NONE, 0);
-    let small = t.add_child(NodeId::ROOT, b"small", 400, 1, NodeFlags::NONE, 0);
+    t.add_child(NodeId::ROOT, b"big", 10_000_000, 1, NodeFlags::NONE);
+    let small = t.add_child(NodeId::ROOT, b"small", 400, 1, NodeFlags::NONE);
     let req = LayoutRequest::new(NodeId::ROOT, 1000.0, 1000.0);
     let d = lay(&t, &req);
     assert!(d.records.iter().all(|r| r.kind != kind::GROUP));
@@ -615,10 +605,10 @@ fn a_lone_small_child_is_shown_as_itself() {
 #[test]
 fn single_folder_chains_fold() {
     let mut t = Tree::new(b"R:\\");
-    let a = t.add_child(NodeId::ROOT, b"a", 0, 0, NodeFlags::DIR, 0);
-    let b = t.add_child(a, b"b", 0, 0, NodeFlags::DIR, 0);
-    let c = t.add_child(b, b"c", 0, 0, NodeFlags::DIR, 0);
-    t.add_child(b, b"empty", 0, 0, NodeFlags::NONE, 0); // size 0: invisible
+    let a = t.add_child(NodeId::ROOT, b"a", 0, 0, NodeFlags::DIR);
+    let b = t.add_child(a, b"b", 0, 0, NodeFlags::DIR);
+    let c = t.add_child(b, b"c", 0, 0, NodeFlags::DIR);
+    t.add_child(b, b"empty", 0, 0, NodeFlags::NONE); // size 0: invisible
     let mut batch = EntryBatch::new();
     for i in 0..3u64 {
         batch.push_wtf8(
@@ -626,11 +616,10 @@ fn single_folder_chains_fold() {
             1 << (20 + i),
             1,
             NodeFlags::NONE,
-            0,
         );
     }
     let files = t.add_children(c, &batch);
-    t.add_child(NodeId::ROOT, b"z.bin", 1 << 21, 1, NodeFlags::NONE, 0);
+    t.add_child(NodeId::ROOT, b"z.bin", 1 << 21, 1, NodeFlags::NONE);
     let req = LayoutRequest::new(NodeId::ROOT, 900.0, 700.0);
     let d = lay(&t, &req);
     let tile = d.records.iter().find(|r| r.id == a.0).unwrap();
@@ -669,18 +658,18 @@ fn chain_tree() -> (Tree, Vec<NodeId>) {
     let mut cur = NodeId::ROOT;
     let mut chain = vec![];
     for i in 0..20 {
-        cur = t.add_child(cur, format!("d{i}").as_bytes(), 0, 0, NodeFlags::DIR, 0);
+        cur = t.add_child(cur, format!("d{i}").as_bytes(), 0, 0, NodeFlags::DIR);
         chain.push(cur);
-        let size = 3u64 << (2 * (19 - i) + 10);
-        t.add_child(cur, format!("f{i}").as_bytes(), size, 1, NodeFlags::NONE, 0);
+        // the largest is 3 << 38 bytes: node sizes hold 48 bits
+        let size = 3u64 << (2 * (19 - i));
+        t.add_child(cur, format!("f{i}").as_bytes(), size, 1, NodeFlags::NONE);
     }
     t.add_child(
         NodeId::ROOT,
         b"tiny-dir-sibling",
-        1 << 20,
+        1 << 10,
         1,
         NodeFlags::NONE,
-        0,
     );
     (t, chain)
 }
@@ -739,14 +728,14 @@ fn open_share_keeps_the_depth_when_the_window_grows() {
 #[test]
 fn closed_folders_take_their_main_category() {
     let mut t = Tree::new(b"R:\\");
-    let media = t.add_child(NodeId::ROOT, b"media", 0, 0, NodeFlags::DIR, 0);
-    let deep = t.add_child(media, b"deep", 0, 0, NodeFlags::DIR, 0);
-    t.add_child(deep, b"a.mp4", 1000, 10, NodeFlags::NONE, 0);
-    let jpg = t.add_child(media, b"b.jpg", 990, 990, NodeFlags::NONE, 0);
+    let media = t.add_child(NodeId::ROOT, b"media", 0, 0, NodeFlags::DIR);
+    let deep = t.add_child(media, b"deep", 0, 0, NodeFlags::DIR);
+    t.add_child(deep, b"a.mp4", 1000, 10, NodeFlags::NONE);
+    let jpg = t.add_child(media, b"b.jpg", 990, 990, NodeFlags::NONE);
     // A tie goes to the lower category (audio before archive).
-    let tie = t.add_child(NodeId::ROOT, b"tie", 0, 0, NodeFlags::DIR, 0);
-    t.add_child(tie, b"c.zip", 700, 700, NodeFlags::NONE, 0);
-    t.add_child(tie, b"d.mp3", 700, 700, NodeFlags::NONE, 0);
+    let tie = t.add_child(NodeId::ROOT, b"tie", 0, 0, NodeFlags::DIR);
+    t.add_child(tie, b"c.zip", 700, 700, NodeFlags::NONE);
+    t.add_child(tie, b"d.mp3", 700, 700, NodeFlags::NONE);
     // Too small to open, so both folders are closed.
     let req = LayoutRequest::new(NodeId::ROOT, 100.0, 100.0);
     let mut eng = LayoutEngine::new();
@@ -807,7 +796,7 @@ fn only_folders_with_a_header_open() {
 fn pseudo_tiles_at_the_volume_root() {
     let t = synthetic(4, 2_000, 4, 10, 0, 0);
     let req = LayoutRequest::new(NodeId::ROOT, 1200.0, 800.0);
-    let used = t.node(NodeId::ROOT).size;
+    let used = t.node(NodeId::ROOT).size();
     let extras = RootExtras {
         free: Some(used / 2),
         unscanned: Some(used / 3),
@@ -860,36 +849,26 @@ fn flags_names_and_skipped_nodes() {
         0,
         0,
         NodeFlags::DIR | NodeFlags::HIDDEN,
-        0,
     );
-    t.add_child(bin, b"$R1.dat", 1 << 30, 1 << 30, NodeFlags::NONE, 0);
+    t.add_child(bin, b"$R1.dat", 1 << 30, 1 << 30, NodeFlags::NONE);
     let locked = t.add_child(
         NodeId::ROOT,
         b"locked",
         1 << 29,
         1 << 29,
         NodeFlags::INACCESSIBLE,
-        0,
     );
-    let link = t.add_child(
-        NodeId::ROOT,
-        b"link",
-        1 << 28,
-        1 << 28,
-        NodeFlags::REPARSE,
-        0,
-    );
+    let link = t.add_child(NodeId::ROOT, b"link", 1 << 28, 1 << 28, NodeFlags::REPARSE);
     let odd = t.add_child(
         NodeId::ROOT,
         &[b'x', 0xED, 0xA0, 0x80, b'.', b'p', b'd', b'f'],
         1 << 29,
         1,
         NodeFlags::NONE,
-        0,
     );
-    let zero = t.add_child(NodeId::ROOT, b"zero", 0, 0, NodeFlags::NONE, 0);
-    let gone = t.add_child(NodeId::ROOT, b"gone", 1 << 29, 1 << 29, NodeFlags::NONE, 0);
-    let tiny = t.add_child(NodeId::ROOT, b"tiny", 1 << 21, 1, NodeFlags::NONE, 0);
+    let zero = t.add_child(NodeId::ROOT, b"zero", 0, 0, NodeFlags::NONE);
+    let gone = t.add_child(NodeId::ROOT, b"gone", 1 << 29, 1 << 29, NodeFlags::NONE);
+    let tiny = t.add_child(NodeId::ROOT, b"tiny", 1 << 21, 1, NodeFlags::NONE);
     assert!(t.mark_deleted(gone));
     let req = LayoutRequest::new(NodeId::ROOT, 1000.0, 800.0);
     let d = lay(&t, &req);
@@ -911,8 +890,8 @@ fn flags_names_and_skipped_nodes() {
     assert!(d.records.iter().all(|r| r.name.is_some() == (r.header > 0)));
     // A folder below a volume root is not the recycle bin.
     let mut t2 = Tree::new(b"D:\\Data");
-    let b2 = t2.add_child(NodeId::ROOT, b"$Recycle.Bin", 0, 0, NodeFlags::DIR, 0);
-    t2.add_child(b2, b"x", 1 << 20, 1, NodeFlags::NONE, 0);
+    let b2 = t2.add_child(NodeId::ROOT, b"$Recycle.Bin", 0, 0, NodeFlags::DIR);
+    t2.add_child(b2, b"x", 1 << 20, 1, NodeFlags::NONE);
     let d = lay(&t2, &LayoutRequest::new(NodeId::ROOT, 500.0, 400.0));
     assert_eq!(d.records[0].flags & flags::RECYCLE_BIN, 0);
 }
@@ -932,19 +911,18 @@ fn protected_flag() {
         return;
     }
     let mut t = Tree::new(b"/");
-    let first = t.add_child(NodeId::ROOT, comps[0].as_bytes(), 0, 0, NodeFlags::DIR, 0);
+    let first = t.add_child(NodeId::ROOT, comps[0].as_bytes(), 0, 0, NodeFlags::DIR);
     let mut cur = first;
     for c in &comps[1..] {
-        cur = t.add_child(cur, c.as_bytes(), 0, 0, NodeFlags::DIR, 0);
+        cur = t.add_child(cur, c.as_bytes(), 0, 0, NodeFlags::DIR);
     }
-    t.add_child(cur, b"inside.bin", 1 << 30, 1, NodeFlags::NONE, 0);
+    t.add_child(cur, b"inside.bin", 1 << 30, 1, NodeFlags::NONE);
     let free = t.add_child(
         NodeId::ROOT,
         b"tessera-elsewhere.bin",
         1 << 30,
         1,
         NodeFlags::NONE,
-        0,
     );
     let d = lay(&t, &LayoutRequest::new(NodeId::ROOT, 800.0, 600.0));
     let get = |id: NodeId| d.records.iter().find(|r| r.id == id.0).unwrap();
@@ -961,17 +939,16 @@ fn protected_flag() {
     let drive = windir.parent().unwrap().to_string_lossy().into_owned();
     let name = windir.file_name().unwrap().to_string_lossy().into_owned();
     let mut t = Tree::new(drive.as_bytes());
-    let w = t.add_child(NodeId::ROOT, name.as_bytes(), 0, 0, NodeFlags::DIR, 0);
-    let temp = t.add_child(w, b"Temp", 0, 0, NodeFlags::DIR, 0);
-    t.add_child(temp, b"x.tmp", 1 << 30, 1, NodeFlags::NONE, 0);
-    t.add_child(w, b"notepad.exe", 1 << 29, 1, NodeFlags::NONE, 0); // no folding
+    let w = t.add_child(NodeId::ROOT, name.as_bytes(), 0, 0, NodeFlags::DIR);
+    let temp = t.add_child(w, b"Temp", 0, 0, NodeFlags::DIR);
+    t.add_child(temp, b"x.tmp", 1 << 30, 1, NodeFlags::NONE);
+    t.add_child(w, b"notepad.exe", 1 << 29, 1, NodeFlags::NONE); // no folding
     let other = t.add_child(
         NodeId::ROOT,
         b"tessera-elsewhere",
         1 << 30,
         1,
         NodeFlags::NONE,
-        0,
     );
     let d = lay(&t, &LayoutRequest::new(NodeId::ROOT, 800.0, 600.0));
     let get = |id: NodeId| d.records.iter().find(|r| r.id == id.0).unwrap();
@@ -1017,13 +994,7 @@ fn record_cap_keeps_the_big_structure() {
     let mut t = Tree::new(b"R:\\");
     let mut b = EntryBatch::new();
     for i in 0..60_000u64 {
-        b.push_wtf8(
-            format!("f{i}").as_bytes(),
-            1000 + i % 7,
-            1,
-            NodeFlags::NONE,
-            0,
-        );
+        b.push_wtf8(format!("f{i}").as_bytes(), 1000 + i % 7, 1, NodeFlags::NONE);
     }
     for d in 0..3 {
         let dir = t.add_child(
@@ -1032,7 +1003,6 @@ fn record_cap_keeps_the_big_structure() {
             0,
             0,
             NodeFlags::DIR,
-            0,
         );
         t.add_children(dir, &b);
     }
@@ -1050,13 +1020,7 @@ fn record_cap_keeps_the_big_structure() {
     let mut t = Tree::new(b"R:\\");
     b.clear();
     for i in 0..120_000u64 {
-        b.push_wtf8(
-            format!("f{i}").as_bytes(),
-            1000 + i % 7,
-            1,
-            NodeFlags::NONE,
-            0,
-        );
+        b.push_wtf8(format!("f{i}").as_bytes(), 1000 + i % 7, 1, NodeFlags::NONE);
     }
     t.add_children(NodeId::ROOT, &b);
     let d = lay(&t, &req);
@@ -1099,7 +1063,7 @@ fn layout_bench() {
         if let Some(c) = t
             .children(deep)
             .filter(|&c| t.node(c).is_dir() && !t.name(c).starts_with(b"huge"))
-            .max_by_key(|&c| t.node(c).size)
+            .max_by_key(|&c| t.node(c).size())
         {
             deep = c;
         }

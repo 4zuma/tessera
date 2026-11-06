@@ -1,6 +1,6 @@
 //! Tessera core: everything below the UI.
 //!
-//! * [`tree`]: the compact file tree (40-byte nodes, WTF-8 name pool).
+//! * [`tree`]: the compact file tree (32-byte nodes, WTF-8 name pool).
 //! * [`scan`]: fills a tree, by parallel directory walk or by reading the
 //!   NTFS master file table directly when elevated.
 //! * [`watch`]: live, batched incremental updates (ReadDirectoryChangesW / USN).

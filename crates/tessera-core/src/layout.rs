@@ -184,8 +184,8 @@ impl SizeMode {
     #[inline]
     pub fn of(self, node: &Node) -> u64 {
         match self {
-            SizeMode::Disk => node.size,
-            SizeMode::Logical => node.logical,
+            SizeMode::Disk => node.size(),
+            SizeMode::Logical => node.logical(),
         }
     }
 }

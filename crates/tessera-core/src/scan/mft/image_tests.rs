@@ -346,9 +346,9 @@ fn assert_matches_walk(b: &Built, seen: &HashMap<String, Seen>) {
             by_ino.entry(s.ino).or_default().push(id);
             if n.flags.contains(NodeFlags::HARDLINK) {
                 assert!(s.nlink > 1, "{rel}");
-                assert_eq!((n.size, n.logical), (0, 0), "{rel}");
+                assert_eq!((n.size(), n.logical()), (0, 0), "{rel}");
             } else {
-                assert_eq!(n.logical, s.len, "{rel}");
+                assert_eq!(n.logical(), s.len, "{rel}");
             }
         }
         assert_eq!(b.frn.get(s.ino).map(|p| t.node(p).is_dir()), Some(s.is_dir));
@@ -387,12 +387,12 @@ fn assert_metafiles(t: &Tree) {
     }
     let mft = t.node(node(t, "$MFT"));
     assert!(
-        mft.size >= 16 * 1024 && mft.size % 512 == 0,
+        mft.size() >= 16 * 1024 && mft.size() % 512 == 0,
         "$MFT size {}",
-        mft.size
+        mft.size()
     );
-    assert!(t.node(node(t, "$LogFile")).size > 0);
-    assert_eq!(t.node(node(t, "$BadClus")).size, 0, "$Bad is not counted");
+    assert!(t.node(node(t, "$LogFile")).size() > 0);
+    assert_eq!(t.node(node(t, "$BadClus")).size(), 0, "$Bad is not counted");
 }
 
 #[test]
@@ -506,31 +506,24 @@ fn populated_volume_matches_a_walk() {
 
         let n = |p: &str| *t.node(node(t, p));
         assert_eq!(
-            (n("docs\\readme.txt").size, n("docs\\readme.txt").logical),
+            (
+                n("docs\\readme.txt").size(),
+                n("docs\\readme.txt").logical()
+            ),
             (4096, 1234)
         );
         assert_eq!(
-            (n("docs\\tiny.txt").size, n("docs\\tiny.txt").logical),
+            (n("docs\\tiny.txt").size(), n("docs\\tiny.txt").logical()),
             (0, 10),
             "resident"
         );
-        assert_eq!(n("docs\\sub\\deeper\\x.bin").size, 102_400);
-        // Last write time comes from $STANDARD_INFORMATION: the image was
-        // filled moments ago.
-        let now_min = (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64
-            + 11_644_473_600)
-            / 60;
-        let mt = n("docs\\sub\\deeper\\x.bin").mtime as i64;
-        assert!((now_min - mt).abs() <= 60, "mtime {mt} vs now {now_min}");
+        assert_eq!(n("docs\\sub\\deeper\\x.bin").size(), 102_400);
         let docs = n("docs");
-        assert_eq!(docs.logical, 1234 + 10 + 100_000);
+        assert_eq!(docs.logical(), 1234 + 10 + 100_000);
         assert_eq!(t.child_count(node(t, "docs")), 4);
 
         let orig = n("links\\orig.dat");
-        assert_eq!((orig.size, orig.logical), (12288, 10_000));
+        assert_eq!((orig.size(), orig.logical()), (12288, 10_000));
         assert!(!orig.flags.contains(NodeFlags::HARDLINK));
         let more = node(t, "links\\more");
         assert_eq!(t.child_count(more), 40);
@@ -538,16 +531,16 @@ fn populated_volume_matches_a_walk() {
             t.children(more)
                 .all(|c| t.node(c).flags.contains(NodeFlags::HARDLINK))
         );
-        assert_eq!(t.node(node(t, "links")).size, 12288);
+        assert_eq!(t.node(node(t, "links")).size(), 12288);
 
         let sparse = n("sparse.bin");
-        assert_eq!((sparse.size, sparse.logical), (4096, (1 << 20) + 4096));
+        assert_eq!((sparse.size(), sparse.logical()), (4096, (1 << 20) + 4096));
         assert!(sparse.flags.contains(NodeFlags::COMPRESSED));
 
         if compressed {
             let c = n("comp\\c.txt");
-            assert_eq!(c.logical, 200_000);
-            assert!(c.size < c.logical / 2, "compressed size {}", c.size);
+            assert_eq!(c.logical(), 200_000);
+            assert!(c.size() < c.logical() / 2, "compressed size {}", c.size());
             assert!(c.flags.contains(NodeFlags::COMPRESSED));
         }
         if dos {
@@ -556,7 +549,7 @@ fn populated_volume_matches_a_walk() {
         }
         if stream {
             let s = n("streams.txt");
-            assert_eq!((s.size, s.logical), (8192, 5000));
+            assert_eq!((s.size(), s.logical()), (8192, 5000));
         }
         if hidden {
             assert!(n("hidden.txt").flags.contains(NodeFlags::HIDDEN));
@@ -568,10 +561,10 @@ fn populated_volume_matches_a_walk() {
         }
         assert_eq!(t.child_count(node(t, "many")), 1500);
         assert_eq!(
-            t.node(node(t, "many")).logical,
+            t.node(node(t, "many")).logical(),
             (0..1500u64).map(|i| i % 3000).sum::<u64>()
         );
-        assert!(n("Ünïcødé 照片\\🦀 crab.rs").logical == 5000);
+        assert!(n("Ünïcødé 照片\\🦀 crab.rs").logical() == 5000);
     }
 }
 
@@ -674,11 +667,11 @@ fn image_filled_without_mounting() {
     assert_eq!(t.name(NodeId::ROOT), b"I:\\");
     for name in ["copied.bin", "Ä second.bin"] {
         let n = t.node(node(&t, name));
-        assert_eq!((n.logical, n.size), (70_000, 73_728), "{name}");
+        assert_eq!((n.logical(), n.size()), (70_000, 73_728), "{name}");
     }
     assert_eq!(summary.mode, crate::scan::ScanMode::Mft);
     assert_eq!(summary.inaccessible, 0);
     assert!(summary.frn_index.is_some());
-    assert_eq!(progress.snapshot().bytes, t.node(NodeId::ROOT).size);
+    assert_eq!(progress.snapshot().bytes, t.node(NodeId::ROOT).size());
     assert_eq!(summary.files + summary.dirs + 1, t.len() as u64);
 }

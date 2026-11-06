@@ -94,7 +94,7 @@ fn listing(t: &Tree) -> Vec<(String, u64, u16)> {
     let mut v: Vec<_> = (1..t.len() as u32)
         .map(|i| {
             let n = t.node(NodeId(i));
-            (t.path_lossy(NodeId(i)), n.logical, n.flags.0)
+            (t.path_lossy(NodeId(i)), n.logical(), n.flags.0)
         })
         .collect();
     v.sort();
@@ -125,7 +125,11 @@ fn every_query_level_gives_the_same_tree() {
         if level == Level::Find {
             // Size on disk is estimated: whole clusters, at least the length.
             let top = t.node(t.lookup_relative(b"top.txt").unwrap());
-            assert!(top.size >= 12_345 && top.size % 512 == 0, "{}", top.size);
+            assert!(
+                top.size() >= 12_345 && top.size() % 512 == 0,
+                "{}",
+                top.size()
+            );
         }
     }
 }
@@ -149,7 +153,7 @@ fn forced_link_modes_count_a_hard_link_once() {
             assert_eq!(stats.link_mode, mode);
             assert_eq!(stats.threads, threads);
             assert!(stats.link_set_bytes > 0);
-            assert_eq!(t.node(NodeId::ROOT).logical, 10_003, "{mode:?}");
+            assert_eq!(t.node(NodeId::ROOT).logical(), 10_003, "{mode:?}");
             let flagged = (1..t.len() as u32)
                 .filter(|&i| t.node(NodeId(i)).flags.contains(NodeFlags::HARDLINK))
                 .count();
@@ -165,7 +169,7 @@ fn forced_link_modes_count_a_hard_link_once() {
             links: Some(LinkMode::Records),
         },
     );
-    assert_eq!(t.node(NodeId::ROOT).logical, 20_003);
+    assert_eq!(t.node(NodeId::ROOT).logical(), 20_003);
 }
 
 /// Feeds hand-made listing entries through the same code a real listing
@@ -281,7 +285,6 @@ fn entries_are_classified() {
                 name: &name,
                 attributes,
                 logical,
-                last_write: 0,
                 allocated,
                 file_id,
                 reparse_tag,
@@ -298,11 +301,14 @@ fn entries_are_classified() {
     use NodeFlags as F;
 
     assert_eq!(flags("plain.txt"), F::NONE);
-    assert_eq!(get("plain.txt").size, 4096);
+    assert_eq!(get("plain.txt").size(), 4096);
     // Same MFT record: the second sighting is the extra link.
     assert_eq!(flags("second link.txt"), F::HARDLINK);
     assert_eq!(
-        (get("second link.txt").size, get("second link.txt").logical),
+        (
+            get("second link.txt").size(),
+            get("second link.txt").logical()
+        ),
         (0, 0)
     );
     assert_eq!(flags("junction"), F::DIR | F::REPARSE);
@@ -311,20 +317,20 @@ fn entries_are_classified() {
     assert_eq!(flags("OneDrive"), F::DIR | F::CLOUD);
     assert_eq!(flags("unknown tag"), F::DIR);
     assert_eq!(flags("online-only.docx"), F::CLOUD);
-    assert_eq!(get("online-only.docx").size, 0);
-    assert_eq!(get("online-only.docx").logical, 1_000_000);
+    assert_eq!(get("online-only.docx").size(), 0);
+    assert_eq!(get("online-only.docx").logical(), 1_000_000);
     assert_eq!(flags("offline.dat"), F::CLOUD);
     assert_eq!(flags("compact.dll"), F::COMPRESSED);
-    assert_eq!(get("compact.dll").size, 20_480);
+    assert_eq!(get("compact.dll").size(), 20_480);
     assert_eq!(flags("compressed.log"), F::COMPRESSED);
     assert_eq!(flags("sparse.vhdx"), F::COMPRESSED);
     assert_eq!(flags("hidden system"), F::HIDDEN | F::SYSTEM);
     assert_eq!(flags("sub"), F::DIR);
     // FindFirstFileExW reports no allocation: whole clusters are assumed.
-    assert_eq!(get("no allocation").size, 8192);
+    assert_eq!(get("no allocation").size(), 8192);
     // Files without an id are never taken for links of each other.
     assert_eq!(flags("no id again"), F::NONE);
-    assert_eq!(get("no id again").logical, 7);
+    assert_eq!(get("no id again").logical(), 7);
 
     // Links and mount points are not entered; everything else is, and an
     // unreported tag is checked by the child's own task.
@@ -357,7 +363,7 @@ fn entries_are_classified() {
     );
     let snap = progress.snapshot();
     assert_eq!((snap.files, snap.dirs), (12, 5));
-    assert_eq!(snap.bytes, t.node(NodeId::ROOT).size);
+    assert_eq!(snap.bytes, t.node(NodeId::ROOT).size());
 }
 
 #[test]

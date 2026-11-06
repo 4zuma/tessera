@@ -193,7 +193,7 @@ pub fn restore(
                 let dup = parent_live && t.find_child(n.parent, t.name(item.node)).is_some();
                 // A watcher event may already have added it again.
                 if dup || t.restore_deleted(item.node) {
-                    res.bytes = res.bytes.wrapping_add(if dup { 0 } else { n.size });
+                    res.bytes = res.bytes.wrapping_add(if dup { 0 } else { n.size() });
                     res.ok.push(item.node);
                     continue;
                 }
@@ -345,7 +345,7 @@ impl Tree {
             return false;
         }
         self.node_mut(id).flags.remove(NodeFlags::DELETED);
-        self.add_to_ancestors(n.parent, n.size, n.logical);
+        self.add_to_ancestors(n.parent, n.size(), n.logical());
         true
     }
 }
@@ -433,7 +433,7 @@ fn remove(
         let n = *t.node(id);
         // The watcher may have marked it already; the bytes are freed anyway.
         if t.mark_deleted(id) || n.is_deleted() {
-            res.bytes = res.bytes.wrapping_add(n.size);
+            res.bytes = res.bytes.wrapping_add(n.size());
         }
     }
     // Report every requested id once, in request order.

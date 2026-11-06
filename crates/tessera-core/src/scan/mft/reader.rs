@@ -807,7 +807,7 @@ mod tests {
             assert_eq!(b.files, 80 + 1, "80 files plus $MFT, chunk {chunk}");
             let d = b.tree.lookup_relative(b"d").unwrap();
             assert_eq!(b.tree.child_count(d), 80);
-            assert_eq!(b.tree.node(d).logical, (0..80).sum::<u64>());
+            assert_eq!(b.tree.node(d).logical(), (0..80).sum::<u64>());
             let f79 = b.tree.lookup_relative(b"d\\f79").unwrap();
             assert_eq!(b.frn.get(96), Some(f79));
         }
