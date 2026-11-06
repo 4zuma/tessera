@@ -52,7 +52,7 @@ export const zhCN: Partial<Dict> = {
   'picker.title': '选择要扫描的磁盘',
   'picker.sub': '扫描时树图会边扫边长出来，扫完之前也可以开始浏览。',
   'picker.space': '{free} 可用，共 {capacity} · {fs}',
-  'picker.userTitle': '以普通权限运行',
+  'picker.userTitle': '正以普通用户权限运行',
   'picker.userBody': '现在用多线程逐个目录扫描。以管理员身份运行时会直接读取 NTFS 的 MFT，通常快很多。',
 
   'cmd.chooseDrive': '选择磁盘',
