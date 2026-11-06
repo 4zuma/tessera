@@ -5,6 +5,10 @@
 //! so most changes are applied without touching the disk again; elsewhere
 //! the plain variant is used and changed entries are probed.
 //!
+//! Extended records also carry the file's id, so when a name of a file goes
+//! away the applier can check whether the file lives on under another name
+//! (a hard link) that should now carry its size.
+//!
 //! The record parser is portable and unit tested with synthetic buffers.
 
 #![cfg_attr(not(windows), allow(dead_code))]
@@ -13,8 +17,12 @@ use super::apply::{Stat, attr};
 use super::coalesce::{Event, Info};
 use crate::wtf8;
 
+// Added and modified entries are handled like unknown actions (their
+// current state is applied), so only tests name these two.
+#[allow(dead_code)]
 pub(crate) const FILE_ACTION_ADDED: u32 = 1;
 pub(crate) const FILE_ACTION_REMOVED: u32 = 2;
+#[allow(dead_code)]
 pub(crate) const FILE_ACTION_MODIFIED: u32 = 3;
 pub(crate) const FILE_ACTION_RENAMED_OLD_NAME: u32 = 4;
 pub(crate) const FILE_ACTION_RENAMED_NEW_NAME: u32 = 5;
@@ -28,6 +36,7 @@ const EXT_ALLOCATED: usize = 40;
 const EXT_SIZE: usize = 48;
 const EXT_ATTRIBUTES: usize = 56;
 const EXT_REPARSE_TAG: usize = 60;
+const EXT_FILE_ID: usize = 64;
 const EXT_NAME_LEN: usize = 80;
 const EXT_NAME: usize = 84;
 
@@ -44,6 +53,17 @@ struct Record {
     action: u32,
     name: Vec<u8>,
     stat: Option<Stat>,
+    /// The file id of an extended record (0: unknown).
+    file_id: u64,
+}
+
+impl Record {
+    /// The id of the file whose name this record removes, if it may have
+    /// other names: an extended record of something that is not a directory.
+    fn unlinked(&self) -> Option<u64> {
+        let s = self.stat?;
+        (!s.is_dir() && self.file_id != 0 && self.file_id != u64::MAX).then_some(self.file_id)
+    }
 }
 
 fn record(rec: &[u8], extended: bool) -> Option<Record> {
@@ -59,9 +79,9 @@ fn record(rec: &[u8], extended: bool) -> Option<Record> {
         .chunks_exact(2)
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .collect();
-    let stat = if extended {
+    let (stat, file_id) = if extended {
         let attributes = u32_at(rec, EXT_ATTRIBUTES)?;
-        Some(Stat {
+        let stat = Stat {
             attributes,
             reparse_tag: if attributes & attr::REPARSE_POINT != 0 {
                 u32_at(rec, EXT_REPARSE_TAG)?
@@ -71,14 +91,16 @@ fn record(rec: &[u8], extended: bool) -> Option<Record> {
             size: u64_at(rec, EXT_ALLOCATED)?,
             logical: u64_at(rec, EXT_SIZE)?,
             mtime: crate::tree::mtime_from_filetime(u64_at(rec, EXT_MODIFIED)?),
-        })
+        };
+        (Some(stat), u64_at(rec, EXT_FILE_ID)?)
     } else {
-        None
+        (None, 0)
     };
     Some(Record {
         action,
         name: wtf8::from_utf16(&units),
         stat,
+        file_id,
     })
 }
 
@@ -90,9 +112,21 @@ fn record(rec: &[u8], extended: bool) -> Option<Record> {
 /// which has no new-name record, is not held back) and remembered in
 /// `carry`, and a new-name record opening the next buffer still pairs with
 /// it, which the coalescer turns back into a rename.
+///
+/// A removed (or moved away) name of a file is followed by
+/// [`Event::Unlinked`] with the file's id when the record carries it.
 pub(crate) fn parse(buf: &[u8], extended: bool, carry: &mut Option<Vec<u8>>, out: &mut Vec<Event>) {
     let carried = carry.take();
-    let mut old: Option<Vec<u8>> = None;
+    let mut old: Option<(Vec<u8>, Option<u64>)> = None;
+    let gone = |out: &mut Vec<Event>, (path, id): (Vec<u8>, Option<u64>)| {
+        out.push(Event::Changed {
+            path,
+            info: Info::Gone,
+        });
+        if let Some(id) = id {
+            out.push(Event::Unlinked(id));
+        }
+    };
     let mut first = true;
     let mut off = 0usize;
     while off < buf.len() {
@@ -104,19 +138,17 @@ pub(crate) fn parse(buf: &[u8], extended: bool, carry: &mut Option<Vec<u8>>, out
             Some(s) => Info::Present(s),
             None => Info::Unknown,
         };
+        let unlinked = r.unlinked();
         match r.action {
             FILE_ACTION_RENAMED_OLD_NAME => {
                 if let Some(o) = old.take() {
-                    out.push(Event::Changed {
-                        path: o,
-                        info: Info::Gone,
-                    });
+                    gone(out, o);
                 }
-                old = Some(r.name);
+                old = Some((r.name, unlinked));
             }
             FILE_ACTION_RENAMED_NEW_NAME => {
                 let from = match old.take() {
-                    Some(o) => Some(o),
+                    Some((o, _)) => Some(o),
                     None if first => carried.clone(),
                     None => None,
                 };
@@ -132,21 +164,22 @@ pub(crate) fn parse(buf: &[u8], extended: bool, carry: &mut Option<Vec<u8>>, out
                     },
                 });
             }
-            action => {
+            FILE_ACTION_REMOVED => {
                 if let Some(o) = old.take() {
-                    out.push(Event::Changed {
-                        path: o,
-                        info: Info::Gone,
-                    });
+                    gone(out, o);
                 }
-                let info = match action {
-                    FILE_ACTION_REMOVED => Info::Gone,
-                    FILE_ACTION_ADDED | FILE_ACTION_MODIFIED => info_present,
-                    // An action this code does not know: whatever happened,
-                    // the entry's current state is what counts.
-                    _ => info_present,
-                };
-                out.push(Event::Changed { path: r.name, info });
+                gone(out, (r.name, unlinked));
+            }
+            // Added, modified, or an action this code does not know:
+            // whatever happened, the entry's current state is what counts.
+            _ => {
+                if let Some(o) = old.take() {
+                    gone(out, o);
+                }
+                out.push(Event::Changed {
+                    path: r.name,
+                    info: info_present,
+                });
             }
         }
         first = false;
@@ -157,11 +190,8 @@ pub(crate) fn parse(buf: &[u8], extended: bool, carry: &mut Option<Vec<u8>>, out
         off += next;
     }
     if let Some(o) = old {
-        out.push(Event::Changed {
-            path: o.clone(),
-            info: Info::Gone,
-        });
-        *carry = Some(o);
+        *carry = Some(o.0.clone());
+        gone(out, o);
     }
 }
 
@@ -352,9 +382,18 @@ pub(crate) mod tests {
 
     /// Builds a `FILE_NOTIFY_INFORMATION` / extended buffer.
     pub(crate) fn buffer(records: &[(u32, &str, Option<Stat>)], extended: bool) -> Vec<u8> {
+        let with_ids: Vec<_> = records.iter().map(|&(a, n, s)| (a, n, s, 0)).collect();
+        buffer_with_ids(&with_ids, extended)
+    }
+
+    /// Like [`buffer`], with a file id per record (extended only).
+    pub(crate) fn buffer_with_ids(
+        records: &[(u32, &str, Option<Stat>, u64)],
+        extended: bool,
+    ) -> Vec<u8> {
         let mut out = Vec::new();
         let mut starts = Vec::new();
-        for (action, name, stat) in records {
+        for (action, name, stat, id) in records {
             let start = out.len();
             starts.push(start);
             let units: Vec<u16> = name.encode_utf16().collect();
@@ -375,6 +414,7 @@ pub(crate) mod tests {
                     .copy_from_slice(&s.attributes.to_le_bytes());
                 rec[EXT_REPARSE_TAG..EXT_REPARSE_TAG + 4]
                     .copy_from_slice(&s.reparse_tag.to_le_bytes());
+                rec[EXT_FILE_ID..EXT_FILE_ID + 8].copy_from_slice(&id.to_le_bytes());
             }
             for u in units {
                 rec.extend_from_slice(&u.to_le_bytes());
@@ -474,6 +514,56 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn removed_names_report_the_file_id() {
+        let d = Stat {
+            attributes: attr::DIRECTORY,
+            ..Stat::default()
+        };
+        let buf = buffer_with_ids(
+            &[
+                (FILE_ACTION_REMOVED, "a.txt", Some(file(1)), 77),
+                (FILE_ACTION_REMOVED, "dir", Some(d), 78),
+                (FILE_ACTION_REMOVED, "noid.txt", Some(file(1)), 0),
+                (FILE_ACTION_RENAMED_OLD_NAME, "away.txt", Some(file(1)), 79),
+                (FILE_ACTION_ADDED, "b.txt", Some(file(1)), 80),
+                (FILE_ACTION_RENAMED_OLD_NAME, "x", Some(file(1)), 81),
+                (FILE_ACTION_RENAMED_NEW_NAME, "y", Some(file(1)), 81),
+                (FILE_ACTION_RENAMED_OLD_NAME, "last", Some(file(1)), 82),
+            ],
+            true,
+        );
+        let mut out = Vec::new();
+        let mut carry = None;
+        parse(&buf, true, &mut carry, &mut out);
+        assert_eq!(
+            out,
+            vec![
+                changed("a.txt", Info::Gone),
+                Event::Unlinked(77),
+                changed("dir", Info::Gone),
+                changed("noid.txt", Info::Gone),
+                // An old name without its new one: moved out of view.
+                changed("away.txt", Info::Gone),
+                Event::Unlinked(79),
+                changed("b.txt", Info::Present(file(1))),
+                Event::Renamed {
+                    from: b"x".to_vec(),
+                    to: b"y".to_vec(),
+                    info: Info::Present(file(1)),
+                },
+                changed("last", Info::Gone),
+                Event::Unlinked(82),
+            ]
+        );
+        assert_eq!(carry.as_deref(), Some(&b"last"[..]));
+        // Plain records carry no ids.
+        let plain = buffer(&[(FILE_ACTION_REMOVED, "a.txt", None)], false);
+        let mut out = Vec::new();
+        parse(&plain, false, &mut None, &mut out);
+        assert_eq!(out, vec![changed("a.txt", Info::Gone)]);
+    }
+
+    #[test]
     fn rename_split_across_buffers() {
         let mut carry = None;
         let mut out = Vec::new();
@@ -543,6 +633,7 @@ pub(crate) mod tests {
         assert_eq!(offset_of!(X, FileSize), EXT_SIZE);
         assert_eq!(offset_of!(X, FileAttributes), EXT_ATTRIBUTES);
         assert_eq!(offset_of!(X, Anonymous), EXT_REPARSE_TAG);
+        assert_eq!(offset_of!(X, FileId), EXT_FILE_ID);
         assert_eq!(offset_of!(X, FileNameLength), EXT_NAME_LEN);
         assert_eq!(offset_of!(X, FileName), EXT_NAME);
     }

@@ -17,7 +17,16 @@
 //!    entries (deletions first, then parents before children);
 //! 3. without the lock, new directories are filled by the scanner. Entries
 //!    below them were held back; they are dropped when the scan succeeded
-//!    (it saw the newer state) and applied one by one when it could not run.
+//!    (it saw the newer state) and applied one by one when it could not run;
+//! 4. hard links, without any lock: files that may have gained or lost a
+//!    name (new files, changes through a name that does not count the bytes,
+//!    removed names, files of scanned directories) are probed for their
+//!    link count, and the names of those with several are read;
+//! 5. under `tree.write()`, each such file's bytes are counted on exactly
+//!    one of its names in the tree (see [`Applier::reconcile_links`]).
+//!
+//! Hard links are only followed where the probe can see them (local NTFS),
+//! and at most [`LINK_PROBES`] probes are spent on them per batch.
 
 // Without Windows only the unit tests drive this code.
 #![cfg_attr(not(windows), allow(dead_code))]
@@ -60,6 +69,15 @@ const BARRIER: NodeFlags = NodeFlags(NodeFlags::INACCESSIBLE.0 | NodeFlags::REPA
 
 /// Bits of a file reference number that hold the MFT record number.
 const RECORD_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
+
+/// Nodes that never take part in hard-link accounting.
+const NOT_LINKED: NodeFlags =
+    NodeFlags(NodeFlags::DIR.0 | NodeFlags::METAFILE.0 | NodeFlags::CLOUD.0 | NodeFlags::REPARSE.0);
+
+/// Hard-link probes per batch, at most (each costs about as much as one
+/// attribute query). Beyond that a hard-linked file's bytes may be counted
+/// on two names until a later change to it or a rescan.
+pub(crate) const LINK_PROBES: usize = 1 << 16;
 
 /// Attributes and sizes of one entry, as read from the file system.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -110,6 +128,18 @@ pub(crate) fn flags_from_attributes(attributes: u32, reparse_tag: u32) -> NodeFl
     f
 }
 
+/// A file's sizes and names, read through its id.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Links {
+    /// Allocated bytes (size on disk).
+    pub size: u64,
+    /// Logical length.
+    pub logical: u64,
+    /// The paths of the file's names (hard links) that are inside the
+    /// watched root, relative to it. Names elsewhere are left out.
+    pub names: Vec<Vec<u8>>,
+}
+
 /// Read-only access to the file system for the applier.
 pub(crate) trait Probe {
     /// The current state of the entry at `rel` (relative to the watched
@@ -126,6 +156,23 @@ pub(crate) trait Probe {
     /// The path, relative to the watched root, of the file whose reference
     /// number is `frn`, or `None` if it is elsewhere or gone (USN only).
     fn locate(&mut self, _frn: u64) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// True if files can have several names (hard links) that
+    /// [`Probe::link_count`] and [`Probe::links`] report (local NTFS).
+    fn tracks_links(&self) -> bool {
+        false
+    }
+
+    /// The id and the number of names of the file at `rel`.
+    fn link_count(&mut self, _rel: &[u8]) -> Option<(u64, u32)> {
+        None
+    }
+
+    /// The sizes and names of the file with id `id` (an NTFS file reference
+    /// number), or `None` if it is gone or cannot be read.
+    fn links(&mut self, _id: u64) -> Option<Links> {
         None
     }
 }
@@ -287,6 +334,11 @@ struct Tally {
     scan_nodes: HashSet<NodeId>,
     /// Path entries below a directory waiting for its scan.
     deferred: Vec<PathChange>,
+    /// Files that may have gained or lost a name: their link count is read
+    /// after the batch.
+    link_nodes: Vec<NodeId>,
+    /// Ids of files whose names are read and reconciled after the batch.
+    link_ids: Vec<u64>,
 }
 
 enum Resolved {
@@ -395,6 +447,20 @@ impl Applier<'_> {
         self.t.scans.push((id, rel.to_vec()));
     }
 
+    /// Has the link count of file `id` read after the batch.
+    fn check_links(&mut self, id: NodeId) {
+        if self.probe.tracks_links() && self.t.link_nodes.len() < LINK_PROBES {
+            self.t.link_nodes.push(id);
+        }
+    }
+
+    /// Has the names of the file with id `frn` reconciled after the batch.
+    fn check_file(&mut self, frn: u64) {
+        if self.probe.tracks_links() {
+            self.t.link_ids.push(frn);
+        }
+    }
+
     fn delete(&mut self, id: NodeId) {
         let n = *self.tree.node(id);
         if n.flags.contains(NodeFlags::METAFILE) {
@@ -427,10 +493,11 @@ impl Applier<'_> {
             self.tree.set_flags(id, merged);
             changed = true;
         }
-        if !n.is_dir()
-            && !n.flags.contains(NodeFlags::HARDLINK)
-            && (n.size != stat.size || n.logical != stat.logical)
-        {
+        if n.flags.contains(NodeFlags::HARDLINK) {
+            // Another name counts the bytes; it is brought up to date (or
+            // this one takes over) after the batch.
+            self.check_links(id);
+        } else if !n.is_dir() && (n.size != stat.size || n.logical != stat.logical) {
             self.tree.set_file_size(id, stat.size, stat.logical);
             changed = true;
         }
@@ -480,7 +547,11 @@ impl Applier<'_> {
                 return;
             }
         }
-        self.add(parent, rel, name, stat, true);
+        let id = self.add(parent, rel, name, stat, true);
+        if !stat.is_dir() {
+            // Possibly a new name of a file the tree already counts.
+            self.check_links(id);
+        }
     }
 
     fn gone(&mut self, parent: NodeId, name: &[u8]) {
@@ -610,21 +681,31 @@ impl Applier<'_> {
             .then_some(id)
     }
 
-    fn usn_batch(&mut self, st: &mut UsnState, changes: &[UsnChange], probed: &[Info]) {
+    fn usn_batch(
+        &mut self,
+        st: &mut UsnState,
+        changes: &[UsnChange],
+        probed: &[Info],
+        links_probed: &[Vec<Info>],
+    ) {
         let deleted = |c: &UsnChange| c.last_reason & reason::FILE_DELETE != 0;
         // Deletions first: a record number freed here may be reused by a
         // file created later in the batch.
         for c in changes.iter().filter(|c| deleted(c)) {
-            match st.index.get(c.frn & RECORD_MASK) {
-                Some(id) => {
-                    if id != NodeId::ROOT && self.tree.is_live(id) {
-                        self.delete(id);
-                    }
-                    st.index.remove(c.frn);
-                }
-                None => {
-                    if let Some(p) = self.usn_dir(st, c.parent_frn) {
-                        self.gone(p, &c.name);
+            let indexed = st.live(self.tree, c.frn).filter(|&id| id != NodeId::ROOT);
+            if let Some(id) = indexed {
+                self.delete(id);
+            }
+            st.index.remove(c.frn);
+            // The record names the file's last name. Without an index entry
+            // that name is the way to the node; with hard links the index
+            // may point at another of the file's names.
+            if indexed.is_none() || c.reasons & reason::HARD_LINK_CHANGE != 0 {
+                if let Some(p) = self.usn_dir(st, c.parent_frn) {
+                    if let Some(id) = self.tree.find_child(p, &c.name) {
+                        if indexed.is_none() || !self.tree.node(id).is_dir() {
+                            self.delete(id);
+                        }
                     }
                 }
             }
@@ -657,20 +738,58 @@ impl Applier<'_> {
                 self.usn_one(st, &changes[k], &probed[k]);
             }
         }
+        // Hard links added or removed, once all directories are in place.
+        for (c, infos) in changes.iter().zip(links_probed) {
+            for ((parent, name), info) in c.links.iter().zip(infos) {
+                self.usn_link(st, *parent, name, info);
+            }
+            if !c.links.is_empty() && !deleted(c) {
+                self.check_file(c.frn);
+            }
+        }
+    }
+
+    /// A name added to or removed from a file (a hard link): the name is
+    /// brought in line with the disk; the file's bytes are settled later.
+    fn usn_link(&mut self, st: &UsnState, parent: u64, name: &[u8], info: &Info) {
+        let Some(p) = self.usn_dir(st, parent) else {
+            return;
+        };
+        let existing = self.tree.find_child(p, name);
+        match info {
+            Info::Present(stat) if !stat.is_dir() => {
+                if let Some(id) = existing {
+                    if self.update(id, stat) {
+                        return;
+                    }
+                }
+                let rel = self.child_rel(p, name);
+                self.add(p, &rel, name, stat, false);
+            }
+            Info::Gone => {
+                if let Some(id) = existing.filter(|&id| !self.tree.node(id).is_dir()) {
+                    self.delete(id);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn usn_one(&mut self, st: &mut UsnState, c: &UsnChange, info: &Info) {
-        let mut node = st.live(self.tree, c.frn);
-        if node == Some(NodeId::ROOT) {
+        let indexed = st.live(self.tree, c.frn);
+        if indexed == Some(NodeId::ROOT) {
             return;
         }
-        if node.is_none() {
-            if let Some((old_parent, old_name)) = &c.old_location {
-                node = self
-                    .usn_dir(st, *old_parent)
-                    .and_then(|p| self.tree.find_child(p, old_name));
-            }
-        }
+        let at_old = c.old_location.as_ref().and_then(|(old_parent, old_name)| {
+            let p = self.usn_dir(st, *old_parent)?;
+            self.tree.find_child(p, old_name)
+        });
+        let mut node = match (indexed, at_old) {
+            // A file with several names: the index points at one of them,
+            // and the one renamed is the one at the old location.
+            (Some(i), Some(o)) if i != o && !self.tree.node(o).is_dir() => Some(o),
+            (i, o) => i.or(o),
+        };
         let parent = self.usn_dir(st, c.parent_frn);
         if node.is_none() {
             // E.g. an entry that a directory scan added (scans do not
@@ -688,18 +807,34 @@ impl Applier<'_> {
                     // Directories known to be outside may be inside now.
                     st.outside.clear();
                 }
+                if moved_in && !stat.is_dir() {
+                    // It may have other names in the tree.
+                    self.check_links(id);
+                }
             }
             return;
         };
         if self.tree.node(id).flags.contains(NodeFlags::METAFILE) {
             return;
         }
-        st.insert(c.frn, id);
+        if self.tree.node(id).flags.contains(NodeFlags::HARDLINK) {
+            // The index keeps the name that counts the bytes.
+            self.check_file(c.frn);
+        } else {
+            st.insert(c.frn, id);
+        }
         if c.reasons & reason::RENAME_NEW_NAME != 0 {
             let Some(p) = parent else {
                 // Moved out of the tree or below an ignored directory.
+                let file = !self.tree.node(id).is_dir();
                 self.delete(id);
-                st.index.remove(c.frn);
+                if st.index.get(c.frn & RECORD_MASK) == Some(id) {
+                    st.index.remove(c.frn);
+                }
+                if file {
+                    // Its other names, if any, may now count its bytes.
+                    self.check_file(c.frn);
+                }
                 return;
             };
             let n = *self.tree.node(id);
@@ -748,6 +883,52 @@ impl Applier<'_> {
         }
     }
 
+    /// Makes exactly one of a file's names in the tree count its bytes: the
+    /// lowest node id among the names counting them now (so a settled file
+    /// does not change), else the lowest; the others become `HARDLINK`
+    /// nodes with zero sizes, as the scanners make them. Returns that node.
+    fn reconcile_links(&mut self, links: &Links) -> Option<NodeId> {
+        let mut nodes: Vec<NodeId> = links
+            .names
+            .iter()
+            .filter_map(|rel| {
+                let id = self.tree.lookup_relative(rel)?;
+                let n = self.tree.node(id);
+                (id != NodeId::ROOT
+                    && !n.flags.intersects(NOT_LINKED)
+                    && !self.tree.behind_barrier(n.parent))
+                .then_some(id)
+            })
+            .collect();
+        nodes.sort_unstable();
+        nodes.dedup();
+        let counts = |id: NodeId| !self.tree.node(id).flags.contains(NodeFlags::HARDLINK);
+        let keep = nodes
+            .iter()
+            .copied()
+            .find(|&id| counts(id))
+            .or(nodes.first().copied())?;
+        for id in nodes {
+            let n = *self.tree.node(id);
+            let mut flags = n.flags;
+            let (size, logical) = if id == keep {
+                flags.remove(NodeFlags::HARDLINK);
+                (links.size, links.logical)
+            } else {
+                flags.insert(NodeFlags::HARDLINK);
+                (0, 0)
+            };
+            if flags == n.flags && size == n.size && logical == n.logical {
+                continue;
+            }
+            self.tree.set_flags(id, flags);
+            self.tree.set_file_size(id, size, logical);
+            self.t.modified += 1;
+            self.t.dirs.insert(n.parent);
+        }
+        Some(keep)
+    }
+
     fn child_rel(&self, parent: NodeId, name: &[u8]) -> Vec<u8> {
         let mut rel = self.tree.rel_path_wtf8(parent);
         if !rel.is_empty() {
@@ -765,15 +946,20 @@ fn tracked_dir(tree: &Tree, rel: &[u8]) -> Option<NodeId> {
     (tree.node(id).is_dir() && !tree.behind_barrier(id)).then_some(id)
 }
 
-/// Works out where each USN entry is after the batch, so that it can be
-/// probed before the tree is locked for writing. Directories the index does
-/// not know are located (and indexed) on the way.
+/// Where each USN entry is after the batch, and each hard link it gained or
+/// lost (by entry, in order).
+type UsnPaths = (Vec<Option<Vec<u8>>>, Vec<Vec<Option<Vec<u8>>>>);
+
+/// Works out where each USN entry (and each of its hard-link names) is after
+/// the batch, so that it can be probed before the tree is locked for
+/// writing. Directories the index does not know are located (and indexed)
+/// on the way.
 fn usn_paths(
     tree: &Tree,
     st: &mut UsnState,
     probe: &mut dyn Probe,
     changes: &[UsnChange],
-) -> Vec<Option<Vec<u8>>> {
+) -> UsnPaths {
     let deleted = |c: &UsnChange| c.last_reason & reason::FILE_DELETE != 0;
     let pos: HashMap<u64, usize> = changes
         .iter()
@@ -788,6 +974,7 @@ fn usn_paths(
         if let Some((p, _)) = &c.old_location {
             wanted.push(*p);
         }
+        wanted.extend(c.links.iter().map(|(p, _)| *p));
     }
     for frn in wanted {
         if pos.contains_key(&frn) || st.live(tree, frn).is_some() || st.outside.contains(&frn) {
@@ -801,9 +988,9 @@ fn usn_paths(
         }
     }
 
-    let path_of = |i: usize| -> Option<Vec<u8>> {
-        let mut names: Vec<&[u8]> = vec![&changes[i].name];
-        let mut cur = changes[i].parent_frn;
+    let path_of = |name: &[u8], parent: u64| -> Option<Vec<u8>> {
+        let mut names: Vec<&[u8]> = vec![name];
+        let mut cur = parent;
         for _ in 0..=changes.len() {
             let mapped = st.live(tree, cur);
             let base = match (mapped, pos.get(&cur)) {
@@ -833,9 +1020,9 @@ fn usn_paths(
         None // a cycle: corrupt input
     };
 
-    (0..changes.len())
-        .map(|i| {
-            let c = &changes[i];
+    let entries = changes
+        .iter()
+        .map(|c| {
             if deleted(c) {
                 return None;
             }
@@ -845,9 +1032,39 @@ fn usn_paths(
             if known_dir && c.reasons & reason::REPARSE_POINT_CHANGE == 0 {
                 return None;
             }
-            path_of(i)
+            path_of(&c.name, c.parent_frn)
         })
-        .collect()
+        .collect();
+    let links = changes
+        .iter()
+        .map(|c| c.links.iter().map(|(p, n)| path_of(n, *p)).collect())
+        .collect();
+    (entries, links)
+}
+
+/// The files below `dir`, just filled by a scan, that it made count their
+/// bytes (up to the probe budget): the scan only knew the names it saw
+/// itself. Empty files too, as their bytes may come with a later write.
+fn scanned_files(tree: &Tree, dir: NodeId, out: &mut Vec<NodeId>) {
+    let mut stack = vec![dir];
+    while let Some(d) = stack.pop() {
+        for c in tree.children(d) {
+            if out.len() >= LINK_PROBES {
+                return;
+            }
+            let n = tree.node(c);
+            if n.is_dir() {
+                if !n.flags.intersects(BARRIER) {
+                    stack.push(c);
+                }
+            } else if !n
+                .flags
+                .intersects(NodeFlags(NOT_LINKED.0 | NodeFlags::HARDLINK.0))
+            {
+                out.push(c);
+            }
+        }
+    }
 }
 
 fn write_lock(shared: &SharedTree) -> std::sync::RwLockWriteGuard<'_, Tree> {
@@ -874,11 +1091,14 @@ pub(crate) fn apply_batch(
         }
     }
     let mut usn_info = Vec::new();
+    let mut usn_link_info = Vec::new();
     if let (Some(st), false) = (usn.as_deref_mut(), batch.usn.is_empty()) {
-        let paths = usn_paths(&read_lock(shared), st, probe, &batch.usn);
-        usn_info = paths
+        let (paths, link_paths) = usn_paths(&read_lock(shared), st, probe, &batch.usn);
+        let mut stat = |p: &Option<Vec<u8>>| p.as_ref().map_or(Info::Unknown, |p| probe.stat(p));
+        usn_info = paths.iter().map(&mut stat).collect();
+        usn_link_info = link_paths
             .iter()
-            .map(|p| p.as_ref().map_or(Info::Unknown, |p| probe.stat(p)))
+            .map(|l| l.iter().map(&mut stat).collect())
             .collect();
     }
     batch
@@ -903,8 +1123,8 @@ pub(crate) fn apply_batch(
         for pc in &batch.paths {
             ap.path_change(pc);
         }
-        if let Some(st) = usn {
-            ap.usn_batch(st, &batch.usn, &usn_info);
+        if let Some(st) = usn.as_deref_mut() {
+            ap.usn_batch(st, &batch.usn, &usn_info, &usn_link_info);
         }
         for dir in &batch.overflow {
             ap.overflow(dir);
@@ -916,6 +1136,12 @@ pub(crate) fn apply_batch(
         let mut failed: HashSet<Vec<u8>> = HashSet::new();
         for (id, rel) in std::mem::take(&mut t.scans) {
             match scan_dir(shared, id, &rel) {
+                // The scan counted each file once among the names it saw;
+                // names elsewhere in the tree are checked below. A scan of
+                // the root saw them all.
+                Ok(()) if id != NodeId::ROOT && probe.tracks_links() => {
+                    scanned_files(&read_lock(shared), id, &mut t.link_nodes);
+                }
                 Ok(()) => {}
                 Err(Error::Cancelled) => return Err(Error::Cancelled),
                 Err(Error::Unsupported(_)) => {
@@ -962,6 +1188,77 @@ pub(crate) fn apply_batch(
         }
     }
 
+    // 4. Hard links: link counts of the files that may have gained or lost a
+    //    name, then the names of those with several (or that count no
+    //    bytes), all without any lock.
+    let mut found = Vec::new();
+    if probe.tracks_links() {
+        let mut ids = std::mem::take(&mut t.link_ids);
+        ids.extend_from_slice(&batch.unlinked);
+        let mut nodes = std::mem::take(&mut t.link_nodes);
+        nodes.sort_unstable();
+        nodes.dedup();
+        let nodes: Vec<(Vec<u8>, bool)> = {
+            let tree = read_lock(shared);
+            nodes
+                .into_iter()
+                .filter(|&id| {
+                    tree.is_live(id)
+                        && !tree.node(id).flags.intersects(NOT_LINKED)
+                        && !tree.behind_barrier(tree.node(id).parent)
+                })
+                .map(|id| {
+                    let n = tree.node(id);
+                    (
+                        tree.rel_path_wtf8(id),
+                        n.flags.contains(NodeFlags::HARDLINK),
+                    )
+                })
+                .collect()
+        };
+        let mut budget = LINK_PROBES;
+        for (rel, hardlink) in nodes {
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
+            match probe.link_count(&rel) {
+                // A name that counts no bytes may be the last one left.
+                Some((id, n)) if n > 1 || hardlink => ids.push(id),
+                _ => {}
+            }
+        }
+        ids.retain(|&id| id != 0 && id != u64::MAX);
+        ids.sort_unstable();
+        ids.dedup();
+        for id in ids {
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
+            if let Some(links) = probe.links(id) {
+                found.push((id, links));
+            }
+        }
+    }
+
+    // 5. One name of each such file counts its bytes.
+    if !found.is_empty() {
+        let mut tree = write_lock(shared);
+        let mut ap = Applier {
+            tree: &mut tree,
+            probe,
+            t: &mut t,
+        };
+        for (id, links) in &found {
+            if let Some(keep) = ap.reconcile_links(links) {
+                if let Some(st) = usn.as_deref_mut() {
+                    st.insert(*id, keep);
+                }
+            }
+        }
+    }
+
     let tree = read_lock(shared);
     let mut dirs: Vec<NodeId> = t.dirs.into_iter().filter(|&d| tree.is_live(d)).collect();
     dirs.sort_unstable();
@@ -994,7 +1291,11 @@ pub(crate) mod tests {
         pub short: HashMap<Vec<u8>, Vec<u8>>,
         /// Reference number -> relative path.
         pub ids: HashMap<u64, Vec<u8>>,
+        /// File ids by folded relative path, for files given one: names
+        /// with the same id are hard links of one file.
+        pub file_ids: HashMap<Vec<u8>, u64>,
         pub probes: usize,
+        pub link_probes: usize,
     }
 
     pub(crate) fn file(size: u64) -> Stat {
@@ -1026,10 +1327,74 @@ pub(crate) mod tests {
             below.push(b'\\');
             self.entries
                 .retain(|k, _| *k != key && !k.starts_with(&below));
+            self.file_ids
+                .retain(|k, _| *k != key && !k.starts_with(&below));
         }
 
-        /// Fills `dir` (relative path `rel`) like `walk::scan_into` would.
+        /// Gives the file at `rel` the id `id`.
+        pub fn set_id(&mut self, rel: &str, id: u64) {
+            self.file_ids.insert(fold_key(rel.as_bytes()), id);
+        }
+
+        /// Adds `new` as another name of the file at `existing` (which
+        /// needs an id).
+        pub fn link(&mut self, existing: &str, new: &str) {
+            let key = fold_key(existing.as_bytes());
+            let stat = self.entries[&key].1;
+            let id = self.file_ids[&key];
+            self.put(new, stat);
+            self.set_id(new, id);
+        }
+
+        /// Renames the file at `from` to `to`, keeping its id.
+        pub fn mv(&mut self, from: &str, to: &str) {
+            let key = fold_key(from.as_bytes());
+            let stat = self.entries[&key].1;
+            let id = self.file_ids.get(&key).copied();
+            self.remove(from);
+            self.put(to, stat);
+            if let Some(id) = id {
+                self.set_id(to, id);
+            }
+        }
+
+        /// Gives the file at `rel`, under all its names, new attributes.
+        pub fn write(&mut self, rel: &str, stat: Stat) {
+            let key = fold_key(rel.as_bytes());
+            let keys = match self.file_ids.get(&key) {
+                Some(&id) => self.names_of(id),
+                None => vec![key],
+            };
+            for k in keys {
+                self.entries.get_mut(&k).unwrap().1 = stat;
+            }
+        }
+
+        /// The folded keys of the names of file `id`, sorted.
+        fn names_of(&self, id: u64) -> Vec<Vec<u8>> {
+            let mut keys: Vec<Vec<u8>> = self
+                .file_ids
+                .iter()
+                .filter(|&(_, &v)| v == id)
+                .map(|(k, _)| k.clone())
+                .collect();
+            keys.sort();
+            keys
+        }
+
+        /// Fills `dir` (relative path `rel`) like `walk::scan_into` would,
+        /// counting each file once among the names this scan sees.
         pub fn scan(&self, shared: &SharedTree, dir: NodeId, rel: &[u8]) -> Result<()> {
+            self.scan_with(shared, dir, rel, &mut HashSet::new())
+        }
+
+        fn scan_with(
+            &self,
+            shared: &SharedTree,
+            dir: NodeId,
+            rel: &[u8],
+            seen: &mut HashSet<u64>,
+        ) -> Result<()> {
             let key = fold_key(rel);
             let mut b = EntryBatch::new();
             let mut subdirs = Vec::new();
@@ -1042,12 +1407,16 @@ pub(crate) mod tests {
                     continue;
                 }
                 let (_, name) = split_last(path);
+                let mut flags = stat.flags();
                 let (s, l) = if stat.is_dir() {
+                    (0, 0)
+                } else if self.file_ids.get(k).is_some_and(|&id| !seen.insert(id)) {
+                    flags |= NodeFlags::HARDLINK;
                     (0, 0)
                 } else {
                     (stat.size, stat.logical)
                 };
-                b.push_wtf8(name, s, l, stat.flags(), stat.mtime);
+                b.push_wtf8(name, s, l, flags, stat.mtime);
                 if stat.is_dir() && !stat.flags().contains(NodeFlags::REPARSE) {
                     subdirs.push(path.clone());
                 }
@@ -1062,7 +1431,7 @@ pub(crate) mod tests {
                         .find(|p| split_last(p).1 == &name[..])
                         .unwrap()
                         .clone();
-                    self.scan(shared, NodeId(id), &sub)?;
+                    self.scan_with(shared, NodeId(id), &sub, seen)?;
                 }
             }
             Ok(())
@@ -1084,6 +1453,27 @@ pub(crate) mod tests {
 
         fn locate(&mut self, frn: u64) -> Option<Vec<u8>> {
             self.ids.get(&frn).cloned()
+        }
+
+        fn tracks_links(&self) -> bool {
+            true
+        }
+
+        fn link_count(&mut self, rel: &[u8]) -> Option<(u64, u32)> {
+            self.link_probes += 1;
+            let id = *self.file_ids.get(&fold_key(rel))?;
+            Some((id, self.names_of(id).len() as u32))
+        }
+
+        fn links(&mut self, id: u64) -> Option<Links> {
+            self.link_probes += 1;
+            let keys = self.names_of(id);
+            let stat = self.entries.get(keys.first()?)?.1;
+            Some(Links {
+                size: stat.size,
+                logical: stat.logical,
+                names: keys.iter().map(|k| self.entries[k].0.clone()).collect(),
+            })
         }
     }
 
@@ -1582,6 +1972,240 @@ pub(crate) mod tests {
         assert_eq!(r.error.as_deref(), Some("bye"));
     }
 
+    // ---- Hard links -----------------------------------------------------
+
+    fn root_size(shared: &SharedTree) -> (u64, u64) {
+        let t = shared.read().unwrap();
+        let n = t.node(NodeId::ROOT);
+        (n.size, n.logical)
+    }
+
+    /// The tree has the paths of `fs`, and each file's bytes are counted on
+    /// exactly one of its names (the others are zero-size `HARDLINK`s).
+    fn check_links(shared: &SharedTree, fs: &FakeFs) {
+        let strip = |l: &String| l.split(' ').next().unwrap().to_owned();
+        let tree_paths: Vec<String> = listing(shared).iter().map(strip).collect();
+        let fs_paths: Vec<String> = fs_listing(fs).iter().map(strip).collect();
+        assert_eq!(tree_paths, fs_paths);
+        let t = shared.read().unwrap();
+        t.check_invariants().unwrap();
+        let mut files: HashMap<u64, Vec<&Vec<u8>>> = HashMap::new();
+        for (k, (path, stat)) in &fs.entries {
+            if stat.is_dir() {
+                continue;
+            }
+            match fs.file_ids.get(k) {
+                Some(&id) => files.entry(id).or_default().push(path),
+                None => {
+                    let n = t.node(t.lookup_relative(path).unwrap());
+                    assert!(!n.flags.contains(NodeFlags::HARDLINK));
+                    assert_eq!((n.size, n.logical), (stat.size, stat.logical));
+                }
+            }
+        }
+        for paths in files.values() {
+            let stat = fs.entries[&fold_key(paths[0])].1;
+            let nodes: Vec<&crate::Node> = paths
+                .iter()
+                .map(|p| t.node(t.lookup_relative(p).unwrap()))
+                .collect();
+            let counting: Vec<_> = nodes
+                .iter()
+                .filter(|n| !n.flags.contains(NodeFlags::HARDLINK))
+                .collect();
+            let names: Vec<_> = paths.iter().map(|p| String::from_utf8_lossy(p)).collect();
+            assert_eq!(counting.len(), 1, "one of {names:?} counts the bytes");
+            assert_eq!(
+                (counting[0].size, counting[0].logical),
+                (stat.size, stat.logical),
+                "{names:?}"
+            );
+            for n in &nodes {
+                if n.flags.contains(NodeFlags::HARDLINK) {
+                    assert_eq!((n.size, n.logical), (0, 0), "{names:?}");
+                }
+            }
+        }
+    }
+
+    /// The name of file `id` that counts its bytes.
+    fn counting(shared: &SharedTree, fs: &FakeFs, id: u64) -> String {
+        let t = shared.read().unwrap();
+        fs.names_of(id)
+            .iter()
+            .map(|k| fs.entries[k].0.clone())
+            .find(|p| {
+                let n = t.node(t.lookup_relative(p).unwrap());
+                !n.flags.contains(NodeFlags::HARDLINK)
+            })
+            .map(|p| String::from_utf8(p).unwrap())
+            .unwrap()
+    }
+
+    /// `sample()` with docs\b.txt also named music\b-link.txt.
+    fn linked() -> FakeFs {
+        let mut fs = sample();
+        fs.set_id("docs\\b.txt", 500);
+        fs.link("docs\\b.txt", "music\\b-link.txt");
+        fs
+    }
+
+    #[test]
+    fn scans_count_hard_links_once() {
+        let fs = linked();
+        let shared = tree_of(&fs);
+        check_links(&shared, &fs);
+        let without = tree_of(&sample());
+        assert_eq!(root_size(&shared), root_size(&without));
+    }
+
+    #[test]
+    fn a_new_hard_link_is_counted_once() {
+        let mut fs = sample();
+        let shared = tree_of(&fs);
+        let before = root_size(&shared);
+        fs.set_id("docs\\b.txt", 500);
+        fs.link("docs\\b.txt", "music\\b-link.txt");
+        let stat = fs.entries[&fold_key(b"music\\b-link.txt")].1;
+        // As reported with extended information (sizes, no link count).
+        let r = run(
+            &shared,
+            &mut fs,
+            vec![Event::Changed {
+                path: b"music\\b-link.txt".to_vec(),
+                info: Info::Present(stat),
+            }],
+        );
+        assert_eq!(r.created, 1);
+        check_links(&shared, &fs);
+        assert_eq!(root_size(&shared), before);
+        // The older name keeps counting the bytes.
+        assert_eq!(counting(&shared, &fs, 500), "docs\\b.txt");
+        // A plain new file costs one link-count probe and nothing else.
+        fs.link_probes = 0;
+        fs.put("music\\new.mp3", file(1));
+        run(&shared, &mut fs, vec![changed("music\\new.mp3")]);
+        assert_eq!(fs.link_probes, 1);
+    }
+
+    #[test]
+    fn removing_the_counting_name_moves_the_bytes() {
+        for first in [false, true] {
+            let mut fs = linked();
+            let shared = tree_of(&fs);
+            let before = root_size(&shared);
+            let sized = counting(&shared, &fs, 500);
+            fs.remove(&sized);
+            let mut events = vec![changed(&sized)];
+            // The removal's notification may come before or after the id.
+            if first {
+                events.insert(0, Event::Unlinked(500));
+            } else {
+                events.push(Event::Unlinked(500));
+            }
+            let r = run(&shared, &mut fs, events);
+            assert_eq!((r.deleted, r.modified), (1, 1));
+            check_links(&shared, &fs);
+            assert_eq!(root_size(&shared), before);
+        }
+        // Removing a name that counts nothing changes nothing else.
+        let mut fs = linked();
+        let shared = tree_of(&fs);
+        let before = root_size(&shared);
+        let sized = counting(&shared, &fs, 500);
+        let other = if sized == "docs\\b.txt" {
+            "music\\b-link.txt"
+        } else {
+            "docs\\b.txt"
+        };
+        fs.remove(other);
+        let r = run(&shared, &mut fs, vec![changed(other), Event::Unlinked(500)]);
+        assert_eq!((r.deleted, r.modified), (1, 0));
+        check_links(&shared, &fs);
+        assert_eq!(root_size(&shared), before);
+        // The last name gone: nothing left to reconcile.
+        fs.remove(&sized);
+        run(
+            &shared,
+            &mut fs,
+            vec![changed(&sized), Event::Unlinked(500)],
+        );
+        check_links(&shared, &fs);
+    }
+
+    #[test]
+    fn writing_through_another_name_updates_the_counting_one() {
+        let mut fs = linked();
+        let shared = tree_of(&fs);
+        let sized = counting(&shared, &fs, 500);
+        let other = if sized == "docs\\b.txt" {
+            "music\\b-link.txt"
+        } else {
+            "docs\\b.txt"
+        };
+        fs.write(other, file(80_000));
+        let r = run(&shared, &mut fs, vec![changed(other)]);
+        assert_eq!(r.modified, 1);
+        check_links(&shared, &fs);
+        assert_eq!(counting(&shared, &fs, 500), sized);
+        // Renaming a name keeps the counts.
+        fs.mv(other, "music\\renamed.txt");
+        let r = run(&shared, &mut fs, vec![renamed(other, "music\\renamed.txt")]);
+        assert_eq!(r.moved, 1);
+        check_links(&shared, &fs);
+    }
+
+    #[test]
+    fn scanned_directories_do_not_count_outside_links_twice() {
+        let mut fs = linked();
+        let shared = tree_of(&fs);
+        let before = root_size(&shared);
+        // A new directory holding another name of docs\b.txt (as a package
+        // manager's store links files into a project).
+        fs.put("proj", dir());
+        fs.put("proj\\deps", dir());
+        fs.link("docs\\b.txt", "proj\\deps\\b.txt");
+        // An empty file as well: it counts no bytes yet, but a later write
+        // through either name must not count them twice.
+        fs.put("docs\\empty", file(0));
+        fs.set_id("docs\\empty", 600);
+        run(&shared, &mut fs, vec![changed("docs\\empty")]);
+        fs.link("docs\\empty", "proj\\deps\\empty");
+        let r = run(&shared, &mut fs, vec![changed("proj")]);
+        assert_eq!(r.created, 1);
+        check_links(&shared, &fs);
+        assert_eq!(root_size(&shared), before);
+        fs.write("docs\\empty", file(7000));
+        let both = || vec![changed("docs\\empty"), changed("proj\\deps\\empty")];
+        run(&shared, &mut fs, both());
+        check_links(&shared, &fs);
+        fs.write("docs\\empty", file(0));
+        run(&shared, &mut fs, both());
+        check_links(&shared, &fs);
+        // A rescanned directory too.
+        let music = get(&shared, "music").unwrap().0;
+        run(&shared, &mut fs, vec![Event::Rescan(music)]);
+        check_links(&shared, &fs);
+        assert_eq!(root_size(&shared), before);
+        // A rescan of the root sees every name: no probes.
+        fs.link_probes = 0;
+        run(&shared, &mut fs, vec![Event::Rescan(NodeId::ROOT)]);
+        assert_eq!(fs.link_probes, 0);
+        check_links(&shared, &fs);
+    }
+
+    #[test]
+    fn link_probes_are_bounded() {
+        let mut fs = sample();
+        let shared = tree_of(&fs);
+        fs.put("many", dir());
+        for i in 0..LINK_PROBES + 10 {
+            fs.put(&format!("many\\{i}"), file(1));
+        }
+        run(&shared, &mut fs, vec![changed("many")]);
+        assert_eq!(fs.link_probes, LINK_PROBES);
+    }
+
     // ---- USN ------------------------------------------------------------
 
     use crate::watch::usn::reason::*;
@@ -1811,5 +2435,121 @@ pub(crate) mod tests {
         let r = u.apply(evs);
         assert_eq!(r.moved, 1);
         assert_eq!(listing(&u.shared), fs_listing(&u.fs));
+    }
+
+    #[test]
+    fn usn_hard_links() {
+        let mut u = Usn::new();
+        let b = u.frn("docs\\b.txt");
+        u.fs.set_id("docs\\b.txt", b);
+        let (docs, music) = (u.frn("docs"), u.frn("music"));
+        let before = root_size(&u.shared);
+        let b_node = get(&u.shared, "docs\\b.txt").unwrap().0;
+        let rec = |parent, name: &str, reason| {
+            Event::Usn(UsnRecord {
+                frn: b,
+                parent_frn: parent,
+                reason,
+                attributes: 0x20,
+                name: name.as_bytes().to_vec(),
+            })
+        };
+
+        // A new name: added, without the bytes.
+        u.fs.link("docs\\b.txt", "music\\b2.txt");
+        let r = u.apply(vec![
+            rec(music, "b2.txt", HARD_LINK_CHANGE),
+            rec(music, "b2.txt", HARD_LINK_CHANGE | CLOSE),
+        ]);
+        assert_eq!(r.created, 1);
+        check_links(&u.shared, &u.fs);
+        assert_eq!(root_size(&u.shared), before);
+        assert_eq!(counting(&u.shared, &u.fs, b), "docs\\b.txt");
+
+        // Renaming that name moves it, not the name the index points at.
+        u.fs.mv("music\\b2.txt", "music\\b3.txt");
+        let r = u.apply(vec![
+            rec(music, "b2.txt", RENAME_OLD_NAME),
+            rec(music, "b3.txt", RENAME_NEW_NAME),
+            rec(music, "b3.txt", RENAME_NEW_NAME | CLOSE),
+        ]);
+        assert_eq!(r.moved, 1);
+        check_links(&u.shared, &u.fs);
+        assert_eq!(get(&u.shared, "docs\\b.txt").unwrap().0, b_node);
+
+        // Written through that name: the counting name follows.
+        u.fs.write("music\\b3.txt", file(90_000));
+        let r = u.apply(vec![rec(music, "b3.txt", DATA_EXTEND | CLOSE)]);
+        assert_eq!(r.modified, 1);
+        check_links(&u.shared, &u.fs);
+
+        // The counting name removed: the other one takes the bytes over,
+        // and the index follows it.
+        u.fs.remove("docs\\b.txt");
+        let r = u.apply(vec![
+            rec(docs, "b.txt", HARD_LINK_CHANGE),
+            rec(docs, "b.txt", HARD_LINK_CHANGE | CLOSE),
+        ]);
+        assert_eq!((r.deleted, r.modified), (1, 1));
+        check_links(&u.shared, &u.fs);
+        let b3 = get(&u.shared, "music\\b3.txt").unwrap().0;
+        assert_eq!(u.st.live(&u.shared.read().unwrap(), b), Some(b3));
+
+        // Both names removed in one batch, in either order: no leftovers.
+        for second_first in [false, true] {
+            u.fs.link("music\\b3.txt", "docs\\b4.txt");
+            u.apply(vec![rec(docs, "b4.txt", HARD_LINK_CHANGE)]);
+            check_links(&u.shared, &u.fs);
+            let (a, z) = if second_first {
+                ((docs, "b4.txt"), (music, "b3.txt"))
+            } else {
+                ((music, "b3.txt"), (docs, "b4.txt"))
+            };
+            let keep = u.fs.clone();
+            u.fs.remove("music\\b3.txt");
+            u.fs.remove("docs\\b4.txt");
+            let r = u.apply(vec![
+                rec(a.0, a.1, HARD_LINK_CHANGE | CLOSE),
+                rec(z.0, z.1, FILE_DELETE | CLOSE),
+            ]);
+            assert_eq!(r.deleted, 2);
+            check_links(&u.shared, &u.fs);
+            // Back for the next round.
+            u.fs = keep;
+            u.fs.remove("docs\\b4.txt");
+            let r = u.apply(vec![rec(music, "b3.txt", HARD_LINK_CHANGE | CLOSE)]);
+            assert_eq!(r.created, 1);
+            check_links(&u.shared, &u.fs);
+        }
+    }
+
+    #[test]
+    fn usn_moving_a_name_out_moves_the_bytes() {
+        let mut u = Usn::new();
+        let b = u.frn("docs\\b.txt");
+        u.fs.set_id("docs\\b.txt", b);
+        let music = u.frn("music");
+        u.fs.link("docs\\b.txt", "music\\b2.txt");
+        let r = u.apply(vec![Event::Usn(UsnRecord {
+            frn: b,
+            parent_frn: music,
+            reason: HARD_LINK_CHANGE | CLOSE,
+            attributes: 0x20,
+            name: b"b2.txt".to_vec(),
+        })]);
+        assert_eq!(r.created, 1);
+        let before = root_size(&u.shared);
+        // The counting name moved out of the watched tree.
+        u.fs.remove("docs\\b.txt");
+        let r = u.apply(vec![Event::Usn(UsnRecord {
+            frn: b,
+            parent_frn: 999_999,
+            reason: RENAME_NEW_NAME | CLOSE,
+            attributes: 0x20,
+            name: b"b.txt".to_vec(),
+        })]);
+        assert_eq!((r.deleted, r.modified), (1, 1));
+        check_links(&u.shared, &u.fs);
+        assert_eq!(root_size(&u.shared), before);
     }
 }

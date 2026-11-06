@@ -12,7 +12,8 @@
 //!   directory are moved along with it, so every entry names the path the
 //!   item has *after* all renames of the batch;
 //! * USN records are keyed by file reference number; reasons accumulate and
-//!   the last record gives the final name and parent.
+//!   the last record gives the final name and parent. Names added or removed
+//!   as hard links are kept apart, since they are names of the same file.
 
 // Without Windows only the unit tests drive this code.
 #![cfg_attr(not(windows), allow(dead_code))]
@@ -59,6 +60,9 @@ pub(crate) enum Event {
     },
     /// A USN change journal record.
     Usn(UsnRecord),
+    /// A name of the file with this id (NTFS file reference) was removed or
+    /// moved away; the file may still have other names (hard links).
+    Unlinked(u64),
     /// Changes were lost below this directory (relative path; empty for
     /// the root): the buffer overflowed or the journal has a gap.
     Overflow(Vec<u8>),
@@ -97,6 +101,8 @@ pub(crate) struct UsnChange {
     pub last_reason: u32,
     /// Where the entry was before its first rename in the batch, if any.
     pub old_location: Option<(u64, Vec<u8>)>,
+    /// Hard links added or removed in the batch: (parent, name) of each.
+    pub links: Vec<(u64, Vec<u8>)>,
 }
 
 /// Everything gathered during one throttle window.
@@ -108,6 +114,8 @@ pub(crate) struct Batch {
     pub usn: Vec<UsnChange>,
     pub overflow: Vec<Vec<u8>>,
     pub rescan: Vec<NodeId>,
+    /// Ids of files that lost a name (may repeat).
+    pub unlinked: Vec<u64>,
     pub failed: Option<String>,
     /// Raw events received.
     pub events: usize,
@@ -122,6 +130,7 @@ pub(crate) struct Coalescer {
     usn_pos: HashMap<u64, usize>,
     overflow: Vec<Vec<u8>>,
     rescan: Vec<NodeId>,
+    unlinked: Vec<u64>,
     failed: Option<String>,
     events: usize,
 }
@@ -139,6 +148,7 @@ impl Coalescer {
             Event::Changed { path, info } => self.set(path, info),
             Event::Renamed { from, to, info } => self.rename(from, to, info),
             Event::Usn(r) => self.push_usn(r),
+            Event::Unlinked(id) => self.unlinked.push(id),
             Event::Overflow(dir) => {
                 if !self.overflow.contains(&dir) {
                     self.overflow.push(dir);
@@ -162,6 +172,7 @@ impl Coalescer {
             usn: c.usn,
             overflow: c.overflow,
             rescan: c.rescan,
+            unlinked: c.unlinked,
             failed: c.failed,
             events: c.events,
         }
@@ -219,22 +230,33 @@ impl Coalescer {
     }
 
     fn push_usn(&mut self, r: UsnRecord) {
-        use super::usn::reason::{RENAME_NEW_NAME, RENAME_OLD_NAME};
+        use super::usn::reason::{
+            FILE_CREATE, FILE_DELETE, HARD_LINK_CHANGE, RENAME_NEW_NAME, RENAME_OLD_NAME,
+        };
         // The record written before a rename carries the old name. Reasons
         // may accumulate into later records, so only a record without the
         // new-name reason is taken as the old location.
         let is_old_name = r.reason & RENAME_OLD_NAME != 0 && r.reason & RENAME_NEW_NAME == 0;
-        match self.usn_pos.get(&r.frn) {
+        // A hard link added or removed: the record names that link. It is
+        // remembered on its own, and a record about nothing else does not
+        // replace the file's name (the link is not where the file went).
+        let link = (r.reason & HARD_LINK_CHANGE != 0).then(|| (r.parent_frn, r.name.clone()));
+        let only_link = link.is_some()
+            && r.reason & (FILE_CREATE | FILE_DELETE | RENAME_OLD_NAME | RENAME_NEW_NAME) == 0;
+        let i = match self.usn_pos.get(&r.frn) {
             Some(&i) => {
                 let e = &mut self.usn[i];
                 if is_old_name && e.old_location.is_none() {
                     e.old_location = Some((r.parent_frn, r.name.clone()));
                 }
-                e.parent_frn = r.parent_frn;
-                e.name = r.name;
+                if !only_link {
+                    e.parent_frn = r.parent_frn;
+                    e.name = r.name;
+                }
                 e.attributes = r.attributes;
                 e.reasons |= r.reason;
                 e.last_reason = r.reason;
+                i
             }
             None => {
                 self.usn_pos.insert(r.frn, self.usn.len());
@@ -247,7 +269,18 @@ impl Coalescer {
                     reasons: r.reason,
                     last_reason: r.reason,
                     old_location,
+                    links: Vec::new(),
                 });
+                self.usn.len() - 1
+            }
+        };
+        if let Some((parent, name)) = link {
+            let links = &mut self.usn[i].links;
+            if !links
+                .iter()
+                .any(|(p, n)| *p == parent && wtf8::eq_ignore_case(n, &name))
+            {
+                links.push((parent, name));
             }
         }
     }
@@ -456,10 +489,12 @@ mod tests {
         c.push(Event::Overflow(Vec::new()));
         c.push(Event::Rescan(NodeId(3)));
         c.push(Event::Rescan(NodeId(3)));
+        c.push(Event::Unlinked(42));
         c.push(Event::Failed("gone".into()));
         let b = c.take();
         assert_eq!(b.overflow, vec![Vec::<u8>::new()]);
         assert_eq!(b.rescan, vec![NodeId(3)]);
+        assert_eq!(b.unlinked, vec![42]);
         assert_eq!(b.failed.as_deref(), Some("gone"));
     }
 
@@ -487,7 +522,40 @@ mod tests {
         assert_eq!((a.frn, a.parent_frn, &a.name[..]), (7, 6, &b"b.txt"[..]));
         assert_eq!(a.reasons, DATA_EXTEND | RENAME_OLD_NAME | RENAME_NEW_NAME);
         assert_eq!(a.old_location, Some((5, b"a.txt".to_vec())));
+        assert!(a.links.is_empty());
         assert_eq!(b.usn[1].last_reason & FILE_DELETE, FILE_DELETE);
+    }
+
+    #[test]
+    fn usn_hard_link_changes_are_kept_per_name() {
+        use super::super::usn::reason::*;
+        let rec = |frn, parent, reason, name: &str| {
+            Event::Usn(UsnRecord {
+                frn,
+                parent_frn: parent,
+                reason,
+                attributes: 0x20,
+                name: name.as_bytes().to_vec(),
+            })
+        };
+        let mut c = Coalescer::default();
+        c.push(rec(7, 5, DATA_EXTEND, "a.txt"));
+        c.push(rec(7, 6, HARD_LINK_CHANGE, "alias.txt"));
+        c.push(rec(7, 6, HARD_LINK_CHANGE | CLOSE, "ALIAS.TXT"));
+        c.push(rec(7, 9, HARD_LINK_CHANGE, "other.txt"));
+        let b = c.take();
+        let a = &b.usn[0];
+        // The links do not move the file's own name.
+        assert_eq!((a.parent_frn, &a.name[..]), (5, &b"a.txt"[..]));
+        assert_eq!(
+            a.links,
+            vec![(6, b"alias.txt".to_vec()), (9, b"other.txt".to_vec())]
+        );
+        // A first record about a link names the entry after it.
+        c.push(rec(8, 6, HARD_LINK_CHANGE, "x"));
+        let b = c.take();
+        assert_eq!(&b.usn[0].name[..], b"x");
+        assert_eq!(b.usn[0].links, vec![(6, b"x".to_vec())]);
     }
 
     #[test]
