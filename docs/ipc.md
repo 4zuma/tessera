@@ -82,12 +82,20 @@ interface DeleteResult {
 | Event | Payload | When |
 | --- | --- | --- |
 | `scan-progress` | `{ scanId, files, dirs, scanned, used, elapsedMs, done, rev, errors }` | every 100 ms while scanning, and once with `done: true` |
-| `tree-changed` | `{ rev, bytesDelta }` | live updates from the watcher, at most every 500 ms |
+| `tree-changed` | `{ rev, bytesDelta }` | live updates from the watcher that can show: at most every 500 ms (2 s while the window is in the background), never while it is minimized (one on restore) |
 
 `scanned` is bytes found so far, `used` is the volume's used bytes (known up front from
 `GetDiskFreeSpaceExW`), so `scanned / used` is the progress and `used - scanned` is the
 "not scanned yet" tile. The frontend asks for a new layout after each event, with at most
 one `layout` call in flight; there is no polling and no timer when nothing changes.
+
+`tree-changed` is held back while a change cannot move anything on screen: the backend keeps
+the last layout it sent and how many bytes changed since (`Tree::changed_bytes`). Below one
+px² of the shown view it stays silent; past that it lays the view out again and sends the
+event only when some edge moved by more than 0.5 px or a tile, colour or size label changed
+(`layout::same_picture`). Changes Windows keeps making on a system drive (logs, caches) thus
+cost no IPC, no layout in the WebView and no frame. `bytesDelta` covers everything since the
+last event.
 
 ## Layout buffer
 
