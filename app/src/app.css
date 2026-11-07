@@ -164,13 +164,25 @@ kbd {
   border-radius: var(--r-card);
 }
 
-/* acrylic surfaces: menus, flyouts, tooltips, toasts */
+/*
+ * Acrylic for transient surfaces (menus, flyouts, tooltips, toasts), as WinUI draws it: the
+ * backdrop blurred by 30 px, blended with the tint (#acrylic in App.svelte, from theme.ts),
+ * 2% noise on top. Mica is only for the window itself.
+ */
 .acrylic {
-  background: var(--acrylic);
-  -webkit-backdrop-filter: blur(30px) saturate(1.25);
-  backdrop-filter: blur(30px) saturate(1.25);
+  background: url('./assets/acrylic-noise.png');
+  -webkit-backdrop-filter: blur(30px) url(#acrylic);
+  backdrop-filter: blur(30px) url(#acrylic);
   border: 1px solid var(--ctl-stroke);
   box-shadow: var(--shadow);
+}
+/* Windows "Transparency effects" off: WinUI paints the acrylic's fallback colour */
+@media (prefers-reduced-transparency: reduce) {
+  .acrylic {
+    background: var(--acrylic-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
 }
 
 .caption {
