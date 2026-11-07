@@ -18,6 +18,7 @@
 // whole pixel; they also get a solid dark outer ring and a white rim, which keep the outline
 // visible on light and dark themes and on any accent-coloured title bar. See docs/brand/README.md.
 
+import { execSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
 import { createRequire } from 'node:module';
@@ -187,15 +188,28 @@ function ico(images) {
   return Buffer.concat([head, ...images.map(i => i.png)]);
 }
 
-async function main() {
-  const require = createRequire(join(process.cwd(), 'noop.js'));
-  let chromium;
+// Playwright is not a dependency of the repo, so look for it next to the working folder, next to
+// the repo, and in npm's global folder (where `npm i -g` puts it; Node does not search there).
+function loadPlaywright() {
+  const dirs = [process.cwd(), root];
   try {
-    ({ chromium } = require('playwright'));
+    dirs.push(execSync('npm root -g', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
   } catch {
-    console.error('Playwright is needed: npm i -g playwright && npx playwright install chromium');
-    process.exit(1);
+    // no npm on PATH: the local folders are all we can try
   }
+  for (const dir of dirs) {
+    try {
+      return createRequire(join(dir, 'noop.js'))('playwright');
+    } catch {
+      // not here, try the next folder
+    }
+  }
+  console.error('Playwright is needed: npm i -g playwright && npx playwright install chromium');
+  process.exit(1);
+}
+
+async function main() {
+  const { chromium } = loadPlaywright();
   mkdirSync(brand, { recursive: true });
   writeFileSync(join(brand, 'tessera.svg'), master());
   for (const n of SMALL) writeFileSync(join(brand, `tessera-${n}.svg`), small(n));
