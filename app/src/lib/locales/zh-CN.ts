@@ -72,7 +72,6 @@ export const zhCN: Partial<Dict> = {
   'cmd.pane': '详情栏',
   'cmd.showPane': '显示详情栏',
   'cmd.hidePane': '隐藏详情栏',
-  'cmd.progress': '扫描进度',
 
   'pane.contains': '包含',
   'pane.modified': '修改时间',
@@ -85,6 +84,7 @@ export const zhCN: Partial<Dict> = {
   'pane.afterScan': '扫描后显示',
 
   'stage.label': '磁盘占用矩形树图。方向键移动选择，回车放大，Backspace 返回上级，Delete 移到回收站',
+  'stage.progress': '扫描进度',
   'stage.rects': '{n} 个矩形',
   'stage.idle': '空闲 · 0 fps',
   'stage.draw': '绘制 {ms} ms',

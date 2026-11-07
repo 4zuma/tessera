@@ -8,8 +8,6 @@
 
   let drivesOpen = $state(false);
 
-  const progress = $derived(app.scan && app.scan.used ? Math.min(1, app.scan.scanned / app.scan.used) : 0);
-
   function pickDrive(root: string) {
     drivesOpen = false;
     void app.startScan(root);
@@ -87,9 +85,6 @@
       <Icon name="pane" />
     </button>
   {/if}
-</div>
-<div class="prog" class:active={app.scanning} role="progressbar" aria-label={t('cmd.progress')} aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(progress * 100)}>
-  <i style:transform="scaleX({progress})"></i>
 </div>
 
 <style>
@@ -257,36 +252,6 @@
   }
   .sbtn[aria-pressed='true'] {
     color: var(--accent);
-  }
-  .prog {
-    flex: none;
-    height: 3px;
-    margin: -3px 16px 0;
-    position: relative;
-    opacity: 0;
-    transition: opacity var(--t-slow) linear 0.4s;
-  }
-  .prog.active {
-    opacity: 1;
-    transition-delay: 0s;
-  }
-  .prog::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 1px;
-    height: 1px;
-    background: var(--ctl-strong);
-    opacity: 0.5;
-  }
-  .prog i {
-    position: absolute;
-    inset: 0;
-    border-radius: 2px;
-    background: var(--accent);
-    transform-origin: left center;
-    transition: transform var(--t-slow) var(--ease-decel);
   }
   @media (max-width: 760px) {
     .lbl {

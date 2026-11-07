@@ -43,16 +43,63 @@ impl Info {
     }
 }
 
-/// Mica needs Windows 11 (build 22000+); elsewhere the WebView paints its own base.
-pub fn apply_backdrop(window: &tauri::WebviewWindow) -> &'static str {
+/// Builds the main window from its entry in tauri.conf.json (which has `"create": false`)
+/// and gives it its backdrop. Returns the window and the backdrop it got ("mica" or "none").
+///
+/// Mica needs Windows 11 (build 22000+). There the window is transparent, so Mica shows
+/// through the WebView. On Windows 10 a transparent window has nothing behind it (the
+/// desktop shows through until the page paints, and in the strip a resize uncovers), so
+/// the window is opaque and painted with what WinUI itself shows when Mica is unavailable:
+/// the theme's solid base colour. The page paints the same colour (`--solid-base`).
+pub fn build_main_window(
+    app: &tauri::App,
+) -> Result<(tauri::WebviewWindow, &'static str), Box<dyn std::error::Error>> {
     use tauri::window::{Effect, EffectsBuilder};
-    if !imp::supports_mica() {
-        return "none";
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == "main")
+        .ok_or("main window missing")?;
+    let mica = imp::supports_mica();
+    let window = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?
+        .transparent(mica)
+        .build()?;
+    if !mica {
+        // still hidden (`"visible": false`), so the colour is in place before the first frame;
+        // the window's theme is the one Windows gave its title bar
+        let theme = window.theme().unwrap_or(tauri::Theme::Light);
+        let _ = window.set_background_color(Some(solid_base(theme)));
+        follow_theme(&window);
+        return Ok((window, "none"));
     }
-    match window.set_effects(EffectsBuilder::new().effect(Effect::Mica).build()) {
+    let backdrop = match window.set_effects(EffectsBuilder::new().effect(Effect::Mica).build()) {
         Ok(()) => "mica",
         Err(_) => "none",
+    };
+    Ok((window, backdrop))
+}
+
+/// WinUI's SolidBackgroundFillColorBase, the colour Mica falls back to. Same values as
+/// `solid-base` in app/src/lib/theme.ts.
+fn solid_base(theme: tauri::Theme) -> tauri::window::Color {
+    if theme == tauri::Theme::Dark {
+        tauri::window::Color(0x20, 0x20, 0x20, 0xff)
+    } else {
+        tauri::window::Color(0xf3, 0xf3, 0xf3, 0xff)
     }
+}
+
+/// Keeps an opaque window's own colour on the current theme, so a resize never uncovers
+/// the other theme's colour before the page repaints.
+fn follow_theme(window: &tauri::WebviewWindow) {
+    let w = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::ThemeChanged(theme) = event {
+            let _ = w.set_background_color(Some(solid_base(*theme)));
+        }
+    });
 }
 
 pub fn relaunch_elevated() -> Result<(), String> {

@@ -8,6 +8,8 @@
   let canvas: HTMLCanvasElement;
   let gpu: HTMLCanvasElement;
 
+  const progress = $derived(app.scan && app.scan.used ? Math.min(1, app.scan.scanned / app.scan.used) : 0);
+
   onMount(() => {
     app.attach(canvas, stage, gpu);
     return () => app.detach();
@@ -87,6 +89,10 @@
     oncontextmenu={onMenu}
     onmouseup={e => e.button === 3 && e.preventDefault()}
   ></canvas>
+  <!-- the scan fills this map, so its progress runs along the map's top edge -->
+  <div class="prog" class:active={app.scanning} role="progressbar" aria-label={t('stage.progress')} aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(progress * 100)}>
+    <i style:transform="scaleX({progress})"></i>
+  </div>
   {#if app.showHud}
     <div class="hud caption tabular" aria-hidden="true">
       <span>{tn('stage.rects', app.stats.rects)}</span>
@@ -124,6 +130,29 @@
   }
   .stage:has(canvas:focus-visible) {
     border-color: var(--accent);
+  }
+  /* along the top edge, inside the border; the stage's rounded corners clip its ends */
+  .prog {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 3px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity var(--t-slow) linear 0.4s;
+  }
+  .prog.active {
+    opacity: 1;
+    transition-delay: 0s;
+  }
+  .prog i {
+    position: absolute;
+    inset: 0;
+    border-radius: 0 2px 2px 0;
+    background: var(--accent);
+    transform-origin: left center;
+    transition: transform var(--t-slow) var(--ease-decel);
   }
   .hud {
     position: absolute;
