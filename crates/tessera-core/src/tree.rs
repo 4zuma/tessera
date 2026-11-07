@@ -140,6 +140,10 @@ impl std::fmt::Debug for NodeFlags {
         if first {
             f.write_str("NONE")?;
         }
+        let cat = self.0 >> 12;
+        if cat != 0 {
+            write!(f, " cat={cat}")?;
+        }
         Ok(())
     }
 }
