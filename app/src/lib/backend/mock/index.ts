@@ -16,6 +16,7 @@ import type {
   PlatformInfo,
   ScanProgress,
   ScanStarted,
+  ShellAction,
   SizeMode,
   Unlisten,
   Volume,
@@ -422,6 +423,11 @@ export class MockBackend implements Backend {
 
   async reveal() {
     /* the preview has no Explorer to open */
+  }
+
+  async shellMenu(): Promise<ShellAction> {
+    /* the preview has no shell menu */
+    return 'none';
   }
 
   async relaunchElevated() {
