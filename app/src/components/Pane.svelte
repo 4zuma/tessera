@@ -83,7 +83,14 @@
         <div class="why caption"><Icon name="lock" size={14} /><span>{app.selInfo.lockReason}</span></div>
       {/if}
     {:else}
-      <div class="empty caption">{t('pane.howTo')}</div>
+      <!-- read like a menu's accelerator column: what you want on the left, how on the right -->
+      <dl class="howto">
+        <div><dt>{t('howTo.select')}</dt><dd>{t('howTo.click')}</dd></div>
+        <div><dt>{t('howTo.add')}</dt><dd><kbd>{t('key.ctrl')}</kbd><span class="plus">+</span>{t('howTo.click')}</dd></div>
+        <div><dt>{t('howTo.range')}</dt><dd><kbd>{t('key.shift')}</kbd><span class="plus">+</span>{t('howTo.click')}</dd></div>
+        <div class="sep"><dt>{t('howTo.zoom')}</dt><dd>{t('howTo.dblClick')}</dd></div>
+        <div><dt>{t('howTo.more')}</dt><dd>{t('howTo.rightClick')}</dd></div>
+      </dl>
     {/if}
   </section>
 
@@ -234,6 +241,53 @@
   }
   .st {
     margin-bottom: 10px;
+  }
+  .howto {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0;
+  }
+  .howto div {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 20px;
+  }
+  /* selecting above, moving around below */
+  .howto .sep {
+    margin-top: 2px;
+    padding-top: 8px;
+    border-top: 1px solid var(--divider);
+  }
+  .howto dt {
+    min-width: 0;
+  }
+  .howto dd {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin: 0;
+    font: 12px/16px var(--font);
+    color: var(--text-2);
+    white-space: nowrap;
+  }
+  .plus {
+    color: var(--text-3);
+  }
+  /* a key cap: a control's fill and elevation stroke, like PowerToys' key visuals */
+  .howto kbd {
+    display: inline-grid;
+    place-items: center;
+    min-width: 22px;
+    height: 20px;
+    padding: 0 6px;
+    border-radius: var(--r-ctl);
+    border: 1px solid var(--ctl-stroke);
+    border-bottom-color: var(--ctl-stroke-2);
+    background: var(--ctl);
+    color: var(--text);
   }
   /* side by side at equal widths; stacked when the labels need more room (English) */
   .sa {
