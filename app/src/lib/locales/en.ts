@@ -87,7 +87,6 @@ export const en = {
   'cmd.pane': 'Details pane',
   'cmd.showPane': 'Show details pane',
   'cmd.hidePane': 'Hide details pane',
-  'cmd.progress': 'Scan progress',
 
   /* details pane */
   'pane.contains': 'Contains',
@@ -102,6 +101,7 @@ export const en = {
 
   /* treemap and status bar */
   'stage.label': 'Treemap of disk usage. Arrow keys move the selection, Enter zooms in, Backspace goes up a level, Delete moves to the Recycle Bin.',
+  'stage.progress': 'Scan progress',
   'stage.rects': '{n} rects',
   'stage.idle': 'Idle · 0 fps',
   'stage.draw': 'Draw {ms} ms',
