@@ -584,13 +584,14 @@ impl Tree {
         // to back, and each name's encoded and plain length), then append
         // them in order and note where each one went.
         let mut placed: Vec<(u32, u16)> = Vec::with_capacity(starts.len());
-        for batch in starts.chunks(256 * 1024) {
+        for batch in starts.chunks(1 << 20) {
             // per slice: the codes back to back; each name's encoded and plain length
             type Piece = (Vec<u8>, Vec<(u16, u16)>);
             let pieces: Vec<Piece> = batch
-                .par_chunks(8 * 1024)
+                .par_chunks(64 * 1024)
                 .map(|ps| {
-                    let mut codes = Vec::new();
+                    // sized to come straight from the OS (and go back to it)
+                    let mut codes = Vec::with_capacity(ps.len() * 24);
                     let mut lens = Vec::with_capacity(ps.len());
                     for &p in ps {
                         let name = name_at(p);
