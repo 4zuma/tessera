@@ -3195,6 +3195,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tessera-core",
+ "webview2-com",
  "windows",
  "windows-version",
 ]

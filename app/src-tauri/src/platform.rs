@@ -1,4 +1,5 @@
-//! Windows integration: Mica backdrop, system accent colour, elevation.
+//! Windows integration: Mica backdrop, system accent colour, elevation, WebView2 memory
+//! while minimized.
 
 use serde::Serialize;
 
@@ -58,6 +59,24 @@ pub fn relaunch_elevated() -> Result<(), String> {
     imp::relaunch_elevated()
 }
 
+/// While the window is minimized, WebView2 is asked to keep its memory low: its processes
+/// collect garbage and drop caches, and Windows may page out what is left. Back to normal
+/// as soon as the window shows again.
+pub fn trim_when_minimized(window: &tauri::WebviewWindow) {
+    use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+    let w = window.clone();
+    let minimized = AtomicBool::new(false);
+    window.on_window_event(move |event| {
+        if !matches!(event, tauri::WindowEvent::Resized(_)) {
+            return;
+        }
+        let now = w.is_minimized().unwrap_or(false);
+        if minimized.swap(now, Relaxed) != now {
+            imp::low_memory(&w, now);
+        }
+    });
+}
+
 #[cfg(windows)]
 mod imp {
     use super::Accent;
@@ -69,7 +88,7 @@ mod imp {
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-    use windows::core::{HSTRING, PCWSTR, w};
+    use windows::core::{HSTRING, Interface, PCWSTR, w};
 
     pub fn supports_mica() -> bool {
         windows_version::OsVersion::current().build >= 22000
@@ -106,6 +125,26 @@ mod imp {
             light: hex(UIColorType::AccentDark1)?,
             dark: hex(UIColorType::AccentLight2)?,
         })
+    }
+
+    pub fn low_memory(window: &tauri::WebviewWindow, low: bool) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL, ICoreWebView2_19,
+        };
+        let level = if low {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+        } else {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+        };
+        let _ = window.with_webview(move |wv| unsafe {
+            // ICoreWebView2_19 needs WebView2 Runtime 1.0.1774 or newer; older ones skip this
+            if let Ok(core) = wv.controller().CoreWebView2()
+                && let Ok(core) = core.cast::<ICoreWebView2_19>()
+            {
+                let _ = core.SetMemoryUsageTargetLevel(level);
+            }
+        });
     }
 
     pub fn relaunch_elevated() -> Result<(), String> {
@@ -145,4 +184,5 @@ mod imp {
     pub fn relaunch_elevated() -> Result<(), String> {
         Err("only supported on Windows".into())
     }
+    pub fn low_memory(_window: &tauri::WebviewWindow, _low: bool) {}
 }
