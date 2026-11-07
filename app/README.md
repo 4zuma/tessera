@@ -18,9 +18,10 @@ this side only receives the rectangles that are on screen (see [`docs/ipc.md`](.
   Rust chose from the Windows preferred languages (see [`docs/ipc.md`](../docs/ipc.md#language)).
   New text goes into every dictionary, never straight into a component.
 - `src-tauri/` – the Tauri 2 crate: the commands and events of the contract on top of
-  `tessera-core` (`src/backend.rs`), the drive list, Mica backdrop, system accent colour,
-  elevation, and the UI language with the text Rust produces (`src/i18n.rs`). It is a
-  member of the root Cargo workspace, so it builds into `../target`.
+  `tessera-core` (`src/backend.rs`), the drive list, the window and its Mica backdrop
+  (on Windows 10, which has no Mica, an opaque window in WinUI's solid fallback colour),
+  system accent colour, elevation, and the UI language with the text Rust produces
+  (`src/i18n.rs`). It is a member of the root Cargo workspace, so it builds into `../target`.
 
 ## Run
 

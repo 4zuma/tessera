@@ -29,13 +29,10 @@ pub fn run() {
     tauri::Builder::default()
         .manage(backend::Core::new())
         .setup(|app| {
+            let (window, backdrop) = platform::build_main_window(app)?;
             // the language, before anything produces text (here COM is already set up
             // on this thread, as the WebView needs it)
             i18n::choice();
-            let window = app
-                .get_webview_window("main")
-                .ok_or("main window missing")?;
-            let backdrop = platform::apply_backdrop(&window);
             platform::trim_when_minimized(&window);
             memlog::start(app.handle());
             app.manage(platform::Info::detect(
