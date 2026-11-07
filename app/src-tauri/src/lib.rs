@@ -76,6 +76,7 @@ pub fn run() {
             backend::empty_recycle_bin,
             backend::reveal,
             backend::shell_menu,
+            backend::shell_menu_prepare,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tessera");

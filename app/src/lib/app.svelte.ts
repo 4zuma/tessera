@@ -34,7 +34,17 @@ export type MenuRow =
   | { type: 'head'; label: string }
   | { type: 'sep' }
   | { type: 'note'; label: string; lock?: boolean }
-  | { type: 'item'; label: string; icon: IconName; key?: string; danger?: boolean; disabled?: boolean; run: () => void };
+  | {
+      type: 'item';
+      label: string;
+      icon: IconName;
+      key?: string;
+      danger?: boolean;
+      disabled?: boolean;
+      run: () => void;
+      /** the pointer or focus is on the item: a click may follow */
+      hint?: () => void;
+    };
 
 export interface MenuData {
   x: number;
@@ -129,6 +139,8 @@ export class App implements EngineHost {
   undoToken = $state<number | null>(null);
   /** Windows' menu is open (or about to be): input on the map waits for it */
   shellBusy = false;
+  /** Windows' menu was used in this session, so get it ready whenever Tessera's menu opens */
+  private shellUsed = false;
   /** where a Shift+click run starts */
   private anchor: number | null = null;
 
@@ -826,8 +838,10 @@ export class App implements EngineHost {
       // last, as in Windows 11's own menu: the full classic menu, opened where this one was
       const mixed = new Set(ids.map(x => this.rectOf(x)?.parent).filter(p => p != null)).size > 1;
       rows.push({ type: 'sep' });
-      rows.push({ type: 'item', icon: 'more', label: t('menu.more'), key: 'Shift+F10', disabled: mixed, run: () => void this.shellMenu(ids, x, y, false) });
+      const hint = () => this.prepareShellMenu(ids);
+      rows.push({ type: 'item', icon: 'more', label: t('menu.more'), key: 'Shift+F10', disabled: mixed, run: () => void this.shellMenu(ids, x, y, false), hint });
       if (mixed) rows.push({ type: 'note', label: t('menu.moreMixed') });
+      else if (this.shellUsed) hint();
     }
     this.menu = { x, y, rows };
   }
@@ -858,6 +872,16 @@ export class App implements EngineHost {
     void this.shellMenu(this.targets(id), x, y, true);
   }
 
+  /**
+   * Have the core load the shell's menu extensions for `ids` in the background (see
+   * app/src-tauri/src/shell_menu.rs), so that Windows' menu opens right away when asked for.
+   */
+  prepareShellMenu(ids: number[]) {
+    ids = ids.filter(isNodeId);
+    if (!ids.length || !this.platform?.core || !this.backend) return;
+    this.backend.shellMenuPrepare(ids).catch(() => {});
+  }
+
   /** Windows' own context menu for `ids` at client point x, y (see app/src-tauri/src/shell_menu.rs) */
   async shellMenu(ids: number[], x: number, y: number, extended: boolean) {
     ids = ids.filter(isNodeId);
@@ -867,8 +891,19 @@ export class App implements EngineHost {
       return;
     }
     this.shellBusy = true;
+    // the first time, the extensions can take seconds to load: a busy cursor if it isn't quick
+    const root = document.documentElement;
+    const wait = setTimeout(() => root.classList.add('wait'), 150);
+    const ready = () => {
+      clearTimeout(wait);
+      root.classList.remove('wait');
+    };
     try {
+      // loaded on a background thread, so the window keeps responding meanwhile
+      await this.backend.shellMenuPrepare(ids);
+      ready();
       const action = await this.backend.shellMenu(ids, x, y, extended);
+      this.shellUsed = true;
       // "Delete" goes through Tessera's own delete: protected folders, undo, the animation
       if (action === 'recycle' || action === 'purge') {
         const why = this.lockWhy(ids);
@@ -879,6 +914,7 @@ export class App implements EngineHost {
     } catch (err) {
       this.fail(t('toast.shellFailed'), err);
     } finally {
+      ready();
       this.shellBusy = false;
       if (!this.confirm) this.focusMap();
     }

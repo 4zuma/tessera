@@ -68,7 +68,15 @@
       {:else if r.type === 'note'}
         <div class="mn caption">{#if r.lock}<Icon name="lock" size={13} />{/if}<span>{r.label}</span></div>
       {:else}
-        <button class="mi" class:danger={r.danger} role="menuitem" disabled={r.disabled} onclick={() => run(r)}>
+        <button
+          class="mi"
+          class:danger={r.danger}
+          role="menuitem"
+          disabled={r.disabled}
+          onclick={() => run(r)}
+          onpointerenter={() => r.hint?.()}
+          onfocus={() => r.hint?.()}
+        >
           <Icon name={r.icon} />
           <span class="ml">{r.label}</span>
           {#if r.key}<kbd class="caption">{r.key}</kbd>{/if}

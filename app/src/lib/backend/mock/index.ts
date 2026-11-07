@@ -425,6 +425,10 @@ export class MockBackend implements Backend {
     /* the preview has no Explorer to open */
   }
 
+  async shellMenuPrepare() {
+    /* the preview has no shell menu */
+  }
+
   async shellMenu(): Promise<ShellAction> {
     /* the preview has no shell menu */
     return 'none';
