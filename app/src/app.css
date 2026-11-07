@@ -43,9 +43,10 @@ body {
 html[data-backdrop="mica"] body {
   background: transparent;
 }
-/* No Mica (Windows 10, or a browser preview): paint a calm, Mica-like base. */
+/* No Mica (Windows 10): the solid base colour WinUI falls back to, the same colour Rust
+   gave the opaque window. (The browser preview draws its own desk and window in App.svelte.) */
 html[data-backdrop="none"] body {
-  background: linear-gradient(135deg, var(--mica-a), var(--mica-b));
+  background: var(--solid-base);
 }
 
 #app {
