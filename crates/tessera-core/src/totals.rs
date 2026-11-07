@@ -153,8 +153,8 @@ impl TotalsCache {
                 top.acc.files += 1;
                 let cat = category::of_node(tree, c) as usize;
                 if cat < category::COUNT {
-                    top.acc.disk[cat] += n.size;
-                    top.acc.logical[cat] += n.logical;
+                    top.acc.disk[cat] += n.size();
+                    top.acc.logical[cat] += n.logical();
                 }
             }
         }
@@ -179,8 +179,8 @@ mod tests {
                 } else {
                     t.files += 1;
                     let cat = category::of_node(tree, c) as usize;
-                    t.disk[cat] += n.size;
-                    t.logical[cat] += n.logical;
+                    t.disk[cat] += n.size();
+                    t.logical[cat] += n.logical();
                 }
             }
         }
@@ -188,11 +188,11 @@ mod tests {
     }
 
     fn file(t: &mut Tree, parent: NodeId, name: &str, size: u64) -> NodeId {
-        t.add_child(parent, name.as_bytes(), size, size, NodeFlags::NONE, 0)
+        t.add_child(parent, name.as_bytes(), size, size, NodeFlags::NONE)
     }
 
     fn dir(t: &mut Tree, parent: NodeId, name: &str) -> NodeId {
-        t.add_child(parent, name.as_bytes(), 0, 0, NodeFlags::DIR, 0)
+        t.add_child(parent, name.as_bytes(), 0, 0, NodeFlags::DIR)
     }
 
     /// A root with `big` (enough files below it to be kept, in two

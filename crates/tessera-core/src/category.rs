@@ -20,10 +20,13 @@
 //! [`of_node`] knows the size, so [`of_name`] alone says video. Matching is case-insensitive on the
 //! text after the last `.`; it allocates nothing and costs one binary search
 //! over a table that is sorted once per process.
+//!
+//! The tree works out [`name_code`] once, when a name is stored, and keeps
+//! it in the node ([`Node::name_cat`]), so [`of_node`] never reads a name.
 
 use std::sync::OnceLock;
 
-use crate::{NodeFlags, NodeId, Tree};
+use crate::{Node, NodeFlags, NodeId, Tree};
 
 pub const OTHER: u8 = 0;
 pub const VIDEO: u8 = 1;
@@ -189,23 +192,39 @@ pub fn of_name(name: &[u8]) -> u8 {
 /// `.ts` files smaller than this are TypeScript, not MPEG transport streams.
 pub const TS_VIDEO_MIN: u64 = 1 << 20;
 
+/// What [`name_code`] gives a `.ts` name: video or dev, by size.
+pub const TS: u8 = COUNT as u8;
+
+const _: () = assert!(TS < 16, "name codes are kept in 4 bits");
+
+/// What a file's name says about its category: [`of_name`], except
+/// [`TS`] for `.ts` names, whose category also depends on the size.
+pub fn name_code(name: &[u8]) -> u8 {
+    let cat = of_name(name);
+    if cat == VIDEO && is_ts(name) { TS } else { cat }
+}
+
 /// Category of a tree node: [`NONE`] for folders, [`SYSTEM`] for NTFS
 /// metadata files, otherwise by extension (with the `.ts` size rule from
 /// the module docs).
+#[inline]
 pub fn of_node(tree: &Tree, id: NodeId) -> u8 {
-    let n = tree.node(id);
+    of(tree.node(id))
+}
+
+/// [`of_node`] for a node at hand.
+#[inline]
+pub fn of(n: &Node) -> u8 {
     if n.is_dir() {
         return NONE;
     }
     if n.flags.contains(NodeFlags::METAFILE) {
         return SYSTEM;
     }
-    let name = tree.name(id);
-    let cat = of_name(name);
-    if cat == VIDEO && n.logical < TS_VIDEO_MIN && is_ts(name) {
-        DEV
-    } else {
-        cat
+    match n.name_cat() {
+        TS if n.logical() < TS_VIDEO_MIN => DEV,
+        TS => VIDEO,
+        cat => cat,
     }
 }
 
@@ -267,23 +286,38 @@ mod tests {
     #[test]
     fn nodes() {
         let mut t = Tree::new(b"C:\\");
-        let d = t.add_child(NodeId::ROOT, b"music.mp3", 0, 0, NodeFlags::DIR, 0);
-        let m = t.add_child(NodeId::ROOT, b"$MFT", 1, 1, NodeFlags::METAFILE, 0);
-        let f = t.add_child(NodeId::ROOT, b"a.mp3", 1, 1, NodeFlags::NONE, 0);
+        let d = t.add_child(NodeId::ROOT, b"music.mp3", 0, 0, NodeFlags::DIR);
+        let m = t.add_child(NodeId::ROOT, b"$MFT", 1, 1, NodeFlags::METAFILE);
+        let f = t.add_child(NodeId::ROOT, b"a.mp3", 1, 1, NodeFlags::NONE);
         assert_eq!(of_node(&t, d), NONE);
         assert_eq!(of_node(&t, m), SYSTEM);
         assert_eq!(of_node(&t, f), AUDIO);
         // Small .ts files are TypeScript; big ones are video.
-        let small = t.add_child(NodeId::ROOT, b"index.d.TS", 4096, 900, NodeFlags::NONE, 0);
-        let big = t.add_child(
-            NodeId::ROOT,
-            b"rec.ts",
-            8 << 20,
-            8 << 20,
-            NodeFlags::NONE,
-            0,
-        );
+        let small = t.add_child(NodeId::ROOT, b"index.d.TS", 4096, 900, NodeFlags::NONE);
+        let big = t.add_child(NodeId::ROOT, b"rec.ts", 8 << 20, 8 << 20, NodeFlags::NONE);
         assert_eq!(of_node(&t, small), DEV);
         assert_eq!(of_node(&t, big), VIDEO);
+    }
+
+    #[test]
+    fn the_node_keeps_its_name_code() {
+        let mut t = Tree::new(b"C:\\");
+        // stray code bits in the flags handed in are ignored
+        let f = t.add_child(
+            NodeId::ROOT,
+            b"notes.txt",
+            1,
+            1,
+            NodeFlags::HIDDEN.with_name_cat(VIDEO),
+        );
+        assert_eq!(of_node(&t, f), DOC);
+        // changing attributes keeps it
+        t.set_flags(f, NodeFlags::SYSTEM.with_name_cat(AUDIO));
+        assert_eq!(of_node(&t, f), DOC);
+        assert!(t.node(f).flags.contains(NodeFlags::SYSTEM));
+        // a rename changes it
+        assert!(t.move_node(f, NodeId::ROOT, b"notes.mp4"));
+        assert_eq!(of_node(&t, f), VIDEO);
+        assert_eq!(t.name(f), b"notes.mp4");
     }
 }

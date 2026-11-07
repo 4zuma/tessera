@@ -150,6 +150,6 @@ fn publish_progress(progress: &ScanProgress, b: &Built) {
     progress.dirs.store(b.dirs, Ordering::Relaxed);
     progress
         .bytes
-        .store(b.tree.node(NodeId::ROOT).size, Ordering::Relaxed);
+        .store(b.tree.node(NodeId::ROOT).size(), Ordering::Relaxed);
     progress.inaccessible.store(b.skipped, Ordering::Relaxed);
 }

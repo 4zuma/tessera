@@ -530,7 +530,6 @@ impl Probe for WinProbe {
                 reparse_tag,
                 size: info.AllocationSize as u64,
                 logical: info.EndOfFile as u64,
-                mtime: crate::tree::mtime_from_filetime(info.LastWriteTime as u64),
             });
         }
         if is_not_found(status) {
@@ -550,10 +549,6 @@ impl Probe for WinProbe {
                     },
                     size: logical,
                     logical,
-                    mtime: crate::tree::mtime_from_filetime(
-                        ((d.ftLastWriteTime.dwHighDateTime as u64) << 32)
-                            | d.ftLastWriteTime.dwLowDateTime as u64,
-                    ),
                 })
             }
             Err(2 | 3) => Info::Gone, // ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND

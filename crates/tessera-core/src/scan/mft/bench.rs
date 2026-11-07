@@ -234,7 +234,7 @@ fn synthetic_mft() {
     let mib = |x: u64| x as f64 / 1048576.0;
     eprintln!(
         "synthetic MFT: {n} records -> {} nodes in {elapsed:?} ({:.0} records/s, {} threads)\n\
-         tree {:.1} MiB (nodes {:.1}, names {:.1}) = {:.1} B/node; FRN index {:.1} MiB\n\
+         tree {:.1} MiB (nodes {:.1}, names {:.1}, uncompressed {:.1}) = {:.1} B/node; FRN index {:.1} MiB\n\
          peak RSS {} (before scan {})",
         t.len(),
         n as f64 / elapsed.as_secs_f64(),
@@ -242,6 +242,7 @@ fn synthetic_mft() {
         mib(mem.total() as u64),
         mib(mem.nodes as u64),
         mib(mem.names as u64),
+        mib(mem.names_raw as u64),
         mem.total() as f64 / t.len() as f64,
         mib(b.frn.heap_bytes() as u64),
         rss(peak),
@@ -257,7 +258,7 @@ fn synthetic_mft() {
         .filter(|r| (r - 16) % 10 != 0)
         .map(|r| (r % 50_000) * 7)
         .sum::<u64>();
-    assert_eq!(t.node(NodeId::ROOT).logical, expected + (n * RS as u64));
+    assert_eq!(t.node(NodeId::ROOT).logical(), expected + (n * RS as u64));
     let t1 = Instant::now();
     t.check_invariants().unwrap();
     eprintln!("check_invariants: {:?}", t1.elapsed());

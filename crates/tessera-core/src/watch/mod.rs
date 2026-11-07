@@ -566,7 +566,7 @@ mod tests {
         assert_eq!(events, 1000);
         let t = h.shared.read().unwrap();
         let f = t.lookup_relative(b"d\\f.log").unwrap();
-        assert_eq!(t.node(f).logical, 64_000);
+        assert_eq!(t.node(f).logical(), 64_000);
         drop(t);
         h.finish();
     }

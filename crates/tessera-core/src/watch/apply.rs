@@ -89,8 +89,6 @@ pub(crate) struct Stat {
     pub size: u64,
     /// Logical length.
     pub logical: u64,
-    /// Last write time ([`crate::Node::mtime`] units, 0 = unknown).
-    pub mtime: u32,
 }
 
 impl Stat {
@@ -265,7 +263,7 @@ impl Tree {
             if !out.is_empty() {
                 out.push(b'\\');
             }
-            out.extend_from_slice(self.name(n));
+            out.extend_from_slice(&self.name(n));
         }
         out
     }
@@ -287,10 +285,11 @@ impl Tree {
             // the name decides a file's category
             let parent = self.node(id).parent;
             self.touch(parent);
-            let off = self.names.push(new_name);
+            let (off, len) = self.names.push(new_name);
             let n = self.node_mut(id);
             n.name_off = off;
-            n.name_len = new_name.len() as u16;
+            n.name_len = len;
+            n.flags = n.flags.with_name_cat(crate::category::name_code(new_name));
         }
         let n = *self.node(id);
         if n.parent == new_parent {
@@ -309,7 +308,7 @@ impl Tree {
         } else {
             self.node_mut(prev).next_sibling = n.next_sibling;
         }
-        self.add_to_ancestors(old, n.size.wrapping_neg(), n.logical.wrapping_neg());
+        self.add_to_ancestors(old, n.size().wrapping_neg(), n.logical().wrapping_neg());
         // Link at the head of the new parent's list.
         let first = self.node(new_parent).first_child;
         let m = self.node_mut(id);
@@ -317,7 +316,7 @@ impl Tree {
         m.next_sibling = first;
         let p = self.node_mut(new_parent);
         p.first_child = id;
-        self.add_to_ancestors(new_parent, n.size, n.logical);
+        self.add_to_ancestors(new_parent, n.size(), n.logical());
         true
     }
 }
@@ -500,13 +499,9 @@ impl Applier<'_> {
             // Another name counts the bytes; it is brought up to date (or
             // this one takes over) after the batch.
             self.check_links(id);
-        } else if !n.is_dir() && (n.size != stat.size || n.logical != stat.logical) {
+        } else if !n.is_dir() && (n.size() != stat.size || n.logical() != stat.logical) {
             self.tree.set_file_size(id, stat.size, stat.logical);
             changed = true;
-        }
-        // A new time alone doesn't move any rectangle: not counted as a change.
-        if stat.mtime != 0 && n.mtime != stat.mtime {
-            self.tree.set_mtime(id, stat.mtime);
         }
         if changed {
             self.t.modified += 1;
@@ -534,7 +529,6 @@ impl Applier<'_> {
             size,
             logical,
             flags,
-            stat.mtime,
         );
         self.t.created += 1;
         self.t.dirs.insert(parent);
@@ -841,7 +835,7 @@ impl Applier<'_> {
                 return;
             };
             let n = *self.tree.node(id);
-            if n.parent != p || self.tree.name(id) != &c.name[..] {
+            if n.parent != p || self.tree.name(id) != c.name[..] {
                 match self.tree.find_child(p, &c.name) {
                     Some(other) if other != id => self.delete(other),
                     _ => {}
@@ -921,7 +915,7 @@ impl Applier<'_> {
                 flags.insert(NodeFlags::HARDLINK);
                 (0, 0)
             };
-            if flags == n.flags && size == n.size && logical == n.logical {
+            if flags == n.flags && size == n.size() && logical == n.logical() {
                 continue;
             }
             self.tree.set_flags(id, flags);
@@ -1307,7 +1301,6 @@ pub(crate) mod tests {
             reparse_tag: 0,
             size: size.div_ceil(4096) * 4096,
             logical: size,
-            mtime: 0,
         }
     }
 
@@ -1419,7 +1412,7 @@ pub(crate) mod tests {
                 } else {
                     (stat.size, stat.logical)
                 };
-                b.push_wtf8(name, s, l, flags, stat.mtime);
+                b.push_wtf8(name, s, l, flags);
                 if stat.is_dir() && !stat.flags().contains(NodeFlags::REPARSE) {
                     subdirs.push(path.clone());
                 }
@@ -1529,7 +1522,7 @@ pub(crate) mod tests {
         let t = shared.read().unwrap();
         let id = t.lookup_relative(rel.as_bytes())?;
         let n = t.node(id);
-        Some((id, n.size, n.logical, n.flags))
+        Some((id, n.size(), n.logical(), n.flags))
     }
 
     /// The live tree as sorted `path size/logical` lines.
@@ -1544,7 +1537,7 @@ pub(crate) mod tests {
                 out.push(if n.is_dir() {
                     format!("{path}\\")
                 } else {
-                    format!("{path} {}/{}", n.size, n.logical)
+                    format!("{path} {}/{}", n.size(), n.logical())
                 });
                 stack.push(c);
             }
@@ -1596,12 +1589,12 @@ pub(crate) mod tests {
         let old = t.lookup_relative(b"docs\\old").unwrap();
         let music = t.lookup_relative(b"music").unwrap();
         let docs = t.lookup_relative(b"docs").unwrap();
-        let before = t.node(NodeId::ROOT).size;
+        let before = t.node(NodeId::ROOT).size();
         assert!(t.move_node(old, music, b"archive"));
         t.check_invariants().unwrap();
         assert!(t.lookup_relative(b"music\\archive\\c.bin").is_some());
         assert_eq!(t.child_count(docs), 2);
-        assert_eq!(t.node(NodeId::ROOT).size, before);
+        assert_eq!(t.node(NodeId::ROOT).size(), before);
         // Into its own subtree, or the root: refused.
         assert!(!t.move_node(music, old, b"loop"));
         assert!(!t.move_node(NodeId::ROOT, music, b"x"));
@@ -1980,7 +1973,7 @@ pub(crate) mod tests {
     fn root_size(shared: &SharedTree) -> (u64, u64) {
         let t = shared.read().unwrap();
         let n = t.node(NodeId::ROOT);
-        (n.size, n.logical)
+        (n.size(), n.logical())
     }
 
     /// The tree has the paths of `fs`, and each file's bytes are counted on
@@ -2002,7 +1995,7 @@ pub(crate) mod tests {
                 None => {
                     let n = t.node(t.lookup_relative(path).unwrap());
                     assert!(!n.flags.contains(NodeFlags::HARDLINK));
-                    assert_eq!((n.size, n.logical), (stat.size, stat.logical));
+                    assert_eq!((n.size(), n.logical()), (stat.size, stat.logical));
                 }
             }
         }
@@ -2019,13 +2012,13 @@ pub(crate) mod tests {
             let names: Vec<_> = paths.iter().map(|p| String::from_utf8_lossy(p)).collect();
             assert_eq!(counting.len(), 1, "one of {names:?} counts the bytes");
             assert_eq!(
-                (counting[0].size, counting[0].logical),
+                (counting[0].size(), counting[0].logical()),
                 (stat.size, stat.logical),
                 "{names:?}"
             );
             for n in &nodes {
                 if n.flags.contains(NodeFlags::HARDLINK) {
-                    assert_eq!((n.size, n.logical), (0, 0), "{names:?}");
+                    assert_eq!((n.size(), n.logical()), (0, 0), "{names:?}");
                 }
             }
         }

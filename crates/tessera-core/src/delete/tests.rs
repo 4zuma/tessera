@@ -66,17 +66,17 @@ fn covered_paths() {
 #[test]
 fn restore_deleted_reverses_mark_deleted() {
     let mut t = Tree::new(b"R:\\");
-    let d = t.add_child(NodeId::ROOT, b"d", 0, 0, NodeFlags::DIR, 0);
+    let d = t.add_child(NodeId::ROOT, b"d", 0, 0, NodeFlags::DIR);
     let mut b = EntryBatch::new();
-    b.push_wtf8(b"a", 4096, 100, NodeFlags::NONE, 0);
-    b.push_wtf8(b"b", 8192, 5000, NodeFlags::NONE, 0);
+    b.push_wtf8(b"a", 4096, 100, NodeFlags::NONE);
+    b.push_wtf8(b"b", 8192, 5000, NodeFlags::NONE);
     let r = t.add_children(d, &b);
     let (a, bb) = (NodeId(r.start), NodeId(r.start + 1));
-    t.add_child(NodeId::ROOT, b"keep", 4096, 1, NodeFlags::NONE, 0);
+    t.add_child(NodeId::ROOT, b"keep", 4096, 1, NodeFlags::NONE);
 
     assert!(t.mark_deleted(a)); // deleted before its folder
     assert!(t.mark_deleted(d));
-    assert_eq!(t.node(NodeId::ROOT).size, 4096);
+    assert_eq!(t.node(NodeId::ROOT).size(), 4096);
     assert!(
         !t.restore_deleted(bb),
         "only the deleted node itself can be restored"
@@ -85,11 +85,11 @@ fn restore_deleted_reverses_mark_deleted() {
     assert!(t.restore_deleted(d));
     assert!(!t.restore_deleted(d));
     t.check_invariants().unwrap();
-    assert_eq!(t.node(NodeId::ROOT).size, 4096 + 8192);
+    assert_eq!(t.node(NodeId::ROOT).size(), 4096 + 8192);
     assert!(t.is_deleted(a) && !t.is_deleted(bb));
     assert!(t.restore_deleted(a));
     t.check_invariants().unwrap();
-    assert_eq!(t.node(NodeId::ROOT).logical, 5101);
+    assert_eq!(t.node(NodeId::ROOT).logical(), 5101);
     assert_eq!(t.child_count(d), 2);
 }
 
@@ -154,11 +154,11 @@ mod unix {
         let mut chain = vec![];
         for comp in home.components().skip(1) {
             let name = comp.as_os_str().to_string_lossy().into_owned();
-            cur = t.add_child(cur, name.as_bytes(), 0, 0, NodeFlags::DIR, 0);
+            cur = t.add_child(cur, name.as_bytes(), 0, 0, NodeFlags::DIR);
             chain.push(cur.0);
         }
-        let inside = t.add_child(cur, b"file", 1, 1, NodeFlags::NONE, 0);
-        let other = t.add_child(NodeId::ROOT, b"tessera-elsewhere", 1, 1, NodeFlags::NONE, 0);
+        let inside = t.add_child(cur, b"file", 1, 1, NodeFlags::NONE);
+        let other = t.add_child(NodeId::ROOT, b"tessera-elsewhere", 1, 1, NodeFlags::NONE);
         let p = protected_nodes(&t);
         assert!(p.contains(&0), "the volume root");
         for id in chain {
@@ -186,10 +186,10 @@ mod unix {
 
         let mut t = Tree::new(base.to_str().unwrap().as_bytes());
         let mut b = EntryBatch::new();
-        b.push_wtf8(b"a.bin", 4096, 10, NodeFlags::NONE, 0);
-        b.push_wtf8(b"dir", 0, 0, NodeFlags::DIR, 0);
-        b.push_wtf8(b"keep.bin", 4096, 40, NodeFlags::NONE, 0);
-        b.push_wtf8(b"ghost.bin", 4096, 50, NodeFlags::NONE, 0); // not on disk
+        b.push_wtf8(b"a.bin", 4096, 10, NodeFlags::NONE);
+        b.push_wtf8(b"dir", 0, 0, NodeFlags::DIR);
+        b.push_wtf8(b"keep.bin", 4096, 40, NodeFlags::NONE);
+        b.push_wtf8(b"ghost.bin", 4096, 50, NodeFlags::NONE); // not on disk
         let r = t.add_children(NodeId::ROOT, &b);
         let (a, dir, keep, ghost) = (
             NodeId(r.start),
@@ -198,12 +198,12 @@ mod unix {
             NodeId(r.start + 3),
         );
         b.clear();
-        b.push_wtf8(b"b.bin", 4096, 20, NodeFlags::NONE, 0);
-        b.push_wtf8(b"sub", 0, 0, NodeFlags::DIR, 0);
+        b.push_wtf8(b"b.bin", 4096, 20, NodeFlags::NONE);
+        b.push_wtf8(b"sub", 0, 0, NodeFlags::DIR);
         let r = t.add_children(dir, &b);
         let sub = NodeId(r.start + 1);
         b.clear();
-        b.push_wtf8(b"c.bin", 4096, 30, NodeFlags::NONE, 0);
+        b.push_wtf8(b"c.bin", 4096, 30, NodeFlags::NONE);
         let c = NodeId(t.add_children(sub, &b).start);
         let tree = t.into_shared();
 
@@ -225,8 +225,8 @@ mod unix {
         assert!(!base.join("a.bin").exists() && !base.join("dir").exists());
         assert!(base.join("keep.bin").exists());
         let t = tree.read().unwrap();
-        assert_eq!(t.node(NodeId::ROOT).size, 4096);
-        assert_eq!(t.node(NodeId::ROOT).logical, 40);
+        assert_eq!(t.node(NodeId::ROOT).size(), 4096);
+        assert_eq!(t.node(NodeId::ROOT).logical(), 40);
         assert_eq!(t.children(NodeId::ROOT).collect::<Vec<_>>(), vec![keep]);
         t.check_invariants().unwrap();
         drop(t);
@@ -246,20 +246,13 @@ mod unix {
         std::fs::create_dir_all(base.join("d")).unwrap();
         std::fs::write(base.join("d/stays.bin"), [0u8; 1]).unwrap();
         let mut t = Tree::new(base.to_str().unwrap().as_bytes());
-        let d = t.add_child(NodeId::ROOT, b"d", 0, 0, NodeFlags::DIR, 0);
+        let d = t.add_child(NodeId::ROOT, b"d", 0, 0, NodeFlags::DIR);
         let mut b = EntryBatch::new();
-        b.push_wtf8(b"stays.bin", 4096, 1, NodeFlags::NONE, 0);
-        b.push_wtf8(b"vanished.bin", 8192, 5000, NodeFlags::NONE, 0);
-        b.push_wtf8(b"gone-dir", 0, 0, NodeFlags::DIR, 0);
+        b.push_wtf8(b"stays.bin", 4096, 1, NodeFlags::NONE);
+        b.push_wtf8(b"vanished.bin", 8192, 5000, NodeFlags::NONE);
+        b.push_wtf8(b"gone-dir", 0, 0, NodeFlags::DIR);
         let r = t.add_children(d, &b);
-        t.add_child(
-            NodeId(r.start + 2),
-            b"deep.bin",
-            4096,
-            7,
-            NodeFlags::NONE,
-            0,
-        );
+        t.add_child(NodeId(r.start + 2), b"deep.bin", 4096, 7, NodeFlags::NONE);
         let tree = t.into_shared();
 
         // `d` survives (as if the user skipped `stays.bin`), so its

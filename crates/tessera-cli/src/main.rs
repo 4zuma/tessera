@@ -198,7 +198,7 @@ fn cmd_scan(args: &Args) -> Result<(), String> {
     let root = tree.node(NodeId::ROOT);
 
     let mut top_dirs: Vec<NodeId> = tree.children(NodeId::ROOT).collect();
-    top_dirs.sort_by_key(|&c| std::cmp::Reverse(tree.node(c).size));
+    top_dirs.sort_by_key(|&c| std::cmp::Reverse(tree.node(c).size()));
     top_dirs.truncate(args.top);
     let top_files = largest_files(&tree, args.top);
 
@@ -211,9 +211,12 @@ fn cmd_scan(args: &Args) -> Result<(), String> {
         j.num("dirs", summary.dirs);
         j.num("inaccessible", summary.inaccessible);
         j.num("nodes", tree.len() as u64);
-        j.num("size_on_disk", root.size);
-        j.num("logical_size", root.logical);
+        j.num("size_on_disk", root.size());
+        j.num("logical_size", root.logical());
         j.num("tree_bytes", tmem.total() as u64);
+        j.num("node_bytes", tmem.nodes as u64);
+        j.num("name_bytes", tmem.names as u64);
+        j.num("name_bytes_uncompressed", tmem.names_raw as u64);
         j.num("working_set", mem.working_set);
         j.num("peak_working_set", mem.peak_working_set);
         j.num("private_bytes", mem.private_bytes);
@@ -238,8 +241,8 @@ fn cmd_scan(args: &Args) -> Result<(), String> {
     );
     println!(
         "  total          {} on disk, {} logical",
-        human(root.size),
-        human(root.logical)
+        human(root.size()),
+        human(root.logical())
     );
     if let Some(v) = &summary.volume {
         println!(
@@ -250,10 +253,11 @@ fn cmd_scan(args: &Args) -> Result<(), String> {
         );
     }
     println!(
-        "  tree memory    {} ({} nodes, {} names)",
+        "  tree memory    {} ({} nodes, {} names; names uncompressed {})",
         human(tmem.total() as u64),
         human(tmem.nodes as u64),
-        human(tmem.names as u64)
+        human(tmem.names as u64),
+        human(tmem.names_raw as u64)
     );
     println!(
         "  process memory {} working set, {} peak, {} private",
@@ -267,7 +271,7 @@ fn cmd_scan(args: &Args) -> Result<(), String> {
             let n = tree.node(c);
             println!(
                 "  {:>10}  {}{}",
-                human(n.size),
+                human(n.size()),
                 tree.name_lossy(c),
                 if n.is_dir() { "\\" } else { "" }
             );
@@ -276,7 +280,11 @@ fn cmd_scan(args: &Args) -> Result<(), String> {
     if !top_files.is_empty() {
         println!("\nlargest files");
         for f in top_files {
-            println!("  {:>10}  {}", human(tree.node(f).size), tree.path_lossy(f));
+            println!(
+                "  {:>10}  {}",
+                human(tree.node(f).size()),
+                tree.path_lossy(f)
+            );
         }
     }
     Ok(())
@@ -370,11 +378,15 @@ fn cmd_bench(args: &Args) -> Result<(), String> {
     j.num("dirs", summary.dirs);
     j.num("inaccessible", summary.inaccessible);
     j.num("nodes", t.len() as u64);
-    j.num("size_on_disk", t.node(NodeId::ROOT).size);
+    j.num("size_on_disk", t.node(NodeId::ROOT).size());
     if let Some(v) = &summary.volume {
         j.num("volume_used", v.total_bytes.saturating_sub(v.free_bytes));
     }
-    j.num("tree_bytes", t.memory().total() as u64);
+    let tmem = t.memory();
+    j.num("tree_bytes", tmem.total() as u64);
+    j.num("node_bytes", tmem.nodes as u64);
+    j.num("name_bytes", tmem.names as u64);
+    j.num("name_bytes_uncompressed", tmem.names_raw as u64);
     j.num("working_set_after_scan", after_scan.working_set);
     j.num("private_bytes_after_scan", after_scan.private_bytes);
     j.num("peak_working_set", after_scan.peak_working_set);
@@ -448,7 +460,7 @@ fn cmd_watch(args: &Args) -> Result<(), String> {
             summary.elapsed.as_secs_f64(),
             summary.files,
             summary.dirs,
-            human(t.node(NodeId::ROOT).size)
+            human(t.node(NodeId::ROOT).size())
         );
     }
     let start = Instant::now();
@@ -456,7 +468,7 @@ fn cmd_watch(args: &Args) -> Result<(), String> {
     let watcher = start_watcher(args, &tree, &mut summary, move |r| {
         let total = shared
             .read()
-            .map(|t| t.node(NodeId::ROOT).size)
+            .map(|t| t.node(NodeId::ROOT).size())
             .unwrap_or(0);
         println!(
             "{:>8.1}s  {} events -> +{} -{} ~{} moved {}{}{}  total {}",
@@ -502,14 +514,14 @@ fn largest_files(tree: &Tree, n: usize) -> Vec<NodeId> {
     for i in 1..tree.len() as u32 {
         let id = NodeId(i);
         let node = tree.node(id);
-        if node.is_dir() || node.size == 0 {
+        if node.is_dir() || node.size() == 0 {
             continue;
         }
         if heap.len() < n {
-            heap.push(std::cmp::Reverse((node.size, id)));
-        } else if heap.peek().is_some_and(|m| m.0.0 < node.size) {
+            heap.push(std::cmp::Reverse((node.size(), id)));
+        } else if heap.peek().is_some_and(|m| m.0.0 < node.size()) {
             heap.pop();
-            heap.push(std::cmp::Reverse((node.size, id)));
+            heap.push(std::cmp::Reverse((node.size(), id)));
         }
     }
     let mut v: Vec<(u64, NodeId)> = heap.into_iter().map(|r| r.0).collect();
@@ -616,7 +628,7 @@ mod tests {
         let mut t = Tree::new(b"X:\\");
         let mut b = tessera_core::EntryBatch::new();
         for (i, s) in [5u64, 50, 7, 900, 3].iter().enumerate() {
-            b.push_wtf8(format!("f{i}").as_bytes(), *s, *s, Default::default(), 0);
+            b.push_wtf8(format!("f{i}").as_bytes(), *s, *s, Default::default());
         }
         t.add_children(NodeId::ROOT, &b);
         let top: Vec<String> = largest_files(&t, 2)

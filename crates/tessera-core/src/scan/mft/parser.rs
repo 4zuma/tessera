@@ -9,7 +9,7 @@
 //! [`parse_record`] reduces one record to a few compact facts (sizes, flags,
 //! names) appended to a [`ParsedBatch`]; nothing else of the record is kept.
 
-use crate::tree::NodeFlags;
+use crate::tree::{Encoder, NodeFlags};
 use crate::wtf8;
 
 // ---- Attribute type codes -------------------------------------------------
@@ -121,9 +121,6 @@ pub(crate) struct RecFacts {
     pub size: u64,
     /// Logical length of the unnamed `$DATA` stream.
     pub logical: u64,
-    /// Last write time from `$STANDARD_INFORMATION` ([`crate::Node::mtime`]
-    /// units; 0 if absent, e.g. in extension records).
-    pub mtime: u32,
 }
 
 /// One non-DOS `$FILE_NAME` of a record.
@@ -162,6 +159,14 @@ pub(crate) struct ParsedBatch {
     pub extras: Vec<ExtraFacts>,
     /// In-use records that could not be parsed (torn or corrupt).
     pub corrupt: u32,
+    /// [`category::name_code`](crate::category::name_code) of each name,
+    /// from [`ParsedBatch::prepare_names`].
+    pub name_codes: Vec<u8>,
+    /// The names encoded ahead of time by [`ParsedBatch::prepare_names`]:
+    /// the encoder, the encodings back to back, and where each one ends.
+    pub encoded_by: Option<Encoder>,
+    pub encoded: Vec<u8>,
+    pub encoded_ends: Vec<u32>,
 }
 
 impl ParsedBatch {
@@ -172,7 +177,44 @@ impl ParsedBatch {
             name_bytes: Vec::with_capacity(records * 24),
             extras: Vec::new(),
             corrupt: 0,
+            name_codes: Vec::new(),
+            encoded_by: None,
+            encoded: Vec::new(),
+            encoded_ends: Vec::new(),
         }
+    }
+
+    /// Works out what merging needs from each name (on a parser thread, so
+    /// that merging does not have to): its category code and, once the
+    /// tree's name pool compresses names, its encoding.
+    pub fn prepare_names(&mut self, enc: Option<&Encoder>) {
+        self.name_codes.clear();
+        self.encoded.clear();
+        self.encoded_ends.clear();
+        if enc.is_some() {
+            self.encoded.reserve(self.name_bytes.len());
+        }
+        for n in &self.names {
+            let name = &self.name_bytes[n.start as usize..n.start as usize + n.len as usize];
+            self.name_codes.push(crate::category::name_code(name));
+            if let Some(enc) = enc {
+                enc.encode(name, &mut self.encoded);
+                self.encoded_ends.push(self.encoded.len() as u32);
+            }
+        }
+        self.encoded_by = enc.cloned();
+    }
+
+    /// The `k`-th name as [`ParsedBatch::prepare_names`] encoded it.
+    pub fn encoded_name(&self, k: usize) -> Option<(&[u8], &Encoder)> {
+        let enc = self.encoded_by.as_ref()?;
+        let end = *self.encoded_ends.get(k)? as usize;
+        let start = if k == 0 {
+            0
+        } else {
+            self.encoded_ends[k - 1] as usize
+        };
+        Some((&self.encoded[start..end], enc))
     }
 
     pub fn name(&self, n: &NameFacts) -> &[u8] {
@@ -631,7 +673,6 @@ pub(crate) fn parse_record(rec_no: u32, rec: &mut [u8], out: &mut ParsedBatch) {
         }
     }
     let (mut size, mut logical) = (0u64, 0u64);
-    let mut mtime = 0u32;
     let mut extra = ExtraFacts {
         rec: target,
         ..ExtraFacts::default()
@@ -643,10 +684,6 @@ pub(crate) fn parse_record(rec_no: u32, rec: &mut [u8], out: &mut ParsedBatch) {
                 if let Some(v) = attr.resident_value() {
                     if let Some(a) = u32_at(v, 0x20) {
                         flags |= standard_info_flags(a);
-                    }
-                    // Offset 0x08: last modification (write) time, a FILETIME.
-                    if let Some(t) = u64_at(v, 0x08) {
-                        mtime = crate::tree::mtime_from_filetime(t);
                     }
                 }
             }
@@ -740,7 +777,6 @@ pub(crate) fn parse_record(rec_no: u32, rec: &mut [u8], out: &mut ParsedBatch) {
         flags,
         size,
         logical,
-        mtime,
     });
 }
 
@@ -837,7 +873,6 @@ mod tests {
                 flags: F_IN_USE | F_HIDDEN | F_SYSTEM | F_HAS_NAME,
                 size: 12288,
                 logical: 10_000,
-                mtime: 0,
             }]
         );
         let names: Vec<(&[u8], u32, u16)> = out

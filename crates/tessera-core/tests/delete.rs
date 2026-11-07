@@ -87,7 +87,7 @@ fn tree_of(root: &Path) -> SharedTree {
             let md = e.metadata().unwrap();
             let name = e.file_name().to_string_lossy().into_owned();
             if md.is_dir() {
-                b.push_wtf8(name.as_bytes(), 0, 0, NodeFlags::DIR, 0);
+                b.push_wtf8(name.as_bytes(), 0, 0, NodeFlags::DIR);
             } else {
                 let len = md.len();
                 b.push_wtf8(
@@ -95,7 +95,6 @@ fn tree_of(root: &Path) -> SharedTree {
                     len.div_ceil(4096) * 4096,
                     len,
                     NodeFlags::NONE,
-                    0,
                 );
             }
         }
@@ -355,7 +354,7 @@ fn purge_updates_tree() {
     let folder = find(&tree, "folder");
     let c = find(&tree, r"folder\sub\c.bin");
     let keep = find(&tree, "keep.txt");
-    assert_eq!(tree.read().unwrap().node(NodeId::ROOT).logical, 9010);
+    assert_eq!(tree.read().unwrap().node(NodeId::ROOT).logical(), 9010);
 
     let res = purge(&tree, &[c, a, folder, NodeId::ROOT, a], &silent()).unwrap();
     // `c` goes with `folder`; the duplicate `a` is reported once.
@@ -375,8 +374,8 @@ fn purge_updates_tree() {
     assert!(dir.0.join("keep.txt").exists());
     let t = tree.read().unwrap();
     assert_eq!(t.children(NodeId::ROOT).collect::<Vec<_>>(), vec![keep]);
-    assert_eq!(t.node(NodeId::ROOT).logical, 10);
-    assert_eq!(t.node(NodeId::ROOT).size, 4096);
+    assert_eq!(t.node(NodeId::ROOT).logical(), 10);
+    assert_eq!(t.node(NodeId::ROOT).size(), 4096);
     assert!(t.is_deleted(c));
     t.check_invariants().unwrap();
     drop(t);
@@ -416,7 +415,7 @@ fn recycle_and_restore() {
     {
         let t = tree.read().unwrap();
         assert!(t.is_deleted(doc) && t.is_deleted(inner));
-        assert_eq!(t.node(NodeId::ROOT).logical, 10);
+        assert_eq!(t.node(NodeId::ROOT).logical(), 10);
         t.check_invariants().unwrap();
     }
 
@@ -436,7 +435,10 @@ fn recycle_and_restore() {
     let t = tree.read().unwrap();
     assert!(!t.is_deleted(doc) && !t.is_deleted(inner));
     let after = t.node(NodeId::ROOT);
-    assert_eq!((after.size, after.logical), (before.size, before.logical));
+    assert_eq!(
+        (after.size(), after.logical()),
+        (before.size(), before.logical())
+    );
     assert_eq!(t.child_count(NodeId::ROOT), kids_before);
     t.check_invariants().unwrap();
     drop(t);
@@ -569,7 +571,7 @@ fn tree_lock_is_free_while_the_shell_works() {
     let res = worker.join().unwrap().unwrap();
     assert_eq!(res.ok, vec![x]);
     assert!(tree.read().unwrap().is_deleted(x));
-    assert_eq!(tree.read().unwrap().node(NodeId::ROOT).logical, 0);
+    assert_eq!(tree.read().unwrap().node(NodeId::ROOT).logical(), 0);
 }
 
 /// Empties the whole recycle bin of the system drive, so it only runs on

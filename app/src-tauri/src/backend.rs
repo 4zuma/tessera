@@ -16,7 +16,7 @@ use tessera_core::layout::{self, LayoutEngine, LayoutRequest, LayoutStyle, RootE
 use tessera_core::scan::{self, ScanOptions, ScanProgress};
 use tessera_core::totals::{Totals, TotalsCache};
 use tessera_core::watch::{BatchReport, WatchOptions, Watcher};
-use tessera_core::{NodeFlags, NodeId, SharedTree, Tree, category, delete, tree::mtime_to_unix_ms};
+use tessera_core::{NodeFlags, NodeId, SharedTree, Tree, category, delete};
 
 use crate::i18n::{self, text};
 use crate::volumes;
@@ -84,6 +84,12 @@ impl Core {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
             .ok_or_else(|| text::NO_SCAN.get().to_string())
+    }
+
+    /// Memory held by the current scan's tree, if there is one.
+    pub fn tree_memory(&self) -> Option<tessera_core::tree::TreeMemory> {
+        let s = self.current().ok()?;
+        Some(s.tree().memory())
     }
 
     fn is_current(&self, id: u32) -> bool {
@@ -178,7 +184,7 @@ impl Session {
     }
 
     fn root_size(&self) -> u64 {
-        self.tree().node(NodeId::ROOT).size
+        self.tree().node(NodeId::ROOT).size()
     }
 
     fn refresh_volume(&self) {
@@ -220,7 +226,7 @@ impl Session {
                 unscanned: (!self.done.load(Relaxed)).then(|| {
                     self.used
                         .load(Relaxed)
-                        .saturating_sub(t.node(NodeId::ROOT).size)
+                        .saturating_sub(t.node(NodeId::ROOT).size())
                 }),
             }
         } else {
@@ -819,22 +825,34 @@ fn node_details(s: &Session, id: u32, mode: SizeMode) -> Option<Details> {
     } else {
         t.name_lossy(nid)
     };
+    let cat = category::of_node(&t, nid);
+    // the tree keeps no times: ask the file system, without holding the tree
+    drop(t);
     Some(Details {
         id,
         kind: if n.is_dir() { "dir" } else { "file" },
         hint: hint_for(&name, &n),
         name,
+        modified: modified_ms(&path),
         path: path.to_string_lossy().into_owned(),
         size,
-        disk: n.size,
-        logical: n.logical,
+        disk: n.size(),
+        logical: n.logical(),
         share,
         files,
         dirs,
-        modified: mtime_to_unix_ms(n.mtime).map(|ms| ms as f64),
-        cat: category::of_node(&t, nid),
+        cat,
         flags,
         lock_reason,
+    })
+}
+
+/// Last write time of `path` (not following a link), in Unix milliseconds.
+fn modified_ms(path: &std::path::Path) -> Option<f64> {
+    let t = std::fs::symlink_metadata(path).ok()?.modified().ok()?;
+    Some(match t.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_millis() as f64,
+        Err(e) => -(e.duration().as_millis() as f64),
     })
 }
 
@@ -1111,19 +1129,18 @@ mod tests {
     /// C:\ with Users\me\{a.mp4, b.ts (TypeScript), Docs\c.pdf} and pagefile.sys
     fn sample() -> Session {
         let mut t = Tree::new(b"C:\\");
-        let users = t.add_child(NodeId::ROOT, b"Users", 0, 0, NodeFlags::DIR, 0);
-        let me = t.add_child(users, b"me", 0, 0, NodeFlags::DIR, 0);
-        t.add_child(me, b"a.mp4", 4096 * 100, 400_000, NodeFlags::NONE, 0);
-        t.add_child(me, b"b.ts", 4096, 900, NodeFlags::NONE, 0);
-        let docs = t.add_child(me, b"Docs", 0, 0, NodeFlags::DIR, 0);
-        t.add_child(docs, b"c.pdf", 8192, 8000, NodeFlags::NONE, 0);
+        let users = t.add_child(NodeId::ROOT, b"Users", 0, 0, NodeFlags::DIR);
+        let me = t.add_child(users, b"me", 0, 0, NodeFlags::DIR);
+        t.add_child(me, b"a.mp4", 4096 * 100, 400_000, NodeFlags::NONE);
+        t.add_child(me, b"b.ts", 4096, 900, NodeFlags::NONE);
+        let docs = t.add_child(me, b"Docs", 0, 0, NodeFlags::DIR);
+        t.add_child(docs, b"c.pdf", 8192, 8000, NodeFlags::NONE);
         t.add_child(
             NodeId::ROOT,
             b"pagefile.sys",
             4096 * 1000,
             4096 * 1000,
             NodeFlags::NONE,
-            0,
         );
         let vol = volumes::Volume {
             root: "C:\\".into(),

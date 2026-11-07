@@ -17,6 +17,7 @@ use rayon::prelude::*;
 use super::build::Accum;
 use super::parser::*;
 use crate::scan::ScanProgress;
+use crate::tree::Encoder;
 use crate::{Error, Result};
 
 /// Positioned reads of a raw volume (or volume image).
@@ -498,8 +499,9 @@ struct Chunk {
     buf: AlignedBuf,
 }
 
-/// Parses one chunk in parallel; the batches come back in record order.
-fn parse_chunk(layout: &MftLayout, chunk: &mut Chunk) -> Vec<ParsedBatch> {
+/// Parses one chunk in parallel; the batches come back in record order,
+/// with their names encoded by `enc` if there is one.
+fn parse_chunk(layout: &MftLayout, chunk: &mut Chunk, enc: Option<&Encoder>) -> Vec<ParsedBatch> {
     let rs = layout.record_size;
     let first = chunk.first;
     let len = chunk.count * rs;
@@ -514,6 +516,7 @@ fn parse_chunk(layout: &MftLayout, chunk: &mut Chunk) -> Vec<ParsedBatch> {
                     parse_record(no as u32, rec, &mut out);
                 }
             }
+            out.prepare_names(enc);
             out
         })
         .collect()
@@ -587,23 +590,43 @@ pub(crate) fn stream_records<R: ReadAt>(
             }
         });
 
+        // Each chunk is parsed (on the pool) while the one before it is
+        // merged (single-threaded), so the two overlap.
         let mut result = Ok(());
-        while let Ok(msg) = full_rx.recv() {
-            let mut chunk = match msg {
-                Ok(c) => c,
-                Err(e) => {
+        let mut parsed: Vec<ParsedBatch> = Vec::new();
+        loop {
+            let next = match full_rx.recv() {
+                Ok(Ok(c)) => Some(c),
+                Ok(Err(e)) => {
                     result = Err(Error::Io(e));
                     break;
                 }
+                Err(_) => None,
             };
             if progress.is_cancelled() {
                 break;
             }
-            let batches = parse_chunk(layout, &mut chunk);
-            for b in &batches {
-                acc.merge(b, progress);
+            let enc = acc.name_encoder();
+            let ready = std::mem::take(&mut parsed);
+            let free_tx = &free_tx;
+            let (next, ()) = rayon::join(
+                || {
+                    next.map(|mut chunk| {
+                        let batches = parse_chunk(layout, &mut chunk, enc.as_ref());
+                        let _ = free_tx.send(chunk.buf);
+                        batches
+                    })
+                },
+                || {
+                    for b in &ready {
+                        acc.merge(b, progress);
+                    }
+                },
+            );
+            match next {
+                Some(batches) => parsed = batches,
+                None => break,
             }
-            let _ = free_tx.send(chunk.buf);
         }
         // Unblock the reader whatever it is waiting on, then wait for it.
         drop(full_rx);
@@ -807,7 +830,7 @@ mod tests {
             assert_eq!(b.files, 80 + 1, "80 files plus $MFT, chunk {chunk}");
             let d = b.tree.lookup_relative(b"d").unwrap();
             assert_eq!(b.tree.child_count(d), 80);
-            assert_eq!(b.tree.node(d).logical, (0..80).sum::<u64>());
+            assert_eq!(b.tree.node(d).logical(), (0..80).sum::<u64>());
             let f79 = b.tree.lookup_relative(b"d\\f79").unwrap();
             assert_eq!(b.frn.get(96), Some(f79));
         }

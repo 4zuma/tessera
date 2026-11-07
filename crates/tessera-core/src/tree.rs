@@ -1,10 +1,10 @@
 //! The compact in-memory file tree.
 //!
-//! Every file and directory is one 40-byte [`Node`] in a chunked arena, and
+//! Every file and directory is one 32-byte [`Node`] in a chunked arena, and
 //! nodes refer to each other by 32-bit [`NodeId`] instead of pointers. Names
-//! live in a separate WTF-8 [`NamePool`]. Nothing is allocated per node, and
-//! the arena grows in fixed chunks, so growing it never copies the existing
-//! nodes and never over-allocates by more than one chunk.
+//! live in a separate, compressed [`NamePool`]. Nothing is allocated per
+//! node, and the arena grows in fixed chunks, so growing it never copies the
+//! existing nodes and never over-allocates by more than one chunk.
 //!
 //! Invariants (checked by [`Tree::check_invariants`] in tests):
 //! * node 0 is the root directory; it has no parent;
@@ -15,6 +15,7 @@
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
 
+pub use crate::names::{Encoder, Name, NamePool};
 use crate::wtf8;
 
 /// Index of a node in the [`Tree`] arena.
@@ -66,6 +67,15 @@ impl NodeFlags {
     pub const COMPRESSED: NodeFlags = NodeFlags(1 << 8);
     /// An NTFS metadata file such as `$MFT` (only seen by the MFT scanner).
     pub const METAFILE: NodeFlags = NodeFlags(1 << 9);
+    /// Not a flag: bits 12..16 hold [`Node::name_cat`]. The tree sets them
+    /// whenever it stores a name and ignores them in flags handed to it.
+    pub const NAME_CAT: NodeFlags = NodeFlags(0xF000);
+
+    /// These flags with [`NodeFlags::NAME_CAT`] set to `code`.
+    #[inline]
+    pub(crate) const fn with_name_cat(self, code: u8) -> NodeFlags {
+        NodeFlags(self.0 & !Self::NAME_CAT.0 | (code as u16 & 0xF) << 12)
+    }
 
     #[inline]
     pub const fn contains(self, other: NodeFlags) -> bool {
@@ -130,51 +140,116 @@ impl std::fmt::Debug for NodeFlags {
         if first {
             f.write_str("NONE")?;
         }
+        let cat = self.0 >> 12;
+        if cat != 0 {
+            write!(f, " cat={cat}")?;
+        }
         Ok(())
     }
 }
 
-/// One file or directory: exactly 40 bytes.
+/// One file or directory: exactly 32 bytes.
+///
+/// The two sizes are stored in 48 bits each (up to 256 TiB). Size arithmetic
+/// wraps modulo 2^48, so adding and later removing the same amount always
+/// cancels out; a total beyond 256 TiB would read wrong, but no Windows volume
+/// gets there. Read them with [`Node::size`] and [`Node::logical`].
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct Node {
-    /// Size on disk (allocated bytes). For directories, the sum over live children.
-    pub size: u64,
-    /// Logical file length. For directories, the sum over live children.
-    pub logical: u64,
+    size_lo: u32,
+    logical_lo: u32,
     pub parent: NodeId,
     pub first_child: NodeId,
     pub next_sibling: NodeId,
     /// Offset of the name in the [`NamePool`].
     pub name_off: u32,
-    /// Length of the name in WTF-8 bytes.
+    size_hi: u16,
+    logical_hi: u16,
+    /// Length of the name as stored in the [`NamePool`] (compressed, so
+    /// not the length of the name itself).
     pub name_len: u16,
     pub flags: NodeFlags,
-    /// Last write time in whole minutes since 1601-01-01 UTC (a Windows
-    /// FILETIME divided by 60 s); 0 means unknown. See [`mtime_from_filetime`].
-    /// Both scanners get it from data they already read, at no extra I/O.
-    pub mtime: u32,
 }
 
-/// 100-ns FILETIME ticks per minute.
-const TICKS_PER_MINUTE: u64 = 600_000_000;
-/// Minutes between 1601-01-01 and 1970-01-01.
-const UNIX_EPOCH_MINUTES: i64 = 11_644_473_600 / 60;
+/// The largest size a [`Node`] holds, plus one.
+pub const SIZE_LIMIT: u64 = 1 << 48;
+const SIZE_MASK: u64 = SIZE_LIMIT - 1;
 
-/// Converts a FILETIME (100-ns ticks since 1601) to [`Node::mtime`].
-#[inline]
-pub fn mtime_from_filetime(ticks: u64) -> u32 {
-    u32::try_from(ticks / TICKS_PER_MINUTE).unwrap_or(u32::MAX)
-}
-
-/// Converts [`Node::mtime`] to Unix time in milliseconds (`None` if unknown).
-pub fn mtime_to_unix_ms(mtime: u32) -> Option<i64> {
-    (mtime != 0).then(|| (mtime as i64 - UNIX_EPOCH_MINUTES) * 60_000)
-}
-
-const _: () = assert!(std::mem::size_of::<Node>() == 40);
+const _: () = assert!(std::mem::size_of::<Node>() == 32);
 
 impl Node {
+    /// A node with the given sizes (taken modulo [`SIZE_LIMIT`]) and links.
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    pub(crate) fn new(
+        size: u64,
+        logical: u64,
+        parent: NodeId,
+        first_child: NodeId,
+        next_sibling: NodeId,
+        name_off: u32,
+        name_len: u16,
+        flags: NodeFlags,
+    ) -> Node {
+        let mut n = Node {
+            size_lo: 0,
+            logical_lo: 0,
+            parent,
+            first_child,
+            next_sibling,
+            name_off,
+            size_hi: 0,
+            logical_hi: 0,
+            name_len,
+            flags,
+        };
+        n.set_size(size);
+        n.set_logical(logical);
+        n
+    }
+
+    /// What the node's name says about its category
+    /// ([`category::name_code`](crate::category::name_code)); see
+    /// [`category::of`](crate::category::of) for the category itself.
+    #[inline]
+    pub fn name_cat(&self) -> u8 {
+        (self.flags.0 >> 12) as u8
+    }
+
+    /// Size on disk (allocated bytes). For directories, the sum over live
+    /// children.
+    #[inline]
+    pub fn size(&self) -> u64 {
+        (self.size_hi as u64) << 32 | self.size_lo as u64
+    }
+
+    /// Logical file length. For directories, the sum over live children.
+    #[inline]
+    pub fn logical(&self) -> u64 {
+        (self.logical_hi as u64) << 32 | self.logical_lo as u64
+    }
+
+    #[inline]
+    pub(crate) fn set_size(&mut self, v: u64) {
+        self.size_lo = v as u32;
+        self.size_hi = (v >> 32) as u16;
+    }
+
+    #[inline]
+    pub(crate) fn set_logical(&mut self, v: u64) {
+        self.logical_lo = v as u32;
+        self.logical_hi = (v >> 32) as u16;
+    }
+
+    /// Adds to both sizes, wrapping modulo [`SIZE_LIMIT`] (so a negative
+    /// delta, `x.wrapping_neg()`, subtracts).
+    #[inline]
+    pub(crate) fn add_sizes(&mut self, dsize: u64, dlogical: u64) {
+        self.set_size(self.size().wrapping_add(dsize) & SIZE_MASK);
+        self.set_logical(self.logical().wrapping_add(dlogical) & SIZE_MASK);
+    }
+
     #[inline]
     pub fn is_dir(&self) -> bool {
         self.flags.contains(NodeFlags::DIR)
@@ -193,7 +268,7 @@ pub(crate) struct ChunkedVec<T> {
     len: usize,
 }
 
-const NODE_CHUNK_SHIFT: u32 = 16; // 65,536 nodes (2.5 MiB) per chunk
+const NODE_CHUNK_SHIFT: u32 = 16; // 65,536 nodes (2 MiB) per chunk
 const NODE_CHUNK: usize = 1 << NODE_CHUNK_SHIFT;
 const NODE_CHUNK_MASK: usize = NODE_CHUNK - 1;
 
@@ -247,188 +322,17 @@ impl<T> ChunkedVec<T> {
     }
 }
 
-/// All names, concatenated as WTF-8 in 1 MiB chunks. A name never straddles
-/// two chunks; the few bytes left at the end of a full chunk are wasted.
-///
-/// While a scan runs, identical names are stored once (`__init__.py`,
-/// `LICENSE`, `index.js`... repeat hundreds of thousands of times on a
-/// typical system drive). The lookup table for that is only kept during the
-/// scan ([`NamePool::end_dedup`] frees it); names added later are appended.
-pub struct NamePool {
-    chunks: Vec<Vec<u8>>,
-    dedup: Option<Dedup>,
-}
-
-const NAME_CHUNK_SHIFT: u32 = 20; // 1 MiB
-const NAME_CHUNK: usize = 1 << NAME_CHUNK_SHIFT;
-
-/// Open-addressing set of stored names. A slot packs the name's offset
-/// (bits 0..32), its length + 1 (bits 32..48, 0 = empty slot) and 16 more
-/// bits of its hash (bits 48..64) to skip most byte comparisons.
-struct Dedup {
-    slots: Vec<u64>,
-    used: usize,
-}
-
-impl Dedup {
-    fn new() -> Self {
-        Dedup {
-            slots: vec![0; 1 << 16],
-            used: 0,
-        }
-    }
-}
-
-#[inline]
-fn name_hash(b: &[u8]) -> u64 {
-    const K: u64 = 0x517c_c1b7_2722_0a95;
-    let mut h = b.len() as u64;
-    let mut words = b.chunks_exact(8);
-    for w in &mut words {
-        h = (h.rotate_left(5) ^ u64::from_le_bytes(w.try_into().unwrap())).wrapping_mul(K);
-    }
-    let rest = words.remainder();
-    if !rest.is_empty() {
-        let mut buf = [0u8; 8];
-        buf[..rest.len()].copy_from_slice(rest);
-        h = (h.rotate_left(5) ^ u64::from_le_bytes(buf)).wrapping_mul(K);
-    }
-    // Final avalanche so the low bits used for the slot index are well mixed.
-    h ^= h >> 33;
-    h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
-    h ^ (h >> 33)
-}
-
-impl NamePool {
-    /// A pool that appends every name (no de-duplication).
-    pub const fn new() -> Self {
-        NamePool {
-            chunks: Vec::new(),
-            dedup: None,
-        }
-    }
-
-    /// A pool that stores identical names once until [`NamePool::end_dedup`].
-    pub fn with_dedup() -> Self {
-        NamePool {
-            chunks: Vec::new(),
-            dedup: Some(Dedup::new()),
-        }
-    }
-
-    /// Frees the de-duplication table (call when a scan ends). Names that
-    /// are already shared stay shared.
-    pub fn end_dedup(&mut self) {
-        self.dedup = None;
-    }
-
-    /// Stores `name` (or finds an identical stored copy) and returns its offset.
-    ///
-    /// # Panics
-    /// If `name` is longer than `u16::MAX` bytes or the pool exceeds 4 GiB.
-    pub fn push(&mut self, name: &[u8]) -> u32 {
-        assert!(name.len() <= u16::MAX as usize, "name too long");
-        let Some(mut d) = self.dedup.take() else {
-            return self.append(name);
-        };
-        // Names of 65,535 bytes don't fit the packed length; just append.
-        if name.len() >= u16::MAX as usize {
-            self.dedup = Some(d);
-            return self.append(name);
-        }
-        if (d.used + 1) * 4 > d.slots.len() * 3 {
-            self.grow(&mut d);
-        }
-        let h = name_hash(name);
-        let mask = d.slots.len() - 1;
-        let tag = h >> 48;
-        let want = ((name.len() as u64 + 1) << 32) | (tag << 48);
-        let mut i = h as usize & mask;
-        let off = loop {
-            let slot = d.slots[i];
-            if slot == 0 {
-                let off = self.append(name);
-                d.slots[i] = want | off as u64;
-                d.used += 1;
-                break off;
-            }
-            if slot & !0xFFFF_FFFF == want {
-                let off = slot as u32;
-                if self.get(off, name.len() as u16) == name {
-                    break off;
-                }
-            }
-            i = (i + 1) & mask;
-        };
-        self.dedup = Some(d);
-        off
-    }
-
-    /// Doubles the table and re-inserts every stored name.
-    fn grow(&self, d: &mut Dedup) {
-        let mut slots = vec![0u64; d.slots.len() * 2];
-        let mask = slots.len() - 1;
-        for &slot in d.slots.iter().filter(|&&s| s != 0) {
-            let len = ((slot >> 32) & 0xFFFF) as u16 - 1;
-            let h = name_hash(self.get(slot as u32, len));
-            let mut i = h as usize & mask;
-            while slots[i] != 0 {
-                i = (i + 1) & mask;
-            }
-            slots[i] = slot;
-        }
-        d.slots = slots;
-    }
-
-    fn append(&mut self, name: &[u8]) -> u32 {
-        let need_new = match self.chunks.last() {
-            Some(c) => c.len() + name.len() > c.capacity(),
-            None => true,
-        };
-        if need_new {
-            self.chunks
-                .push(Vec::with_capacity(NAME_CHUNK.max(name.len())));
-        }
-        let ci = self.chunks.len() - 1;
-        let chunk = &mut self.chunks[ci];
-        let off = (ci << NAME_CHUNK_SHIFT) + chunk.len();
-        chunk.extend_from_slice(name);
-        u32::try_from(off).expect("name pool exceeds 4 GiB")
-    }
-
-    #[inline]
-    pub fn get(&self, off: u32, len: u16) -> &[u8] {
-        let off = off as usize;
-        let c = &self.chunks[off >> NAME_CHUNK_SHIFT];
-        let start = off & (NAME_CHUNK - 1);
-        &c[start..start + len as usize]
-    }
-
-    /// Heap bytes held, including the de-duplication table while it exists.
-    pub fn heap_bytes(&self) -> usize {
-        self.chunks.iter().map(|c| c.capacity()).sum::<usize>()
-            + self.chunks.capacity() * std::mem::size_of::<Vec<u8>>()
-            + self.dedup.as_ref().map_or(0, |d| d.slots.capacity() * 8)
-    }
-
-    /// Bytes of name data actually stored (excluding unused chunk tails).
-    pub fn stored_bytes(&self) -> usize {
-        self.chunks.iter().map(|c| c.len()).sum()
-    }
-}
-
-impl Default for NamePool {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// A reusable buffer of directory entries, filled by a scanner for one
 /// directory and handed to [`Tree::add_children`] in a single call.
 #[derive(Default)]
 pub struct EntryBatch {
     entries: Vec<BatchEntry>,
     names: Vec<u8>,
+    /// The names encoded ahead of time by [`EntryBatch::encode_names`]:
+    /// the encoder, the encodings back to back, and where each one ends.
+    encoded_by: Option<Encoder>,
+    encoded: Vec<u8>,
+    encoded_ends: Vec<u32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -436,7 +340,6 @@ pub struct BatchEntry {
     pub size: u64,
     pub logical: u64,
     pub flags: NodeFlags,
-    pub mtime: u32,
     name_start: u32,
     name_len: u16,
 }
@@ -449,6 +352,24 @@ impl EntryBatch {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.names.clear();
+        self.encoded_by = None;
+        self.encoded.clear();
+        self.encoded_ends.clear();
+    }
+
+    /// Encodes all names for the tree's name pool now (outside the tree's
+    /// lock), with the encoder from [`Tree::name_encoder`]. Entries added
+    /// afterwards are encoded when the batch is inserted.
+    pub fn encode_names(&mut self, enc: &Encoder) {
+        self.encoded.clear();
+        self.encoded_ends.clear();
+        for e in &self.entries {
+            let name =
+                &self.names[e.name_start as usize..e.name_start as usize + e.name_len as usize];
+            enc.encode(name, &mut self.encoded);
+            self.encoded_ends.push(self.encoded.len() as u32);
+        }
+        self.encoded_by = Some(enc.clone());
     }
 
     pub fn len(&self) -> usize {
@@ -460,42 +381,27 @@ impl EntryBatch {
     }
 
     /// Adds an entry whose name is (possibly ill-formed) UTF-16.
-    /// `mtime` is in [`Node::mtime`] units (0 = unknown).
-    pub fn push_utf16(
-        &mut self,
-        name: &[u16],
-        size: u64,
-        logical: u64,
-        flags: NodeFlags,
-        mtime: u32,
-    ) {
+    pub fn push_utf16(&mut self, name: &[u16], size: u64, logical: u64, flags: NodeFlags) {
         let start = self.names.len();
         wtf8::push_utf16(&mut self.names, name);
-        self.push_raw(start, size, logical, flags, mtime);
+        self.push_raw(start, size, logical, flags);
     }
 
     /// Adds an entry whose name is already WTF-8 (or UTF-8).
-    pub fn push_wtf8(
-        &mut self,
-        name: &[u8],
-        size: u64,
-        logical: u64,
-        flags: NodeFlags,
-        mtime: u32,
-    ) {
+    pub fn push_wtf8(&mut self, name: &[u8], size: u64, logical: u64, flags: NodeFlags) {
         let start = self.names.len();
         self.names.extend_from_slice(name);
-        self.push_raw(start, size, logical, flags, mtime);
+        self.push_raw(start, size, logical, flags);
     }
 
-    fn push_raw(&mut self, start: usize, size: u64, logical: u64, flags: NodeFlags, mtime: u32) {
+    fn push_raw(&mut self, start: usize, size: u64, logical: u64, flags: NodeFlags) {
         let len = self.names.len() - start;
         let name_len = u16::try_from(len).expect("name too long");
+        let code = crate::category::name_code(&self.names[start..]);
         self.entries.push(BatchEntry {
             size,
             logical,
-            flags,
-            mtime,
+            flags: flags.with_name_cat(code),
             name_start: start as u32,
             name_len,
         });
@@ -559,6 +465,8 @@ pub type SharedTree = Arc<RwLock<Tree>>;
 pub struct TreeMemory {
     pub nodes: usize,
     pub names: usize,
+    /// What the names would take uncompressed (not part of the total).
+    pub names_raw: usize,
 }
 
 impl TreeMemory {
@@ -577,18 +485,17 @@ impl Tree {
             changed: 0,
             journal: Journal::default(),
         };
-        let name_off = t.names.push(root_name);
-        t.nodes.push(Node {
-            size: 0,
-            logical: 0,
-            parent: NodeId::NONE,
-            first_child: NodeId::NONE,
-            next_sibling: NodeId::NONE,
+        let (name_off, name_len) = t.names.push(root_name);
+        t.nodes.push(Node::new(
+            0,
+            0,
+            NodeId::NONE,
+            NodeId::NONE,
+            NodeId::NONE,
             name_off,
-            name_len: root_name.len() as u16,
-            flags: NodeFlags::DIR,
-            mtime: 0,
-        });
+            name_len,
+            NodeFlags::DIR,
+        ));
         t
     }
 
@@ -604,6 +511,12 @@ impl Tree {
         {
             Tree::new(root.to_string_lossy().as_bytes())
         }
+    }
+
+    /// The name pool's encoder once it encodes names; see
+    /// [`EntryBatch::encode_names`].
+    pub fn name_encoder(&self) -> Option<Encoder> {
+        self.names.encoder()
     }
 
     /// Releases memory only needed while scanning (the name
@@ -645,14 +558,14 @@ impl Tree {
 
     /// The node's own name as WTF-8 (for the root: the scanned path).
     #[inline]
-    pub fn name(&self, id: NodeId) -> &[u8] {
+    pub fn name(&self, id: NodeId) -> Name<'_> {
         let n = self.node(id);
         self.names.get(n.name_off, n.name_len)
     }
 
     /// The node's own name for display.
     pub fn name_lossy(&self, id: NodeId) -> String {
-        wtf8::to_string_lossy(self.name(id))
+        wtf8::to_string_lossy(&self.name(id))
     }
 
     /// Live children (deleted ones skipped), in no particular order.
@@ -694,7 +607,7 @@ impl Tree {
             if i > 0 && !matches!(out.last(), Some(b'\\') | Some(b'/')) {
                 out.push(b'\\');
             }
-            out.extend_from_slice(self.name(n));
+            out.extend_from_slice(&self.name(n));
         }
         out
     }
@@ -726,7 +639,7 @@ impl Tree {
     /// Linear in the number of children; meant for incremental updates.
     pub fn find_child(&self, parent: NodeId, name: &[u8]) -> Option<NodeId> {
         self.children(parent)
-            .find(|&c| wtf8::eq_ignore_case(self.name(c), name))
+            .find(|&c| wtf8::eq_ignore_case(&self.name(c), name))
     }
 
     /// Resolves a path below the root (components separated by `\` or `/`)
@@ -753,26 +666,41 @@ impl Tree {
         }
         let old_first = self.node(parent).first_child;
         let (mut dsize, mut dlogical) = (0u64, 0u64);
+        let encoded = match &batch.encoded_by {
+            Some(enc) if batch.encoded_ends.len() == batch.entries.len() => Some(enc),
+            _ => None,
+        };
         for (i, e) in batch.entries.iter().enumerate() {
             let name = batch.name(e);
-            let name_off = self.names.push(name);
+            let (name_off, name_len) = match encoded {
+                Some(enc) => {
+                    let start = if i == 0 {
+                        0
+                    } else {
+                        batch.encoded_ends[i - 1] as usize
+                    };
+                    let end = batch.encoded_ends[i] as usize;
+                    self.names
+                        .push_encoded(name, &batch.encoded[start..end], enc)
+                }
+                None => self.names.push(name),
+            };
             let id = start + i as u32;
             let next = if id + 1 < start + n {
                 NodeId(id + 1)
             } else {
                 old_first
             };
-            self.nodes.push(Node {
-                size: e.size,
-                logical: e.logical,
+            self.nodes.push(Node::new(
+                e.size,
+                e.logical,
                 parent,
-                first_child: NodeId::NONE,
-                next_sibling: next,
+                NodeId::NONE,
+                next,
                 name_off,
-                name_len: e.name_len,
-                flags: e.flags,
-                mtime: e.mtime,
-            });
+                name_len,
+                e.flags,
+            ));
             dsize = dsize.wrapping_add(e.size);
             dlogical = dlogical.wrapping_add(e.logical);
         }
@@ -790,22 +718,16 @@ impl Tree {
         size: u64,
         logical: u64,
         flags: NodeFlags,
-        mtime: u32,
     ) -> NodeId {
         let mut b = EntryBatch::new();
-        b.push_wtf8(name, size, logical, flags, mtime);
+        b.push_wtf8(name, size, logical, flags);
         NodeId(self.add_children(parent, &b).start)
     }
 
     /// Number of live children. Linear in the length of the sibling list
-    /// (the count is not stored, so that each node stays 40 bytes).
+    /// (the count is not stored, so that each node stays 32 bytes).
     pub fn child_count(&self, id: NodeId) -> usize {
         self.children(id).count()
-    }
-
-    /// Sets a node's last write time ([`Node::mtime`] units).
-    pub fn set_mtime(&mut self, id: NodeId, mtime: u32) {
-        self.node_mut(id).mtime = mtime;
     }
 
     /// Adds `dsize` / `dlogical` (wrapping, so negative deltas work) to
@@ -826,8 +748,7 @@ impl Tree {
         let mut cur = from;
         while !cur.is_none() {
             let n = self.node_mut(cur);
-            n.size = n.size.wrapping_add(dsize);
-            n.logical = n.logical.wrapping_add(dlogical);
+            n.add_sizes(dsize, dlogical);
             if n.is_deleted() {
                 break;
             }
@@ -877,10 +798,10 @@ impl Tree {
     pub fn set_file_size(&mut self, id: NodeId, size: u64, logical: u64) {
         let n = self.node_mut(id);
         debug_assert!(!n.is_dir(), "directory sizes are derived from children");
-        let dsize = size.wrapping_sub(n.size);
-        let dlogical = logical.wrapping_sub(n.logical);
-        n.size = size;
-        n.logical = logical;
+        let dsize = size.wrapping_sub(n.size());
+        let dlogical = logical.wrapping_sub(n.logical());
+        n.set_size(size & SIZE_MASK);
+        n.set_logical(logical & SIZE_MASK);
         let (parent, deleted) = (n.parent, n.is_deleted());
         if !deleted {
             self.add_to_ancestors(parent, dsize, dlogical);
@@ -892,10 +813,10 @@ impl Tree {
         // a file's flags decide its category (NTFS metafiles)
         let parent = self.node(id).parent;
         self.touch(if parent.is_none() { id } else { parent });
-        let deleted = self.node(id).flags.contains(NodeFlags::DELETED);
-        let mut f = flags;
+        let old = self.node(id).flags;
+        let mut f = flags.with_name_cat(self.node(id).name_cat());
         f.remove(NodeFlags::DELETED);
-        if deleted {
+        if old.contains(NodeFlags::DELETED) {
             f.insert(NodeFlags::DELETED);
         }
         self.node_mut(id).flags = f;
@@ -910,7 +831,7 @@ impl Tree {
         }
         let n = self.node_mut(id);
         n.flags.insert(NodeFlags::DELETED);
-        let (size, logical, parent) = (n.size, n.logical, n.parent);
+        let (size, logical, parent) = (n.size(), n.logical(), n.parent);
         self.add_to_ancestors(parent, size.wrapping_neg(), logical.wrapping_neg());
         true
     }
@@ -928,6 +849,7 @@ impl Tree {
         TreeMemory {
             nodes: self.nodes.heap_bytes(),
             names: self.names.heap_bytes(),
+            names_raw: self.names.raw_bytes(),
         }
     }
 
@@ -953,8 +875,8 @@ impl Tree {
                 return Err(format!("node {i} has a non-directory parent {p}"));
             }
             if !node.is_deleted() {
-                size[p] = size[p].wrapping_add(node.size);
-                logical[p] = logical[p].wrapping_add(node.logical);
+                size[p] = size[p].wrapping_add(node.size()) & SIZE_MASK;
+                logical[p] = logical[p].wrapping_add(node.logical()) & SIZE_MASK;
                 count[p] += 1;
             }
         }
@@ -969,12 +891,12 @@ impl Tree {
                     count[i]
                 ));
             }
-            if node.is_dir() && (node.size != size[i] || node.logical != logical[i]) {
+            if node.is_dir() && (node.size() != size[i] || node.logical() != logical[i]) {
                 return Err(format!(
                     "dir {i} ({}) has size {}/{} but children sum to {}/{}",
                     self.path_lossy(id),
-                    node.size,
-                    node.logical,
+                    node.size(),
+                    node.logical(),
                     size[i],
                     logical[i]
                 ));
@@ -1014,15 +936,14 @@ mod tests {
     fn sample() -> Tree {
         let mut t = Tree::new(b"C:\\");
         let mut b = EntryBatch::new();
-        b.push_wtf8(b"Users", 0, 0, NodeFlags::DIR, 0);
+        b.push_wtf8(b"Users", 0, 0, NodeFlags::DIR);
         b.push_wtf8(
             b"pagefile.sys",
             4096 * 100,
             409_000,
             NodeFlags::HIDDEN | NodeFlags::SYSTEM,
-            mtime_from_filetime(133_000_000_000_000_000),
         );
-        b.push_wtf8(b"Windows", 0, 0, NodeFlags::DIR, 0);
+        b.push_wtf8(b"Windows", 0, 0, NodeFlags::DIR);
         let r = t.add_children(NodeId::ROOT, &b);
         assert_eq!(r, 1..4);
         b.clear();
@@ -1031,39 +952,45 @@ mod tests {
             8192,
             8000,
             NodeFlags::NONE,
-            0,
         );
-        b.push_wtf8(b"notes.txt", 4096, 12, NodeFlags::NONE, 0);
+        b.push_wtf8(b"notes.txt", 4096, 12, NodeFlags::NONE);
         t.add_children(NodeId(1), &b);
         t
     }
 
     #[test]
-    fn node_is_40_bytes() {
-        assert_eq!(std::mem::size_of::<Node>(), 40);
+    fn node_is_32_bytes() {
+        assert_eq!(std::mem::size_of::<Node>(), 32);
     }
 
     #[test]
-    fn mtime_round_trip() {
-        // 2024-01-01T00:00:00Z = 1_704_067_200 s after the Unix epoch.
-        let ft = (1_704_067_200u64 + 11_644_473_600) * 10_000_000 + 59 * 10_000_000;
-        let m = mtime_from_filetime(ft);
-        assert_eq!(mtime_to_unix_ms(m), Some(1_704_067_200_000));
-        assert_eq!(mtime_to_unix_ms(0), None);
-        let t = sample();
-        let pf = t.lookup_relative(b"pagefile.sys").unwrap();
-        assert_eq!(
-            t.node(pf).mtime,
-            mtime_from_filetime(133_000_000_000_000_000)
-        );
+    fn sizes_use_48_bits_and_wrap_consistently() {
+        let mut t = Tree::new(b"X:\\");
+        let d = t.add_child(NodeId::ROOT, b"d", 0, 0, NodeFlags::DIR);
+        let big = SIZE_LIMIT - 4096;
+        let f = t.add_child(d, b"big", big, big - 1, NodeFlags::NONE);
+        assert_eq!(t.node(f).size(), big);
+        assert_eq!(t.node(f).logical(), big - 1);
+        assert_eq!(t.node(NodeId::ROOT).size(), big);
+        let g = t.add_child(d, b"small", 4096 * 3, 100, NodeFlags::NONE);
+        // past 256 TiB the total wraps, but removing the file again cancels
+        assert_eq!(t.node(d).size(), 4096 * 2);
+        t.check_invariants().unwrap();
+        t.mark_deleted(g);
+        assert_eq!(t.node(d).size(), big);
+        assert_eq!(t.node(NodeId::ROOT).logical(), big - 1);
+        t.set_file_size(f, 1 << 40, 5);
+        assert_eq!(t.node(NodeId::ROOT).size(), 1 << 40);
+        assert_eq!(t.node(NodeId::ROOT).logical(), 5);
+        t.check_invariants().unwrap();
     }
 
     #[test]
     fn sizes_propagate_to_ancestors() {
         let t = sample();
-        assert_eq!(t.node(NodeId::ROOT).size, 409_600 + 8192 + 4096);
-        assert_eq!(t.node(NodeId::ROOT).logical, 409_000 + 8000 + 12);
-        assert_eq!(t.node(NodeId(1)).size, 8192 + 4096);
+        assert_eq!(t.node(NodeId::ROOT).size(), 409_600 + 8192 + 4096);
+        assert_eq!(t.node(NodeId::ROOT).logical(), 409_000 + 8000 + 12);
+        assert_eq!(t.node(NodeId(1)).size(), 8192 + 4096);
         assert_eq!(t.child_count(NodeId::ROOT), 3);
         t.check_invariants().unwrap();
     }
@@ -1084,7 +1011,7 @@ mod tests {
         let mut t = sample();
         let notes = t.lookup_relative(b"Users\\notes.txt").unwrap();
         t.set_file_size(notes, 8192, 5000);
-        assert_eq!(t.node(NodeId(1)).size, 8192 + 8192);
+        assert_eq!(t.node(NodeId(1)).size(), 8192 + 8192);
         t.check_invariants().unwrap();
 
         assert!(t.mark_deleted(NodeId(1)));
@@ -1093,7 +1020,7 @@ mod tests {
             !t.mark_deleted(notes),
             "descendant of a deleted node is already deleted"
         );
-        assert_eq!(t.node(NodeId::ROOT).size, 409_600);
+        assert_eq!(t.node(NodeId::ROOT).size(), 409_600);
         assert_eq!(t.child_count(NodeId::ROOT), 2);
         assert_eq!(t.children(NodeId::ROOT).count(), 2);
         assert!(t.is_deleted(notes));
@@ -1118,7 +1045,7 @@ mod tests {
         t.set_file_size(notes, 4096, 12);
         assert_eq!(t.changed_bytes(), before, "no change, nothing counted");
         let w = t.lookup_relative(b"Windows").unwrap();
-        t.add_child(w, b"new.log", 4096, 100, NodeFlags::NONE, 7);
+        t.add_child(w, b"new.log", 4096, 100, NodeFlags::NONE);
         assert_eq!(t.changed_bytes() - before, 4096);
         let before = t.changed_bytes();
         assert!(t.mark_deleted(NodeId(1)));
@@ -1134,7 +1061,7 @@ mod tests {
         let seq = t.change_seq();
         assert_eq!(t.touched_since(seq).unwrap().count(), 0);
         // an empty file moves no bytes but is a change
-        t.add_child(w, b"empty.log", 0, 0, NodeFlags::NONE, 0);
+        t.add_child(w, b"empty.log", 0, 0, NodeFlags::NONE);
         // the same folder twice in a row is one entry
         t.set_file_size(notes, 8192, 5000);
         t.set_file_size(notes, 4096, 12);
@@ -1146,7 +1073,7 @@ mod tests {
         let seq = t.change_seq();
         for i in 0..=JOURNAL_LEN {
             let parent = if i % 2 == 0 { users } else { NodeId::ROOT };
-            t.add_child(parent, format!("f{i}").as_bytes(), 1, 1, NodeFlags::NONE, 0);
+            t.add_child(parent, format!("f{i}").as_bytes(), 1, 1, NodeFlags::NONE);
         }
         assert!(t.touched_since(seq).is_none());
         assert!(t.touched_since(seq + 1).is_some());
@@ -1157,10 +1084,10 @@ mod tests {
     fn add_child_after_batch() {
         let mut t = sample();
         let w = t.lookup_relative(b"Windows").unwrap();
-        let f = t.add_child(w, b"new.log", 4096, 100, NodeFlags::NONE, 7);
+        let f = t.add_child(w, b"new.log", 4096, 100, NodeFlags::NONE);
         assert_eq!(t.path_lossy(f), "C:\\Windows\\new.log");
         let users = t.lookup_relative(b"Users").unwrap();
-        let g = t.add_child(users, b"later.bin", 4096, 4096, NodeFlags::NONE, 0);
+        let g = t.add_child(users, b"later.bin", 4096, 4096, NodeFlags::NONE);
         assert_eq!(t.children(users).count(), 3);
         assert_eq!(t.children(users).next(), Some(g));
         t.check_invariants().unwrap();
@@ -1176,57 +1103,19 @@ mod tests {
                 4096,
                 i as u64,
                 NodeFlags::NONE,
-                0,
             );
         }
         t.add_children(NodeId::ROOT, &b);
         assert_eq!(t.len(), 200_001);
-        assert_eq!(t.node(NodeId::ROOT).size, 4096 * 200_000);
+        assert_eq!(t.node(NodeId::ROOT).size(), 4096 * 200_000);
         assert_eq!(t.name(NodeId(150_001)), b"file-150000.dat");
         assert_eq!(t.children(NodeId::ROOT).count(), 200_000);
         t.check_invariants().unwrap();
         let m = t.memory();
         // 200k nodes need 4 chunks of 65,536 nodes.
         assert!(
-            m.nodes >= 200_001 * 40 && m.nodes < 5 * 65_536 * 40,
+            m.nodes >= 200_001 * 32 && m.nodes < 5 * 65_536 * 32,
             "{m:?}"
         );
-    }
-
-    #[test]
-    fn name_pool_dedups_while_scanning() {
-        let mut p = NamePool::with_dedup();
-        let a = p.push(b"__init__.py");
-        let b = p.push(b"LICENSE");
-        assert_eq!(p.push(b"__init__.py"), a);
-        assert_ne!(p.push(b"license"), b, "names are case sensitive here");
-        assert_eq!(p.push(b""), p.push(b""));
-        // Enough distinct names to force several table growths.
-        let offs: Vec<u32> = (0..200_000)
-            .map(|i| p.push(format!("f{i}.txt").as_bytes()))
-            .collect();
-        for (i, &o) in offs.iter().enumerate().step_by(997) {
-            let n = format!("f{i}.txt");
-            assert_eq!(p.push(n.as_bytes()), o);
-            assert_eq!(p.get(o, n.len() as u16), n.as_bytes());
-        }
-        let stored = p.stored_bytes();
-        p.end_dedup();
-        assert_ne!(p.push(b"LICENSE"), b, "after the scan, names are appended");
-        assert_eq!(p.stored_bytes(), stored + 7);
-    }
-
-    #[test]
-    fn name_pool_does_not_straddle_chunks() {
-        let mut p = NamePool::new();
-        let long = vec![b'x'; 60_000];
-        let mut offs = Vec::new();
-        for _ in 0..40 {
-            offs.push(p.push(&long));
-        }
-        for &o in &offs {
-            assert_eq!(p.get(o, 60_000).len(), 60_000);
-        }
-        assert!(p.heap_bytes() >= 40 * 60_000);
     }
 }

@@ -127,7 +127,7 @@ fn mft_scan_of_the_system_volume() {
         mem.nodes as f64 / 1048576.0,
         mem.names as f64 / 1048576.0,
         frn.heap_bytes() as f64 / 1048576.0,
-        t.node(NodeId::ROOT).size as f64 / 1073741824.0,
+        t.node(NodeId::ROOT).size() as f64 / 1073741824.0,
     );
 
     assert_eq!(summary.mode, ScanMode::Mft);
@@ -136,14 +136,14 @@ fn mft_scan_of_the_system_volume() {
     assert!(summary.usn_checkpoint.is_some(), "C: has a USN journal");
     let vol = summary.volume.as_ref().expect("volume info");
     assert_eq!(vol.file_system, "NTFS");
-    assert!(t.node(NodeId::ROOT).size <= vol.total_bytes);
+    assert!(t.node(NodeId::ROOT).size() <= vol.total_bytes);
     let progress = progress.snapshot();
     assert_eq!(progress.files, summary.files);
-    assert_eq!(progress.bytes, t.node(NodeId::ROOT).size);
+    assert_eq!(progress.bytes, t.node(NodeId::ROOT).size());
 
     let mft = t.lookup_relative(b"$MFT").expect("$MFT");
     assert!(t.node(mft).flags.contains(NodeFlags::METAFILE));
-    assert!(t.node(mft).size > 1 << 20);
+    assert!(t.node(mft).size() > 1 << 20);
 
     let top = t
         .lookup_relative(rel.as_bytes())
@@ -158,27 +158,27 @@ fn mft_scan_of_the_system_volume() {
     };
 
     let (a_id, a) = node("a.bin");
-    assert_eq!(a.logical, 10_000);
+    assert_eq!(a.logical(), 10_000);
     assert!(
-        a.size >= 10_000 && a.size < 10_000 + 65_536 && a.size % 512 == 0,
+        a.size() >= 10_000 && a.size() < 10_000 + 65_536 && a.size() % 512 == 0,
         "{}",
-        a.size
+        a.size()
     );
     assert!(!a.flags.contains(NodeFlags::HARDLINK));
     assert_eq!(frn.get(record_number(&d.join("a.bin"))), Some(a_id));
 
     let (_, link) = node("sub\\a-link.bin");
     assert!(link.flags.contains(NodeFlags::HARDLINK));
-    assert_eq!((link.size, link.logical), (0, 0));
+    assert_eq!((link.size(), link.logical()), (0, 0));
 
     let (_, tiny) = node("tiny.txt");
-    assert_eq!((tiny.size, tiny.logical), (0, 100), "resident data");
+    assert_eq!((tiny.size(), tiny.logical()), (0, 100), "resident data");
 
     let (_, big) = node("sub\\big.bin");
-    assert_eq!((big.size, big.logical), (1 << 20, 1 << 20));
+    assert_eq!((big.size(), big.logical()), (1 << 20, 1 << 20));
 
     let (_, uni) = node("Ünïcødé 照片 🦀.txt");
-    assert_eq!(uni.logical, 5000);
+    assert_eq!(uni.logical(), 5000);
 
     let (empty_id, empty) = node("empty");
     assert!(empty.is_dir());
@@ -186,8 +186,8 @@ fn mft_scan_of_the_system_volume() {
 
     let all = t.node(top);
     assert_eq!(t.child_count(top), 5);
-    assert_eq!(all.logical, 10_000 + 100 + (1 << 20) + 5000);
-    assert_eq!(all.size, a.size + (1 << 20) + uni.size);
+    assert_eq!(all.logical(), 10_000 + 100 + (1 << 20) + 5000);
+    assert_eq!(all.size(), a.size() + (1 << 20) + uni.size());
 }
 
 #[test]

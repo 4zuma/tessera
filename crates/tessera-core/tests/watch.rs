@@ -128,10 +128,10 @@ fn build_tree(root: &Path, each: &mut dyn FnMut(&Path, NodeId)) -> SharedTree {
                 e.file_name().encode_wide().collect()
             };
             if md.is_dir() {
-                batch.push_utf16(&name, 0, 0, flags | NodeFlags::DIR, 0);
+                batch.push_utf16(&name, 0, 0, flags | NodeFlags::DIR);
             } else {
                 let (size, logical) = disk_sizes(&e.path());
-                batch.push_utf16(&name, size, logical, flags, 0);
+                batch.push_utf16(&name, size, logical, flags);
             }
         }
         let ids = tree.add_children(dir, &batch);
@@ -200,8 +200,8 @@ fn links_match(tree: &Tree, root: &Path) -> Result<(), String> {
             };
             let n = tree.node(id);
             if !n.flags.contains(NodeFlags::HARDLINK) {
-                counting.push((rel, n.size, n.logical));
-            } else if (n.size, n.logical) != (0, 0) {
+                counting.push((rel, n.size(), n.logical()));
+            } else if (n.size(), n.logical()) != (0, 0) {
                 return Err(format!("{rel} is a hard link with bytes"));
             }
         }
@@ -222,7 +222,7 @@ fn tree_listing(tree: &Tree) -> Vec<String> {
                 out.push(format!("{rel}\\"));
                 walk(tree, c, &format!("{rel}\\"), out);
             } else {
-                out.push(format!("{rel} {}/{}", n.size, n.logical));
+                out.push(format!("{rel} {}/{}", n.size(), n.logical()));
             }
         }
     }
@@ -315,7 +315,7 @@ impl Session {
     fn root_bytes(&self) -> (u64, u64) {
         let t = self.tree.read().unwrap();
         let n = t.node(NodeId::ROOT);
-        (n.size, n.logical)
+        (n.size(), n.logical())
     }
 
     /// The relative path of the name that counts the bytes, among `names`.
@@ -424,7 +424,7 @@ fn exercise_links(s: &mut Session) {
     let wait_grown = |s: &mut Session, what: &str| {
         let root = s.root.clone();
         s.wait(what, |t| {
-            t.node(NodeId::ROOT).logical > before.1 && links_match(t, &root).is_ok()
+            t.node(NodeId::ROOT).logical() > before.1 && links_match(t, &root).is_ok()
         });
     };
     wait_grown(s, "a write through the second name");
@@ -549,7 +549,7 @@ fn a_burst_of_writes_gives_few_batches() {
             .read()
             .unwrap()
             .node(s.id("log.txt").unwrap())
-            .logical,
+            .logical(),
         64_000
     );
     w.stop();
