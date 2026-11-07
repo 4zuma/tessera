@@ -312,13 +312,14 @@ impl NamePool {
     }
 
     fn append(&mut self, bytes: &[u8]) -> u32 {
+        // A full chunk takes nothing more, not even an empty name: its
+        // offset would point at the next chunk.
         let need_new = match self.chunks.last() {
-            Some(c) => c.len() + bytes.len() > c.capacity(),
+            Some(c) => c.len() + bytes.len().max(1) > NAME_CHUNK,
             None => true,
         };
         if need_new {
-            self.chunks
-                .push(Vec::with_capacity(NAME_CHUNK.max(bytes.len())));
+            self.chunks.push(Vec::with_capacity(NAME_CHUNK));
         }
         let ci = self.chunks.len() - 1;
         let chunk = &mut self.chunks[ci];
@@ -516,6 +517,19 @@ mod tests {
             assert_eq!(p.get(off, len).len(), 60_000);
         }
         assert!(p.heap_bytes() >= 40 * 60_000);
+    }
+
+    #[test]
+    fn empty_name_after_a_full_chunk() {
+        let mut p = NamePool::with(None, usize::MAX);
+        let fill = vec![b'x'; 1 << 15];
+        for _ in 0..(NAME_CHUNK >> 15) {
+            p.push(&fill);
+        }
+        let (off, len) = p.push(b"");
+        assert_eq!(p.get(off, len).len(), 0);
+        let (off, len) = p.push(b"next");
+        assert_eq!(p.get(off, len), b"next");
     }
 
     fn file_name(i: u32) -> String {
