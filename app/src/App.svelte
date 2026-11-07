@@ -78,6 +78,16 @@
   <Tooltip />
 </div>
 
+<!-- The acrylic blend behind .acrylic surfaces (app.css). Opaque on purpose: where the window
+     is see-through (Mica), a part-transparent result would let the sharp content show through. -->
+<svg class="defs" aria-hidden="true" focusable="false">
+  <filter id="acrylic" x="0" y="0" width="1" height="1" color-interpolation-filters="sRGB">
+    <feColorMatrix type="matrix" values={app.theme.acrylic.matrix} result="blend" />
+    <feFlood flood-color={app.theme.acrylic.base} result="base" />
+    <feComposite in="blend" in2="base" operator="over" />
+  </filter>
+</svg>
+
 <style>
   .window {
     position: relative;
@@ -113,6 +123,11 @@
   }
   .boot {
     flex: 1;
+  }
+  .defs {
+    position: absolute;
+    width: 0;
+    height: 0;
   }
   .fatal {
     margin: auto;

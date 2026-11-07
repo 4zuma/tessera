@@ -117,6 +117,48 @@ export interface Theme {
   ink: string[];
   /** a light wash per category for closed folders, by what fills them most */
   tint: string[];
+  /** the blend behind .acrylic surfaces, see {@link acrylicBlend} */
+  acrylic: { matrix: string; base: string };
+}
+
+/**
+ * WinUI's default acrylic (AcrylicInAppFillColorDefaultBrush, which ToolTip uses; MenuFlyout's
+ * DesktopAcrylicBackdrop has the same colours). In microsoft-ui-xaml's AcrylicBrush the blurred
+ * backdrop (30 px) takes the tint's luminosity at TintLuminosityOpacity, then the tint's colour
+ * at TintOpacity, then 2% noise.
+ *
+ * `chroma` stands in for the clipping of the luminosity blend: near white (light theme) most
+ * colours fall out of gamut and get pulled toward grey, which a colour matrix cannot do, so it
+ * scales colour by a fixed amount instead. 0.5 fits the exact blend over the treemap to about
+ * 1/255 on average; in the dark theme nothing clips and the matrix is exact.
+ */
+const ACRYLIC: Record<Scheme, { tint: string; tintOpacity: number; luminosityOpacity: number; chroma: number }> = {
+  light: { tint: '#fcfcfc', tintOpacity: 0, luminosityOpacity: 0.85, chroma: 0.5 },
+  dark: { tint: '#2c2c2c', tintOpacity: 0.15, luminosityOpacity: 0.96, chroma: 1 },
+};
+
+/** luma weights of the W3C / Direct2D luminosity and colour blend modes */
+const LUMA = [0.3, 0.59, 0.11];
+
+/**
+ * The acrylic blend as one feColorMatrix (sRGB, unpremultiplied).
+ *
+ * Luminosity blend at opacity a with a grey of luma l: x + a·(l − Y(x)).
+ * Colour blend with that grey at opacity t: y − t·(y − Y(y)).
+ * Together: Y'= (1−a)·Y(x) + a·l, colour (x − Y(x)) scaled by (1−t)·chroma.
+ */
+export function acrylicBlend(scheme: Scheme): { matrix: string; base: string } {
+  const r = ACRYLIC[scheme];
+  const a = r.luminosityOpacity;
+  const l = hexToRgb(r.tint)[0] / 255;
+  const k = (1 - r.tintOpacity) * r.chroma;
+  const rows: string[] = [];
+  for (let i = 0; i < 3; i++) {
+    const row = LUMA.map((w, j) => k * ((i === j ? 1 : 0) - w) + (1 - a) * w);
+    rows.push([...row, 0, a * l].map(v => +v.toFixed(4)).join(' '));
+  }
+  rows.push('0 0 0 1 0');
+  return { matrix: rows.join('  '), base: r.tint };
 }
 
 function hexToRgb(h: string): [number, number, number] {
@@ -148,7 +190,7 @@ export function makeTheme(scheme: Scheme, accent: { light: string; dark: string 
     ink.push(scheme === 'dark' ? mix(base, '#ffffff', 0.82) : mix(base, '#000000', 0.62));
     tint.push(scheme === 'dark' ? mix(base, '#202020', 0.74) : mix(base, '#ffffff', 0.8));
   }
-  return { scheme, tok, fill, ink, tint };
+  return { scheme, tok, fill, ink, tint, acrylic: acrylicBlend(scheme) };
 }
 
 export function applyThemeCss(t: Theme, el: HTMLElement = document.documentElement) {
