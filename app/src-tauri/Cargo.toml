@@ -1,6 +1,6 @@
 [package]
 name = "tessera-app"
-version = "1.0.1"
+version = "1.1.0"
 description = "Tessera: see what fills your disk, and clean it up"
 edition = "2024"
 rust-version = "1.90"

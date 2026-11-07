@@ -55,7 +55,7 @@ export class MockBackend implements Backend {
 
   constructor(platform: Partial<PlatformInfo> = {}, opts: { scanMs?: number } = {}) {
     this.scanMs = opts.scanMs ?? 4600;
-    this.platform = { elevated: false, backdrop: 'none', accent: null, version: '1.0.1', core: false, native: false, ...browserChoice(), ...platform };
+    this.platform = { elevated: false, backdrop: 'none', accent: null, version: '1.1.0', core: false, native: false, ...browserChoice(), ...platform };
   }
 
   /* ------------------------------ helpers ------------------------------ */
