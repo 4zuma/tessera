@@ -144,6 +144,33 @@ impl NamePool {
         self.dedup = None;
     }
 
+    /// An empty pool (without de-duplication) that encodes every name with
+    /// a table trained on `sample`.
+    pub(crate) fn trained_on(sample: &[&[u8]]) -> NamePool {
+        NamePool {
+            chunks: Vec::new(),
+            dedup: None,
+            codec: Codec::Encoded {
+                from: 0,
+                table: Arc::new(SymbolTable::train(sample)),
+            },
+            raw_bytes: 0,
+            buf: Vec::new(),
+        }
+    }
+
+    /// Appends a name that this pool's [`NamePool::encoder`] encoded;
+    /// `raw_len` is its plain length. Returns what [`NamePool::push`] does.
+    pub(crate) fn append_encoded(&mut self, raw_len: usize, encoded: &[u8]) -> (u32, u16) {
+        debug_assert!(matches!(self.codec, Codec::Encoded { from: 0, .. }));
+        self.raw_bytes += raw_len;
+        let len = u16::try_from(encoded.len()).expect("name too long");
+        (self.append(encoded), len)
+    }
+
+    /// How many bytes of names a symbol table is trained on, about.
+    pub(crate) const SAMPLE_BYTES: usize = SAMPLE_BYTES;
+
     /// Stores `name` (or finds an identical stored copy) and returns its
     /// offset and stored length, which is what [`NamePool::get`] takes.
     ///

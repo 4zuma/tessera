@@ -229,6 +229,16 @@ fn synthetic_mft() {
         elapsed - t_stream
     );
     let peak = peak_rss();
+    let mut b = b;
+    let names_before = b.tree.memory().names;
+    let t1 = Instant::now();
+    b.tree.end_scan();
+    eprintln!(
+        "end of scan (names compressed again) {:?}: names {:.1} -> {:.1} MiB",
+        t1.elapsed(),
+        names_before as f64 / 1048576.0,
+        b.tree.memory().names as f64 / 1048576.0
+    );
     let t = &b.tree;
     let mem = t.memory();
     let mib = |x: u64| x as f64 / 1048576.0;
