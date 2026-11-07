@@ -65,9 +65,13 @@
 
   function onMenu(e: MouseEvent) {
     e.preventDefault();
+    // Windows' menu is opening (e.g. from Shift+F10): no second menu
+    if (app.shellBusy) return;
     const { x, y } = local(e);
     const it = app.engine?.hit(x, y) ?? null;
-    app.openMenu(e.clientX, e.clientY, it ? it.id : null);
+    // Shift+right-click opens Windows' full menu right away, as in Explorer
+    if (e.shiftKey) app.openShellMenu(e.clientX, e.clientY, it ? it.id : null);
+    else app.openMenu(e.clientX, e.clientY, it ? it.id : null);
   }
 </script>
 

@@ -40,10 +40,14 @@ PowerShell, then run `npx tauri dev` or the exe from that shell.
 
 Keyboard: arrows move the selection, Enter zooms in, Backspace goes up, Delete moves to
 the recycle bin, Shift+Delete deletes permanently, Ctrl+Z undoes, Ctrl+C copies paths,
-F5 rescans, Ctrl+Shift+F shows the frame-rate overlay (with WebGL or 2D for the drawing path).
+Shift+F10 opens Windows' context menu for the selection, F5 rescans, Ctrl+Shift+F shows
+the frame-rate overlay (with WebGL or 2D for the drawing path).
 
 Mouse: click selects, Ctrl+click toggles a tile, Shift+click selects the run of siblings
 between the last clicked tile and this one in layout (size) order, Ctrl+Shift+click adds
-that run. Permanent delete and emptying the recycle bin ask in a centred dialog over a
+that run. Right-click opens Tessera's menu; its last item, "Show more options", opens
+Windows' own (classic) context menu in the same place, as Windows 11's Explorer does, and
+Shift+right-click opens that one directly. "Delete" in it goes through Tessera's delete
+(protected folders, undo). Permanent delete and emptying the recycle bin ask in a centred dialog over a
 dimmed window, as WinUI's ContentDialog does; moving to the recycle bin does not ask,
 it can be undone.

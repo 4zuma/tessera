@@ -120,6 +120,8 @@ export const en = {
   'menu.copyPaths': 'Copy {n} paths',
   'menu.emptyBin': 'Empty Recycle Bin…',
   'menu.purge': 'Delete permanently…',
+  'menu.more': 'Show more options',
+  'menu.moreMixed': "Windows' menu works only for items in one folder.",
 
   /* confirmations */
   'confirm.purgeTitle': 'Delete permanently?',
@@ -148,6 +150,7 @@ export const en = {
   'toast.copiedOne': 'Path copied',
   'toast.copiedMany': '{n} paths copied',
   'toast.path': 'Path',
+  'toast.shellFailed': "Couldn't open the Windows menu",
   'err.layoutData': "Couldn't read the layout data",
   'err.layout': "Couldn't get the layout",
   'err.scanStart': "Couldn't start the scan",
@@ -161,6 +164,7 @@ export const en = {
   'preview.perfTip': 'Show frame rate and rect count (Ctrl+Shift+F)',
   'preview.reveal': 'The preview has no real files',
   'preview.revealBody': 'With the scan core, this runs explorer.exe /select,"{path}"',
+  'preview.shellBody': "With the scan core, this opens Windows' own context menu for these items.",
   'preview.admin': "The preview doesn't restart",
   'preview.adminBody': 'In the Tessera app, this button restarts Tessera as administrator so it can scan by reading the MFT, which is much faster.',
   'preview.live': 'Simulated live update',

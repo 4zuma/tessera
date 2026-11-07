@@ -3,12 +3,14 @@
 //! [`backend`] serves the commands and events from `tessera-core`: the whole
 //! file tree stays here, the WebView only receives the rects it draws.
 //! [`platform`] covers the window itself (Mica, accent colour, elevation),
-//! [`i18n`] the UI language and the text Rust produces.
+//! [`shell_menu`] Windows' own context menu for items, [`i18n`] the UI language
+//! and the text Rust produces.
 
 mod backend;
 mod i18n;
 mod memlog;
 mod platform;
+mod shell_menu;
 mod volumes;
 
 use tauri::Manager;
@@ -73,6 +75,8 @@ pub fn run() {
             backend::purge,
             backend::empty_recycle_bin,
             backend::reveal,
+            backend::shell_menu,
+            backend::shell_menu_prepare,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tessera");
