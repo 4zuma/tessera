@@ -533,7 +533,8 @@ impl Tree {
     /// first megabyte of names, which come from a few folders (on Windows,
     /// mostly the system's) and suit the rest of the drive less well. Also
     /// drops names that no node uses any more. Skipped for small trees,
-    /// where the first table saw most names anyway.
+    /// where the first table saw most names anyway, and when a name would
+    /// grow past 65,535 bytes.
     pub fn recompress_names(&mut self) {
         use rayon::prelude::*;
 
@@ -587,7 +588,7 @@ impl Tree {
         for batch in starts.chunks(1 << 20) {
             // per slice: the codes back to back; each name's encoded and plain length
             type Piece = (Vec<u8>, Vec<(u16, u16)>);
-            let pieces: Vec<Piece> = batch
+            let pieces: Option<Vec<Piece>> = batch
                 .par_chunks(64 * 1024)
                 .map(|ps| {
                     // sized to come straight from the OS (and go back to it)
@@ -597,11 +598,18 @@ impl Tree {
                         let name = name_at(p);
                         let at = codes.len();
                         enc.encode(&name, &mut codes);
-                        lens.push(((codes.len() - at) as u16, name.len() as u16));
+                        // A name over 32 KiB (only the root's path can be
+                        // one) may grow past what a stored length holds.
+                        let len = u16::try_from(codes.len() - at).ok()?;
+                        lens.push((len, name.len() as u16));
                     }
-                    (codes, lens)
+                    Some((codes, lens))
                 })
                 .collect();
+            // Then the names stay as they are: nothing has changed yet.
+            let Some(pieces) = pieces else {
+                return;
+            };
             for (codes, lens) in pieces {
                 let mut at = 0;
                 for (len, raw) in lens {
@@ -1272,5 +1280,35 @@ mod tests {
         b.push_wtf8(b"new name.txt", 1, 1, NodeFlags::NONE);
         let r = t.add_children(dir, &b);
         assert_eq!(t.name(NodeId(r.start)), b"new name.txt");
+    }
+
+    #[test]
+    fn names_stay_when_one_would_grow_too_long() {
+        // A root path near 64 KiB of bytes no table can cover: most of
+        // them take two bytes encoded.
+        let mut x = 1u64;
+        let root: Vec<u8> = (0..65_000)
+            .map(|_| {
+                x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                (x >> 56) as u8
+            })
+            .collect();
+        let mut t = Tree::new(&root);
+        let mut b = EntryBatch::new();
+        for i in 0..250_000u32 {
+            let name = format!("file number {i} of the tree.txt");
+            b.push_wtf8(name.as_bytes(), 1, 1, NodeFlags::NONE);
+        }
+        t.add_children(NodeId::ROOT, &b);
+        assert!(t.names.raw_bytes() > 4 * crate::names::TRAIN_AT);
+        let stored = t.names.stored_bytes();
+        t.end_scan();
+        assert_eq!(t.name(NodeId::ROOT), &root[..]);
+        assert_eq!(t.name(NodeId(1)), b"file number 0 of the tree.txt");
+        assert_eq!(
+            t.name(NodeId(250_000)),
+            b"file number 249999 of the tree.txt"
+        );
+        assert_eq!(t.names.stored_bytes(), stored);
     }
 }
