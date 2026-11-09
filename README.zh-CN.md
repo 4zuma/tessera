@@ -73,7 +73,7 @@ Tessera 的扫描时间来自 `tessera bench`，文件缓存已热；内存是�
 
 ## 从源码构建
 
-需要 Rust 1.85 或更新版本，以及 Node.js。
+需要 Rust 1.90 或更新版本，以及 Node.js。
 
 ```sh
 cd app

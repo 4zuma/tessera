@@ -89,7 +89,7 @@ All shortcuts and mouse gestures are listed in [`app/README.md`](app/README.md).
 
 ## Building from source
 
-You need Rust 1.85 or newer and Node.js.
+You need Rust 1.90 or newer and Node.js.
 
 ```sh
 cd app

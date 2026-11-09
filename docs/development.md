@@ -55,7 +55,7 @@ the path is an NTFS volume root, and walks the directories otherwise.
 
 ## Building and testing
 
-Requires Rust 1.85 or newer.
+Requires Rust 1.85 or newer (the app's Tauri crate needs 1.90).
 
 ```sh
 cargo build --release -p tessera-cli
