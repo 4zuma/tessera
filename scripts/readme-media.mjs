@@ -252,20 +252,32 @@ async function record(browser, encoder, lang, theme) {
     const clip = new Clip(encoder);
     await clip.start();
     const shot = () => page.screenshot({ omitBackground: true, type: 'png' });
-    // let `ms` of page time pass, `speed` times faster than real time, at `fps` frames a second
-    const play = async (ms, { speed = 1, fps = FPS } = {}) => {
+    // let `ms` of page time pass, `speed` times faster than real time, at `fps` frames a second;
+    // with `until`, stop as soon as it says so
+    const play = async (ms, { speed = 1, fps = FPS, until } = {}) => {
       const frame = 1000 / fps;
       for (let i = Math.round(ms / speed / frame); i > 0; i--) {
         await page.clock.runFor(frame * speed);
         await clip.add(await shot(), frame);
+        if (until && (await until())) return;
       }
+      if (until) throw new Error(`still waiting after ${ms} ms of page time`);
+    };
+    // the scan has started (its progress bar showed) and ended (the bar went again)
+    let started = false;
+    const scanDone = async () => {
+      const active = (await page.locator('[role="progressbar"].active').count()) > 0;
+      started ||= active;
+      return started && !active;
     };
 
     // the drive picker; the preview starts a scan of C: by itself 300 ms after loading
     await page.clock.runFor(50);
     await clip.add(await shot(), 900);
-    // the sample scan takes 4.6 s; shown 1.6 times faster, with time for the map to settle
-    await play(4800, { speed: 2.5, fps: 20 });
+    // the sample scan (4.6 s), 2.5 times faster at 20 fps, until its progress bar goes; then
+    // time for the last layout to settle
+    await play(15000, { speed: 2.5, fps: 20, until: scanDone });
+    await play(800, { speed: 2.5, fps: 20 });
     const still = Buffer.from(await encoder.evaluate(([p, q]) => window.still(p, q), [(await shot()).toString('base64'), STILL_QUALITY]), 'base64');
     clip.hold(1200);
     // zoom into Program Files (x86), then move the pointer off the map so nothing stays hovered
