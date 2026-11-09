@@ -1031,25 +1031,9 @@ pub async fn reveal(core: State<'_, Core>, id: u32) -> Result<(), String> {
     open_in_explorer(&path)
 }
 
-/// Loads the shell's menu extensions for `ids` (all in one folder) on a
-/// background thread, so that `shell_menu` opens without hanging the window.
-/// The first time this can take seconds (see [`shell_menu`]).
-#[tauri::command]
-pub async fn shell_menu_prepare(core: State<'_, Core>, ids: Vec<u32>) -> Result<(), String> {
-    let s = core.current()?;
-    let paths = menu_paths(&s, &ids)?;
-    if paths.is_empty() {
-        return Ok(());
-    }
-    tauri::async_runtime::spawn_blocking(move || shell_menu::prepare(paths))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
 /// Windows' own context menu for `ids` (all in one folder) at `x`, `y` (CSS
 /// px in the window), with Explorer's Shift-only verbs if `extended`. Resolves
 /// when the menu closes; "delete" is left to the WebView (see [`shell_menu`]).
-/// Call `shell_menu_prepare` first: this runs on the window's thread.
 #[tauri::command]
 pub async fn shell_menu(
     app: AppHandle,

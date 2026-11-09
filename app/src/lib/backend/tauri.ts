@@ -59,9 +59,6 @@ export class TauriBackend implements Backend {
   reveal(id: number) {
     return invoke<void>('reveal', { id });
   }
-  shellMenuPrepare(ids: number[]) {
-    return invoke<void>('shell_menu_prepare', { ids });
-  }
   shellMenu(ids: number[], x: number, y: number, extended: boolean) {
     return invoke<ShellAction>('shell_menu', { ids, x, y, extended });
   }
