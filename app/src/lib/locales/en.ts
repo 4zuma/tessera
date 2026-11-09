@@ -94,7 +94,9 @@ export const en = {
   'pane.folderLocked': "This folder can't be deleted",
   'pane.fileLocked': "This file can't be deleted",
   'pane.empty': 'Point at a tile to see its details',
-  'pane.howTo': 'Click to select · Ctrl+click to add · Shift+click to select a range · Double-click to zoom in · Right-click for more',
+  /* under the greyed-out buttons while nothing is selected, one line each */
+  'pane.howToSelect': 'Click to select, Ctrl or Shift + click for more',
+  'pane.howToMore': 'Double-click to zoom in, right-click for more',
   'pane.byType': 'By type',
   'pane.highlight': 'Highlight only {cat}',
   'pane.afterScan': 'Shown after the scan',
@@ -120,6 +122,8 @@ export const en = {
   'menu.copyPaths': 'Copy {n} paths',
   'menu.emptyBin': 'Empty Recycle Bin…',
   'menu.purge': 'Delete permanently…',
+  'menu.more': 'Show more options',
+  'menu.moreMixed': "Windows' menu works only for items in one folder.",
 
   /* confirmations */
   'confirm.purgeTitle': 'Delete permanently?',
@@ -148,6 +152,7 @@ export const en = {
   'toast.copiedOne': 'Path copied',
   'toast.copiedMany': '{n} paths copied',
   'toast.path': 'Path',
+  'toast.shellFailed': "Couldn't open the Windows menu",
   'err.layoutData': "Couldn't read the layout data",
   'err.layout': "Couldn't get the layout",
   'err.scanStart': "Couldn't start the scan",
@@ -161,6 +166,7 @@ export const en = {
   'preview.perfTip': 'Show frame rate and rect count (Ctrl+Shift+F)',
   'preview.reveal': 'The preview has no real files',
   'preview.revealBody': 'With the scan core, this runs explorer.exe /select,"{path}"',
+  'preview.shellBody': "With the scan core, this opens Windows' own context menu for these items.",
   'preview.admin': "The preview doesn't restart",
   'preview.adminBody': 'In the Tessera app, this button restarts Tessera as administrator so it can scan by reading the MFT, which is much faster.',
   'preview.live': 'Simulated live update',

@@ -28,6 +28,7 @@ All sizes are bytes. All ids are `u32` node indices into the core's arena unless
 | `purge` | `{ ids: u32[] }` | `DeleteResult` |
 | `empty_recycle_bin` | `{ root: string }` | `DeleteResult` |
 | `reveal` | `{ id: u32 }` | `()` – `explorer.exe /select,"<path>"` |
+| `shell_menu` | `{ ids: u32[], x: f64, y: f64, extended: bool }` | `"none" \| "invoked" \| "recycle" \| "purge"` – Windows' classic context menu for `ids` (all in one folder, else an error) at client point `x`, `y` (CSS px), with Explorer's Shift-only verbs if `extended`; resolves when the menu closes. "Delete" is not run by the shell: `"recycle"` (`"purge"` with Shift held) tells the UI to delete through `recycle` / `purge` itself |
 | `relaunch_elevated` | – | `()` – restarts with `runas`, keeps the window position |
 
 ```ts
