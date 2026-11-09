@@ -53,6 +53,12 @@ html[data-backdrop="none"] body {
   height: 100%;
 }
 
+/* waiting for Windows' context menu (its extensions can take seconds to load the first time) */
+html.wait,
+html.wait * {
+  cursor: progress !important;
+}
+
 button,
 input,
 select {

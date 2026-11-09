@@ -140,6 +140,8 @@ pub mod text {
         NO_SCAN: "No scan has been started yet.", "还没有开始扫描";
         NOT_FOUND: "Can't find {}", "找不到 {}";
         NO_ITEM: "This item no longer exists.", "项目不存在";
+        MIXED_FOLDERS: "The Windows menu works only for items in one folder.",
+            "Windows 菜单只能用于同一个文件夹里的项目";
         // non-Windows dev builds only
         #[cfg_attr(windows, allow(dead_code))]
         WINDOWS_ONLY: "Only available on Windows.", "只在 Windows 上可用";
