@@ -534,7 +534,8 @@ impl Tree {
     /// mostly the system's) and suit the rest of the drive less well. Also
     /// drops names that no node uses any more. Skipped for small trees,
     /// where the first table saw most names anyway, and when a name would
-    /// grow past 65,535 bytes.
+    /// grow past 65,535 bytes; the old names also stay when they take less
+    /// room than the new ones would.
     pub fn recompress_names(&mut self) {
         use rayon::prelude::*;
 
@@ -620,6 +621,11 @@ impl Tree {
             }
         }
 
+        // Names alike throughout compress as well with the first table:
+        // keep the pool that is smaller.
+        if pool.stored_bytes() >= self.names.stored_bytes() {
+            return;
+        }
         // point every node of each run at the new copy
         for (i, &(off, len)) in placed.iter().enumerate() {
             let from = starts[i] as usize;
@@ -1280,6 +1286,58 @@ mod tests {
         b.push_wtf8(b"new name.txt", 1, 1, NodeFlags::NONE);
         let r = t.add_children(dir, &b);
         assert_eq!(t.name(NodeId(r.start)), b"new name.txt");
+    }
+
+    #[test]
+    fn names_never_take_more_room_after_the_scan() {
+        // Names alike from first to last (hashes, GUIDs, words in any
+        // order): the first table suits them as well as any.
+        let mut t = Tree::new(b"C:\\");
+        let mut b = EntryBatch::new();
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let mut rnd = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let words = [
+            "Microsoft",
+            "Windows",
+            "amd64",
+            "System32",
+            "node_modules",
+            "照片",
+        ];
+        let exts = [".dll", ".exe", ".js", ".json", ".png", ".mui", ""];
+        for _ in 0..400_000 {
+            let r = rnd();
+            let w = |k: u32| words[(r >> k) as usize % words.len()];
+            let e = exts[(r >> 40) as usize % exts.len()];
+            let name = match r % 4 {
+                0 => format!("{}_{}_{:016x}{e}", w(8), w(16), rnd()),
+                1 => format!(
+                    "{{{:08X}-{:04X}-{:012X}}}",
+                    rnd() as u32,
+                    rnd() as u16,
+                    rnd() >> 16
+                ),
+                2 => format!("{}{}{e}", w(8), (r >> 20) % 500),
+                _ => format!("{:x}{e}", rnd()),
+            };
+            b.push_wtf8(name.as_bytes(), 1, 1, NodeFlags::NONE);
+        }
+        t.add_children(NodeId::ROOT, &b);
+        let names: Vec<Vec<u8>> = (0..t.len() as u32)
+            .map(|i| t.name(NodeId(i)).to_vec())
+            .collect();
+        let stored = t.names.stored_bytes();
+        assert!(t.names.raw_bytes() > 4 * crate::names::TRAIN_AT);
+        t.end_scan();
+        assert!(t.names.stored_bytes() <= stored);
+        for (i, name) in names.iter().enumerate() {
+            assert_eq!(t.name(NodeId(i as u32)), &name[..], "node {i}");
+        }
     }
 
     #[test]
