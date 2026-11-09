@@ -47,7 +47,9 @@ impl Info {
 /// and gives it its backdrop. Returns the window and the backdrop it got ("mica" or "none").
 ///
 /// Mica needs Windows 11 (build 22000+). There the window is transparent, so Mica shows
-/// through the WebView. On Windows 10 a transparent window has nothing behind it (the
+/// through the WebView. It also has no redirection bitmap: the WebView draws all of the
+/// client area itself, so the window's own copy of it (4 bytes a pixel, 30 MB maximized
+/// on a 4K screen) would only hold memory. On Windows 10 a transparent window has nothing behind it (the
 /// desktop shows through until the page paints, and in the strip a resize uncovers), so
 /// the window is opaque and painted with what WinUI itself shows when Mica is unavailable:
 /// the theme's solid base colour. The page paints the same colour (`--solid-base`).
@@ -65,6 +67,7 @@ pub fn build_main_window(
     let mica = imp::supports_mica();
     let window = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?
         .transparent(mica)
+        .no_redirection_bitmap(mica)
         .build()?;
     if !mica {
         // still hidden (`"visible": false`), so the colour is in place before the first frame;
