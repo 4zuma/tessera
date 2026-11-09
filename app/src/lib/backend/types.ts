@@ -149,8 +149,6 @@ export interface Backend {
   purge(ids: number[]): Promise<DeleteResult>;
   emptyRecycleBin(root: string): Promise<DeleteResult>;
   reveal(id: number): Promise<void>;
-  /** load the shell's menu extensions for `ids` (one folder) in the background, before `shellMenu` */
-  shellMenuPrepare(ids: number[]): Promise<void>;
   /** Windows' own context menu for `ids` (one folder) at client point x, y; resolves when it closes */
   shellMenu(ids: number[], x: number, y: number, extended: boolean): Promise<ShellAction>;
   relaunchElevated(): Promise<void>;
