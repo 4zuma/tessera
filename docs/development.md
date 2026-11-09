@@ -9,7 +9,9 @@ the UI is in [`ipc.md`](ipc.md).
   layout.
 * `crates/tessera-cli` – the command-line harness, `tessera`.
 * `app/` – the Tauri 2 + Svelte app.
-* `scripts/` – the version bump, the README animation and the idle-CPU measurement.
+* `scripts/` – the version bump, the app icon (`brand-icons.mjs`, see
+  [`brand/README.md`](brand/README.md)), the README animation and the idle-CPU
+  measurement.
 
 ## What the core does
 
