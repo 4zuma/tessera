@@ -127,6 +127,8 @@ export class App implements EngineHost {
   error = $state<string | null>(null);
   reduced = false;
   undoToken = $state<number | null>(null);
+  /** Windows' menu is open (or about to be): input on the map waits for it */
+  shellBusy = false;
   /** where a Shift+click run starts */
   private anchor: number | null = null;
 
@@ -816,16 +818,78 @@ export class App implements EngineHost {
       if (r.flags & Flag.RecycleBin) {
         rows.push({ type: 'item', icon: 'sweep', label: t('menu.emptyBin'), danger: true, run: () => this.confirmEmptyBin() });
       } else {
-        const flagged = ids.find(x => lockFromFlags(this.rectOf(x)?.flags ?? 0));
-        // the details card usually already holds the core's reason for the item under the pointer
-        const d = this.details;
-        const why = flagged == null ? null : (d?.id === flagged && d.lockReason) || lockFromFlags(this.rectOf(flagged)?.flags ?? 0);
+        const why = this.lockWhy(ids);
         rows.push({ type: 'item', icon: 'trash', label: t('recycle'), key: 'Del', disabled: !!why, run: () => void this.recycle(ids) });
         rows.push({ type: 'item', icon: 'purge', label: t('menu.purge'), key: 'Shift+Del', danger: true, disabled: !!why, run: () => this.confirmPurge(ids) });
         if (why) rows.push({ type: 'note', label: why, lock: true });
       }
+      // last, as in Windows 11's own menu: the full classic menu, opened where this one was
+      const mixed = new Set(ids.map(x => this.rectOf(x)?.parent).filter(p => p != null)).size > 1;
+      rows.push({ type: 'sep' });
+      rows.push({ type: 'item', icon: 'more', label: t('menu.more'), key: 'Shift+F10', disabled: mixed, run: () => void this.shellMenu(ids, x, y, false) });
+      if (mixed) rows.push({ type: 'note', label: t('menu.moreMixed') });
     }
     this.menu = { x, y, rows };
+  }
+
+  /** why `ids` can't be deleted, or null; the same rule as the menu's delete items */
+  private lockWhy(ids: number[]): string | null {
+    const flagged = ids.find(x => lockFromFlags(this.rectOf(x)?.flags ?? 0));
+    if (flagged == null) return null;
+    // the details card usually already holds the core's reason for the item under the pointer
+    const d = this.details;
+    return (d?.id === flagged && d.lockReason) || lockFromFlags(this.rectOf(flagged)?.flags ?? 0);
+  }
+
+  /**
+   * Shift+right-click and Shift+F10: Windows' menu right away, as in Explorer. Free space and
+   * groups have no Windows menu and get Tessera's.
+   */
+  openShellMenu(x: number, y: number, id: number | null) {
+    if (this.shellBusy) return;
+    if (id == null || !isNodeId(id)) return this.openMenu(x, y, id);
+    this.tip = null;
+    this.menu = null;
+    if (!this.sel.has(id)) {
+      this.selectOnly(id);
+      void this.refreshSel();
+      this.engine?.kick();
+    }
+    void this.shellMenu(this.targets(id), x, y, true);
+  }
+
+  /** Windows' own context menu for `ids` at client point x, y (see app/src-tauri/src/shell_menu.rs) */
+  async shellMenu(ids: number[], x: number, y: number, extended: boolean) {
+    ids = ids.filter(isNodeId);
+    if (this.shellBusy || !ids.length || !this.backend) return;
+    if (!this.platform?.core) {
+      this.showToast('info', t('preview.shellBody'), [], t('preview.reveal'));
+      return;
+    }
+    this.shellBusy = true;
+    try {
+      const action = await this.backend.shellMenu(ids, x, y, extended);
+      // "Delete" goes through Tessera's own delete: protected folders, undo, the animation
+      if (action === 'recycle' || action === 'purge') {
+        const why = this.lockWhy(ids);
+        if (why) this.showToast('error', why, [], t('toast.notDeleted'));
+        else if (action === 'purge') this.confirmPurge(ids);
+        else void this.recycle(ids);
+      }
+    } catch (err) {
+      this.fail(t('toast.shellFailed'), err);
+    } finally {
+      this.shellBusy = false;
+      if (!this.confirm) this.focusMap();
+    }
+  }
+
+  /** a point on a tile near its label, in client coordinates, for menus opened from the keyboard */
+  private anchorOf(id: number): { x: number; y: number } | null {
+    const it = this.engine?.items.get(id);
+    const c = this.engine?.canvas.getBoundingClientRect();
+    if (!it || !c) return null;
+    return { x: c.left + it.x + Math.min(it.w / 2, 24), y: c.top + it.y + Math.min(it.h / 2, 24) };
   }
 
   openConfirm(c: ConfirmData) {
@@ -921,6 +985,12 @@ export class App implements EngineHost {
     } else if (ctrl && e.key.toLowerCase() === 'c' && sel.length) {
       e.preventDefault();
       void this.copyPath(sel);
+    } else if (e.key === 'F10' && e.shiftKey) {
+      // Explorer's shortcut for its full menu; always taken, so the WebView opens no menu of its own
+      e.preventDefault();
+      const last = sel[sel.length - 1];
+      const at = last != null ? this.anchorOf(last) : null;
+      if (at) this.openShellMenu(at.x, at.y, last);
     } else if (e.key === 'F5') {
       e.preventDefault();
       void this.rescan();

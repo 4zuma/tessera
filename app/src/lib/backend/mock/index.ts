@@ -16,6 +16,7 @@ import type {
   PlatformInfo,
   ScanProgress,
   ScanStarted,
+  ShellAction,
   SizeMode,
   Unlisten,
   Volume,
@@ -55,7 +56,7 @@ export class MockBackend implements Backend {
 
   constructor(platform: Partial<PlatformInfo> = {}, opts: { scanMs?: number } = {}) {
     this.scanMs = opts.scanMs ?? 4600;
-    this.platform = { elevated: false, backdrop: 'none', accent: null, version: '1.1.0', core: false, native: false, ...browserChoice(), ...platform };
+    this.platform = { elevated: false, backdrop: 'none', accent: null, version: '1.1.1', core: false, native: false, ...browserChoice(), ...platform };
   }
 
   /* ------------------------------ helpers ------------------------------ */
@@ -422,6 +423,11 @@ export class MockBackend implements Backend {
 
   async reveal() {
     /* the preview has no Explorer to open */
+  }
+
+  async shellMenu(): Promise<ShellAction> {
+    /* the preview has no shell menu */
+    return 'none';
   }
 
   async relaunchElevated() {

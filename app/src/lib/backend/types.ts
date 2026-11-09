@@ -89,6 +89,12 @@ export interface CatStat {
   bytes: number;
 }
 
+/**
+ * What became of Windows' menu: closed, a command ran, or "Delete" was chosen (with Shift
+ * held: "purge"), which Tessera then does itself.
+ */
+export type ShellAction = 'none' | 'invoked' | 'recycle' | 'purge';
+
 export interface DeleteResult {
   ok: number[];
   failed: { id: number; reason: string }[];
@@ -143,6 +149,8 @@ export interface Backend {
   purge(ids: number[]): Promise<DeleteResult>;
   emptyRecycleBin(root: string): Promise<DeleteResult>;
   reveal(id: number): Promise<void>;
+  /** Windows' own context menu for `ids` (one folder) at client point x, y; resolves when it closes */
+  shellMenu(ids: number[], x: number, y: number, extended: boolean): Promise<ShellAction>;
   relaunchElevated(): Promise<void>;
   on<K extends keyof BackendEvents>(event: K, cb: (payload: BackendEvents[K]) => void): Promise<Unlisten>;
   /** preview-only helpers (live-update demo); absent on the real backend */

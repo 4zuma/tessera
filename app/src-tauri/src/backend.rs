@@ -19,7 +19,7 @@ use tessera_core::watch::{BatchReport, WatchOptions, Watcher};
 use tessera_core::{NodeFlags, NodeId, SharedTree, Tree, category, delete};
 
 use crate::i18n::{self, text};
-use crate::volumes;
+use crate::{shell_menu, volumes};
 
 /// How often `scan-progress` is sent while scanning.
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
@@ -1031,6 +1031,65 @@ pub async fn reveal(core: State<'_, Core>, id: u32) -> Result<(), String> {
     open_in_explorer(&path)
 }
 
+/// Windows' own context menu for `ids` (all in one folder) at `x`, `y` (CSS
+/// px in the window), with Explorer's Shift-only verbs if `extended`. Resolves
+/// when the menu closes; "delete" is left to the WebView (see [`shell_menu`]).
+#[tauri::command]
+pub async fn shell_menu(
+    app: AppHandle,
+    core: State<'_, Core>,
+    ids: Vec<u32>,
+    x: f64,
+    y: f64,
+    extended: bool,
+) -> Result<shell_menu::Action, String> {
+    let s = core.current()?;
+    let paths = menu_paths(&s, &ids)?;
+    if paths.is_empty() {
+        return Ok(shell_menu::Action::None);
+    }
+    let window = app
+        .get_webview_window("main")
+        .ok_or("main window missing")?;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let req = shell_menu::Request {
+        paths,
+        x: (x * scale).round() as i32,
+        y: (y * scale).round() as i32,
+        extended,
+        owner: core.owner_hwnd.load(Relaxed),
+    };
+    // the menu runs on the window's thread and blocks it until it closes
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    app.run_on_main_thread(move || {
+        let _ = tx.send(shell_menu::show(req));
+    })
+    .map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || rx.recv())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?
+}
+
+/// The paths of live items that share one folder, as the shell menu needs them.
+fn menu_paths(s: &Session, ids: &[u32]) -> Result<Vec<PathBuf>, String> {
+    let t = s.tree();
+    let mut folder = None;
+    let mut paths = Vec::with_capacity(ids.len());
+    for &id in ids {
+        let n = NodeId(id);
+        if id as usize >= t.len() || t.is_deleted(n) {
+            return Err(text::NO_ITEM.get().into());
+        }
+        let parent = t.node(n).parent;
+        if *folder.get_or_insert(parent) != parent {
+            return Err(text::MIXED_FOLDERS.get().into());
+        }
+        paths.push(t.path(n));
+    }
+    Ok(paths)
+}
+
 #[cfg(windows)]
 fn open_in_explorer(path: &Path) -> Result<(), String> {
     use std::ffi::OsString;
@@ -1236,6 +1295,28 @@ mod tests {
         assert!(t.mark_deleted(me));
         assert_eq!(live_view(&t, docs), id_of_root_child(&t, b"Users"));
         assert_eq!(live_view(&t, NodeId(9999)), NodeId::ROOT);
+    }
+
+    #[test]
+    fn shell_menu_items_share_a_folder() {
+        let s = sample();
+        let a = id_of(&s, &[b"Users", b"me", b"a.mp4"]);
+        let b = id_of(&s, &[b"Users", b"me", b"b.ts"]);
+        let c = id_of(&s, &[b"Users", b"me", b"Docs", b"c.pdf"]);
+        let paths = menu_paths(&s, &[a.0, b.0]).unwrap();
+        assert_eq!(paths.len(), 2);
+        assert!(paths[1].ends_with("b.ts"), "{:?}", paths[1]);
+        assert_eq!(menu_paths(&s, &[0]).unwrap(), [PathBuf::from("C:\\")]);
+        assert_eq!(
+            menu_paths(&s, &[a.0, c.0]).unwrap_err(),
+            text::MIXED_FOLDERS.get()
+        );
+        assert_eq!(menu_paths(&s, &[9999]).unwrap_err(), text::NO_ITEM.get());
+        s.tree.write().unwrap().mark_deleted(b);
+        assert_eq!(
+            menu_paths(&s, &[a.0, b.0]).unwrap_err(),
+            text::NO_ITEM.get()
+        );
     }
 
     fn id_of_root_child(t: &Tree, name: &[u8]) -> NodeId {
