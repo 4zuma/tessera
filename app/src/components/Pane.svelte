@@ -70,20 +70,25 @@
     {/if}
   </section>
 
+  <!-- The buttons stay put with nothing selected, greyed out, so the card says what it is for
+       before anything is picked; the two hint lines say how to pick. -->
   <section class="card sel">
     {#if app.selInfo.count}
       <div class="st">
         {#each tParts('selected', { n: app.selInfo.count, size: fmtBytes(app.selInfo.bytes) }) as p, i (i)}{#if p.v}<b class:tabular={p.v === 'size'}>{p.text}</b>{:else}{p.text}{/if}{/each}
       </div>
-      <div class="sa">
-        <button class="btn" disabled={!!app.selInfo.lockReason} onclick={() => app.recycle([...app.sel])}><Icon name="trash" />{t('recycle')}</button>
-        <button class="btn danger" disabled={!!app.selInfo.lockReason} onclick={() => app.confirmPurge([...app.sel])}><Icon name="purge" />{t('purge')}</button>
+    {/if}
+    <div class="sa">
+      <button class="btn" disabled={!app.selInfo.count || !!app.selInfo.lockReason} onclick={() => app.recycle([...app.sel])}><Icon name="trash" />{t('recycle')}</button>
+      <button class="btn danger" disabled={!app.selInfo.count || !!app.selInfo.lockReason} onclick={() => app.confirmPurge([...app.sel])}><Icon name="purge" />{t('purge')}</button>
+    </div>
+    {#if !app.selInfo.count}
+      <div class="tip caption">
+        <span>{t('pane.howToSelect')}</span>
+        <span>{t('pane.howToMore')}</span>
       </div>
-      {#if app.selInfo.lockReason}
-        <div class="why caption"><Icon name="lock" size={14} /><span>{app.selInfo.lockReason}</span></div>
-      {/if}
-    {:else}
-      <div class="empty caption">{t('pane.howTo')}</div>
+    {:else if app.selInfo.lockReason}
+      <div class="why caption"><Icon name="lock" size={14} /><span>{app.selInfo.lockReason}</span></div>
     {/if}
   </section>
 
@@ -245,6 +250,12 @@
     flex: 1;
     min-width: max-content;
     padding: 0 8px;
+  }
+  .tip {
+    display: flex;
+    flex-direction: column;
+    margin-top: 10px;
+    color: var(--text-3);
   }
   .why {
     display: flex;

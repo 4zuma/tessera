@@ -94,7 +94,9 @@ export const en = {
   'pane.folderLocked': "This folder can't be deleted",
   'pane.fileLocked': "This file can't be deleted",
   'pane.empty': 'Point at a tile to see its details',
-  'pane.howTo': 'Click to select · Ctrl+click to add · Shift+click to select a range · Double-click to zoom in · Right-click for more',
+  /* under the greyed-out buttons while nothing is selected, one line each */
+  'pane.howToSelect': 'Click to select, Ctrl or Shift + click for more',
+  'pane.howToMore': 'Double-click to zoom in, right-click for more',
   'pane.byType': 'By type',
   'pane.highlight': 'Highlight only {cat}',
   'pane.afterScan': 'Shown after the scan',
