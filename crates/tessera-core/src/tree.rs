@@ -520,9 +520,123 @@ impl Tree {
     }
 
     /// Releases memory only needed while scanning (the name
-    /// de-duplication table). Called by [`crate::scan::scan`] when it ends.
+    /// de-duplication table) and compresses the names again with a table
+    /// trained on the whole tree. Called by [`crate::scan::scan`] when it
+    /// ends.
     pub fn end_scan(&mut self) {
         self.names.end_dedup();
+        self.recompress_names();
+    }
+
+    /// Re-encodes every name with a symbol table trained on names drawn
+    /// evenly from the whole tree. The pool trains its first table on the
+    /// first megabyte of names, which come from a few folders (on Windows,
+    /// mostly the system's) and suit the rest of the drive less well. Also
+    /// drops names that no node uses any more. Skipped for small trees,
+    /// where the first table saw most names anyway, and when a name would
+    /// grow past 65,535 bytes; the old names also stay when they take less
+    /// room than the new ones would.
+    pub fn recompress_names(&mut self) {
+        use rayon::prelude::*;
+
+        if self.names.raw_bytes() < 4 * crate::names::TRAIN_AT {
+            return;
+        }
+        // Node indices sorted by name offset: each distinct name is then
+        // one run, decoded and encoded once however many nodes share it.
+        let mut order: Vec<u64> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| u64::from(n.name_off) << 32 | i as u64)
+            .collect();
+        order.par_sort_unstable();
+        let node_at = |pos: u32| self.nodes.get(order[pos as usize] as u32 as usize);
+        // Where each run starts (an empty name shares its offset with the
+        // next name, so the length counts too).
+        let starts: Vec<u32> = (0..order.len() as u32)
+            .filter(|&p| {
+                p == 0 || {
+                    let (a, b) = (node_at(p - 1), node_at(p));
+                    a.name_off != b.name_off || a.name_len != b.name_len
+                }
+            })
+            .collect();
+        let name_at = |pos: u32| {
+            let n = node_at(pos);
+            self.names.get(n.name_off, n.name_len)
+        };
+
+        // the sample: every few names, about SAMPLE_BYTES of them
+        let every = self
+            .names
+            .raw_bytes()
+            .div_ceil(NamePool::SAMPLE_BYTES)
+            .max(1);
+        let sample: Vec<Vec<u8>> = starts
+            .iter()
+            .step_by(every)
+            .map(|&p| name_at(p).to_vec())
+            .collect();
+        let sample: Vec<&[u8]> = sample.iter().map(|v| &v[..]).collect();
+        let mut pool = NamePool::trained_on(&sample);
+        let enc = pool.encoder().expect("a trained pool encodes");
+
+        // Encode on all threads, a slice of names at a time (the codes back
+        // to back, and each name's encoded and plain length), then append
+        // them in order and note where each one went.
+        let mut placed: Vec<(u32, u16)> = Vec::with_capacity(starts.len());
+        for batch in starts.chunks(1 << 20) {
+            // per slice: the codes back to back; each name's encoded and plain length
+            type Piece = (Vec<u8>, Vec<(u16, u16)>);
+            let pieces: Option<Vec<Piece>> = batch
+                .par_chunks(64 * 1024)
+                .map(|ps| {
+                    // sized to come straight from the OS (and go back to it)
+                    let mut codes = Vec::with_capacity(ps.len() * 24);
+                    let mut lens = Vec::with_capacity(ps.len());
+                    for &p in ps {
+                        let name = name_at(p);
+                        let at = codes.len();
+                        enc.encode(&name, &mut codes);
+                        // A name over 32 KiB (only the root's path can be
+                        // one) may grow past what a stored length holds.
+                        let len = u16::try_from(codes.len() - at).ok()?;
+                        lens.push((len, name.len() as u16));
+                    }
+                    Some((codes, lens))
+                })
+                .collect();
+            // Then the names stay as they are: nothing has changed yet.
+            let Some(pieces) = pieces else {
+                return;
+            };
+            for (codes, lens) in pieces {
+                let mut at = 0;
+                for (len, raw) in lens {
+                    let end = at + len as usize;
+                    placed.push(pool.append_encoded(raw as usize, &codes[at..end]));
+                    at = end;
+                }
+            }
+        }
+
+        // Names alike throughout compress as well with the first table:
+        // keep the pool that is smaller.
+        if pool.stored_bytes() >= self.names.stored_bytes() {
+            return;
+        }
+        // point every node of each run at the new copy
+        for (i, &(off, len)) in placed.iter().enumerate() {
+            let from = starts[i] as usize;
+            let to = starts.get(i + 1).map_or(order.len(), |&p| p as usize);
+            for &k in &order[from..to] {
+                let n = self.nodes.get_mut(k as u32 as usize);
+                n.name_off = off;
+                n.name_len = len;
+            }
+        }
+        self.names = pool;
     }
 
     /// Wraps the tree for sharing between threads.
@@ -1117,5 +1231,142 @@ mod tests {
             m.nodes >= 200_001 * 32 && m.nodes < 5 * 65_536 * 32,
             "{m:?}"
         );
+    }
+
+    #[test]
+    fn names_compress_better_after_the_scan() {
+        // The first names (all alike) are what the scan-time table learns;
+        // most of the tree looks different.
+        let mut t = Tree::new(b"C:\\");
+        let mut b = EntryBatch::new();
+        for i in 0..20_000u32 {
+            let name =
+                format!("amd64_microsoft-windows-part{i}_31bf3856ad364e35_10.0.22621.{i}_none");
+            b.push_wtf8(name.as_bytes(), 4096, 1, NodeFlags::NONE);
+        }
+        b.push_wtf8(b"dir", 0, 0, NodeFlags::DIR);
+        t.add_children(NodeId::ROOT, &b);
+        let dir = NodeId(t.len() as u32 - 1);
+        for i in 0..400_000u32 {
+            b.clear();
+            let name = match i % 4 {
+                0 => format!("照片 {i}.jpg"),
+                1 => format!("IMG_{:05}.JPG", i % 40_000),
+                2 => format!("{:016x}", u64::from(i).wrapping_mul(0x9E37_79B9_7F4A_7C15)),
+                _ => format!("node_modules-{}-index.js", i % 300),
+            };
+            b.push_wtf8(name.as_bytes(), 4096, 1, NodeFlags::NONE);
+            t.add_children(dir, &b);
+        }
+        let names: Vec<Vec<u8>> = (0..t.len() as u32)
+            .map(|i| t.name(NodeId(i)).to_vec())
+            .collect();
+        let before = (t.names.raw_bytes(), t.names.stored_bytes());
+        assert!(before.0 > 4 * crate::names::TRAIN_AT, "{before:?}");
+        t.end_scan();
+        let after = (t.names.raw_bytes(), t.names.stored_bytes());
+        for (i, name) in names.iter().enumerate() {
+            assert_eq!(t.name(NodeId(i as u32)), &name[..], "node {i}");
+        }
+        // duplicates stay shared
+        assert!(after.0 <= before.0, "{before:?} {after:?}");
+        assert!(
+            (after.1 as f64) < before.1 as f64 * 0.85,
+            "{before:?} {after:?}"
+        );
+        eprintln!("raw, stored before {before:?} after {after:?}");
+        assert_eq!(
+            t.lookup_relative(b"dir\\IMG_00001.JPG")
+                .map(|id| t.name(id).to_vec()),
+            Some(b"IMG_00001.JPG".to_vec())
+        );
+        t.check_invariants().unwrap();
+        // later names use the new table
+        b.clear();
+        b.push_wtf8(b"new name.txt", 1, 1, NodeFlags::NONE);
+        let r = t.add_children(dir, &b);
+        assert_eq!(t.name(NodeId(r.start)), b"new name.txt");
+    }
+
+    #[test]
+    fn names_never_take_more_room_after_the_scan() {
+        // Names alike from first to last (hashes, GUIDs, words in any
+        // order): the first table suits them as well as any.
+        let mut t = Tree::new(b"C:\\");
+        let mut b = EntryBatch::new();
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let mut rnd = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let words = [
+            "Microsoft",
+            "Windows",
+            "amd64",
+            "System32",
+            "node_modules",
+            "照片",
+        ];
+        let exts = [".dll", ".exe", ".js", ".json", ".png", ".mui", ""];
+        for _ in 0..400_000 {
+            let r = rnd();
+            let w = |k: u32| words[(r >> k) as usize % words.len()];
+            let e = exts[(r >> 40) as usize % exts.len()];
+            let name = match r % 4 {
+                0 => format!("{}_{}_{:016x}{e}", w(8), w(16), rnd()),
+                1 => format!(
+                    "{{{:08X}-{:04X}-{:012X}}}",
+                    rnd() as u32,
+                    rnd() as u16,
+                    rnd() >> 16
+                ),
+                2 => format!("{}{}{e}", w(8), (r >> 20) % 500),
+                _ => format!("{:x}{e}", rnd()),
+            };
+            b.push_wtf8(name.as_bytes(), 1, 1, NodeFlags::NONE);
+        }
+        t.add_children(NodeId::ROOT, &b);
+        let names: Vec<Vec<u8>> = (0..t.len() as u32)
+            .map(|i| t.name(NodeId(i)).to_vec())
+            .collect();
+        let stored = t.names.stored_bytes();
+        assert!(t.names.raw_bytes() > 4 * crate::names::TRAIN_AT);
+        t.end_scan();
+        assert!(t.names.stored_bytes() <= stored);
+        for (i, name) in names.iter().enumerate() {
+            assert_eq!(t.name(NodeId(i as u32)), &name[..], "node {i}");
+        }
+    }
+
+    #[test]
+    fn names_stay_when_one_would_grow_too_long() {
+        // A root path near 64 KiB of bytes no table can cover: most of
+        // them take two bytes encoded.
+        let mut x = 1u64;
+        let root: Vec<u8> = (0..65_000)
+            .map(|_| {
+                x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                (x >> 56) as u8
+            })
+            .collect();
+        let mut t = Tree::new(&root);
+        let mut b = EntryBatch::new();
+        for i in 0..250_000u32 {
+            let name = format!("file number {i} of the tree.txt");
+            b.push_wtf8(name.as_bytes(), 1, 1, NodeFlags::NONE);
+        }
+        t.add_children(NodeId::ROOT, &b);
+        assert!(t.names.raw_bytes() > 4 * crate::names::TRAIN_AT);
+        let stored = t.names.stored_bytes();
+        t.end_scan();
+        assert_eq!(t.name(NodeId::ROOT), &root[..]);
+        assert_eq!(t.name(NodeId(1)), b"file number 0 of the tree.txt");
+        assert_eq!(
+            t.name(NodeId(250_000)),
+            b"file number 249999 of the tree.txt"
+        );
+        assert_eq!(t.names.stored_bytes(), stored);
     }
 }
