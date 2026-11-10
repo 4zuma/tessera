@@ -228,6 +228,17 @@ fn synthetic_mft() {
         "read + parse + merge {t_stream:?}, sort + build + sum {:?}",
         elapsed - t_stream
     );
+    let mut b = b;
+    let names_before = b.tree.memory().names;
+    let t1 = Instant::now();
+    b.tree.end_scan();
+    eprintln!(
+        "end of scan (names compressed again) {:?}: names {:.1} -> {:.1} MiB",
+        t1.elapsed(),
+        names_before as f64 / 1048576.0,
+        b.tree.memory().names as f64 / 1048576.0
+    );
+    // after the names are compressed again, which allocates a new pool
     let peak = peak_rss();
     let t = &b.tree;
     let mem = t.memory();

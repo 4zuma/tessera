@@ -1,146 +1,107 @@
-# Tessera
+<div align="center">
 
-A lightweight, fast disk-space visualizer for Windows: scan a drive, see it
-as a treemap, delete what you don't need.
+<img src="docs/brand/tessera.svg" width="96" height="96" alt="">
 
-> Status: 1.0, the first stable release. Download the portable `.exe` from
-> [Releases](https://github.com/4zuma/tessera/releases) (Windows 10/11, x64 or
-> Arm64, needs WebView2; the build is not code-signed yet). The repository holds the
-> Rust core (scanner, file tree, live updates, deletion, treemap layout), the
-> Tauri 2 + Svelte app in [`app/`](app/README.md) and a command-line harness.
+<h1>Tessera</h1>
 
-## What the core does
+<p><b>A fast, lightweight disk-space visualizer for Windows.</b><br>
+Scan a drive, see every folder as a treemap, and delete what you don't need.</p>
 
-* **Scanning without admin rights.** A multithreaded directory walk over
-  `NtQueryDirectoryFile` (one 64 KiB buffer per thread, a rayon pool sized
-  from the CPU count). Hard links are counted once, junctions and symlinks
-  are not followed, cloud placeholders are listed without being downloaded.
-* **Scanning with admin rights.** On NTFS volumes Tessera reads the master
-  file table directly (skipping free regions, parsing in parallel) and
-  builds the same tree in a couple of seconds.
-* **Compact tree.** Every file or folder is a 32-byte node in a chunked
-  arena; names are stored once in a shared pool (identical names are
-  de-duplicated during a scan) and compressed with a symbol table trained on
-  the first megabyte of names, which saves about a third. Each node keeps
-  its size on disk, logical size and flags; a file's last-write time is read
-  from disk when its details are shown. The full tree stays in Rust; the UI
-  only ever receives the rectangles it draws.
-* **Live updates.** After a scan, `ReadDirectoryChangesExW` (or the NTFS
-  USN journal after an MFT scan) keeps the tree current, applied in batches
-  at most every 500 ms. Idle CPU use is near zero.
-* **Treemap layout.** A squarified layout that returns one compact binary
-  buffer per view (see `crates/tessera-core/src/layout.rs`), with rank
-  hysteresis so tiles don't jump around between updates.
-* **Deletion.** Move to the Recycle Bin (with undo) or delete permanently
-  through the Windows shell (`IFileOperation`), with friendly reasons for
-  locked or protected items.
+<p>
+<a href="https://github.com/4zuma/tessera/releases/latest"><img src="https://img.shields.io/github/v/release/4zuma/tessera" alt="Latest release"></a>
+<img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d6" alt="Windows 10 and 11">
+<a href="#license"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-007ec6" alt="License: MIT or Apache-2.0"></a>
+</p>
 
-## Command-line harness
+<p><a href="https://github.com/4zuma/tessera/releases/latest"><b>Download</b></a> · English · <a href="README.zh-CN.md">简体中文</a></p>
 
-```text
-tessera scan  <PATH> [--mode auto|walk|mft] [--threads N] [--top N] [--json]
-tessera bench <PATH> [--mode auto|walk|mft] [--threads N] [--runs N] [--idle SECS] [--watch]
-tessera watch <PATH> [--mode auto|walk|mft] [--secs N]
-```
+</div>
 
-`scan` prints totals, memory use and the largest files. `bench` scans
-several times, times treemap layouts of the result, then measures idle CPU
-(with `--watch`: with live updates running) and prints one JSON object.
-`watch` prints each batch of live updates.
+<picture>
+  <source media="(prefers-reduced-motion: reduce) and (prefers-color-scheme: dark)" srcset="docs/readme/still-en-dark.webp">
+  <source media="(prefers-reduced-motion: reduce)" srcset="docs/readme/still-en-light.webp">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/readme/demo-en-dark.webp">
+  <img src="docs/readme/demo-en-light.webp" alt="Tessera scans drive C: (sample data), zooms into Program Files (x86) and goes back up">
+</picture>
 
-`--mode auto` (the default) reads the MFT when the process is elevated and
-the path is an NTFS volume root, and walks the directories otherwise.
+## Features
 
-## Building and testing
+* **Fast.** Scans a whole system drive with 3.3 million files in about 8 seconds
+  without admin rights, or about 2 seconds as administrator by reading the NTFS
+  master file table directly.
+* **Light.** The whole app uses about 300 MB of memory after that scan, and close
+  to no CPU while it keeps the map up to date.
+* **Smooth.** The treemap animates at 60 fps. Double-click a folder to zoom in,
+  press Backspace to go back.
+* **Live.** Files that change after the scan show up in the map within about half
+  a second.
+* **Careful with deletion.** Move files to the Recycle Bin and undo with Ctrl+Z,
+  or delete permanently after a confirmation. When something is locked or
+  protected, Tessera tells you why.
+* **At home on Windows.** Mica on Windows 11, your accent colour, light and dark
+  mode, and Explorer's context menu one click away. English and Simplified
+  Chinese, picked from your Windows language.
+* **Portable and free.** One exe: no installer, no account, no ads. Open source.
 
-Requires Rust 1.85 or newer.
+## Download
+
+Get the latest `tessera-…-windows-x64.exe` (or `…-arm64.exe` for Arm PCs) from
+[Releases](https://github.com/4zuma/tessera/releases/latest) and run it. There
+is nothing to install.
+
+* Windows 10 or 11, x64 or Arm64.
+* Needs the WebView2 runtime, which comes with Windows 11 and with an up-to-date
+  Windows 10.
+* The exe isn't code-signed yet, so SmartScreen may warn the first time: click
+  **More info**, then **Run anyway**.
+* Run it as administrator (or click **Restart as administrator** in Tessera) for
+  the fast MFT scan. Without admin rights Tessera walks the folders instead.
+
+## Compared with SpaceSniffer
+
+A full scan of a system drive with about 3.3 million files and folders, both
+tools on the same PC (Windows 11, Ryzen 9 7945HX, NVMe SSD):
+
+| | Tessera 1.1 | SpaceSniffer |
+|---|--:|--:|
+| Scan time, no admin rights | 8.1 s | 318 s |
+| Scan time as administrator (MFT) | 2.2 s | not measured |
+| Memory after the scan, whole app | 292 MB | 1,447 MB |
+| CPU while idle | ≈ 1 % of one core | 12–23 % of one core |
+
+Tessera's scan times are from `tessera bench` with a warm cache. Its memory is
+the whole app, WebView2 included, in the default window size.
+
+## Using it
+
+| | |
+|---|---|
+| Double-click, <kbd>Enter</kbd> | Zoom into a folder |
+| <kbd>Backspace</kbd> | Go up one level |
+| Arrow keys | Move the selection |
+| <kbd>Delete</kbd> | Move to the Recycle Bin (<kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes) |
+| <kbd>Shift</kbd>+<kbd>Delete</kbd> | Delete permanently, after a confirmation |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> | Copy the selected paths |
+| <kbd>F5</kbd> | Scan again |
+| Right-click | Tessera's menu, with Explorer's menu under **Show more options** |
+
+All shortcuts and mouse gestures are listed in [`app/README.md`](app/README.md).
+
+## Building from source
+
+You need Rust 1.90 or newer and Node.js.
 
 ```sh
-cargo build --release -p tessera-cli
-cargo test --workspace
+cd app
+npm install
+npx tauri build    # ../target/release/tessera-app.exe
 ```
 
-The MFT and USN-journal tests need an elevated prompt; they are ignored by
-default. Run them with:
-
-```powershell
-$env:TESSERA_ADMIN_TESTS = "1"
-cargo test -p tessera-core --test mft --test watch -- --include-ignored
-```
-
-The MFT parser is also tested against real NTFS images built with `mkntfs`
-and `ntfs-3g` on Linux (`cargo test -p tessera-core --lib image_tests`).
-The scanner itself only runs on Windows.
-
-To see where the app's memory goes, start it with `TESSERA_MEMLOG` set to
-a file: every 2 seconds it appends a line with its private working set,
-heaps, other private memory and the file tree's share.
-
-## Continuous integration
-
-Each push and pull request runs only the checks its files can affect
-(`.github/scripts/ci-changes.sh`): a change to docs only (`*.md`, `docs/`)
-runs none, a change to the app only skips the core's jobs, and a change to
-the CLI only skips the app's. A skipped job still reports its check as
-passed, so required checks keep working.
-
-The app exe is built on `main`. For a test build of a pull request, add the
-`build-exe` label to it: that starts an `app` run whose artifact
-`tessera-app-windows-x64` holds the exe, and later pushes build one too.
-
-The smoke scan walks `C:\Users` and `C:\ProgramData`, since a walk of all of
-C: takes up to 35 minutes on GitHub's runners; run the `CI` workflow by hand
-with *full_walk* to walk the whole drive.
-
-## Releasing
-
-1. Set the new version everywhere it is written down (Cargo, npm and Tauri
-   each keep a copy):
-
-   ```sh
-   node scripts/bump-version.mjs 0.3.1
-   ```
-
-   `node scripts/bump-version.mjs --check` lists the versions and fails if
-   they differ.
-2. Write the release notes, in English, in the pull request's description,
-   between a line `<!-- release-notes -->` and a line `<!-- /release-notes -->`
-   (GitHub doesn't show either). That text becomes the release notes; without
-   it GitHub writes them from the merged pull requests. To fix the notes of a
-   published release, edit them on the Releases page.
-3. Commit, open a pull request, and merge it once CI is green. Merging is
-   the release: when a push to `main` changes the version, the `release`
-   workflow builds the Windows binaries (x64 and Arm64), tags the merge commit
-   `v0.3.1` and publishes the release. Pushes that leave the version alone, or whose tag
-   already exists, release nothing.
-4. To release by hand (for example after a failed run), run the `release`
-   workflow from the Actions tab on `main` with version `0.3.1`. It refuses a
-   version that differs from the one in the code, and takes the notes from
-   the pull request that merged the commit it runs on. For a version that is
-   already released it only adds missing files, built from that version's
-   tag; the current release gets them by itself when the workflow gains a
-   new architecture.
-
-## First measurements
-
-Full scan of a system drive (Windows 11, Ryzen 9 7945HX, NVMe, about
-3.3 million files and folders), compared with SpaceSniffer on the same
-machine:
-
-| | Tessera, no admin | Tessera, admin (MFT) | SpaceSniffer |
-|---|---|---|---|
-| Scan time (warm cache) | 9.4 s | 2.2 s | 318 s |
-| Memory after scan | 234 MB | 258 MB | 1,447 MB |
-| Idle CPU, live updates on | < 1 % of one core | < 1 % of one core | about 10–20 % |
-
-These were measured before name de-duplication, which should lower memory
-further.
+How the scanner, the file tree and the treemap work, the command-line tool,
+tests, CI and releasing are described in
+[`docs/development.md`](docs/development.md).
 
 ## License
 
-Licensed under either of
-
-* Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-* MIT license ([LICENSE-MIT](LICENSE-MIT))
-
-at your option.
+Tessera is dual-licensed under [MIT](LICENSE-MIT) or
+[Apache-2.0](LICENSE-APACHE), at your option.
