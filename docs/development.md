@@ -24,8 +24,10 @@ the UI is in [`ipc.md`](ipc.md).
   builds the same tree in a couple of seconds.
 * **Compact tree.** Every file or folder is a 32-byte node in a chunked
   arena; names are stored once in a shared pool (identical names are
-  de-duplicated during a scan) and compressed with a symbol table trained on
-  the first megabyte of names, which saves about a third. Each node keeps
+  de-duplicated during a scan) and compressed with a symbol table. During a
+  scan the table is trained on the first megabyte of names; when the scan
+  ends, the names are compressed again with a table trained on a sample of
+  the whole tree. Together that saves about a third. Each node keeps
   its size on disk, logical size and flags; a file's last-write time is read
   from disk when its details are shown. The full tree stays in Rust; the UI
   only ever receives the rectangles it draws.
@@ -78,7 +80,9 @@ The scanner itself only runs on Windows.
 
 To see where the app's memory goes, start it with `TESSERA_MEMLOG` set to
 a file: every 2 seconds it appends a line with its private working set,
-heaps, other private memory and the file tree's share.
+heaps, other private memory and the file tree's share, plus a line for each
+private region of 1 MiB or more that appears or goes away when such regions
+change by 4 MiB or more.
 
 The app is built and run from `app/`; see [`app/README.md`](../app/README.md).
 
