@@ -101,10 +101,17 @@ pub fn scan_into(
 }
 
 /// Default worker count: directory listing waits on the disk as much as it
-/// computes, so twice the logical CPUs, within [4, 32].
+/// computes, so twice the logical CPUs, within [4, 16].
+///
+/// More than 16 does not help: Windows opens and closes directories at a
+/// rate that stops growing there (measured on a 16-core machine with an
+/// NVMe drive: about 40,000 directories a second from 16 threads up to 256,
+/// with a warm or an empty file cache alike), and the extra threads only
+/// queue up inside the kernel. 16 threads were 7% faster than 32 there and
+/// spent half the CPU time.
 pub fn default_threads() -> usize {
     let cpus = std::thread::available_parallelism().map_or(4, |n| n.get());
-    (cpus * 2).clamp(4, 32)
+    (cpus * 2).clamp(4, 16)
 }
 
 /// How hard links are detected (see [`links`]).
