@@ -323,6 +323,25 @@ export class FluentPainter implements Painter {
           ctx.fill();
         }
       }
+      // pointed at from the list: the pointer is elsewhere, so the tile needs more than a hover tint
+      if (it.id === S.peekId && it.hv > 0.01) {
+        const rad = r.kind === Kind.Dir ? FOLDER_RADIUS : RADIUS;
+        const w = Math.max(b.w, 6);
+        const h = Math.max(b.h, 6);
+        const x = b.x - (w - b.w) / 2;
+        const y = b.y - (h - b.h) / 2;
+        ctx.globalAlpha = it.hv * 0.16;
+        ctx.beginPath();
+        ctx.roundRect(x, y, w, h, Math.min(rad, w / 2, h / 2));
+        ctx.fillStyle = t.accent;
+        ctx.fill();
+        ctx.globalAlpha = it.hv;
+        ctx.beginPath();
+        ctx.roundRect(x + 1.5, y + 1.5, w - 3, h - 3, Math.max(0, Math.min(rad, w / 2, h / 2) - 1.5));
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = t.accent;
+        ctx.stroke();
+      }
       if (S.sel.has(it.id) && b.w > 3 && b.h > 3) {
         const rad = r.kind === Kind.Dir ? FOLDER_RADIUS : RADIUS;
         ctx.globalAlpha = it.va;

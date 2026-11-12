@@ -5,7 +5,7 @@
 import { SvelteSet } from 'svelte/reactivity';
 import { createBackend } from './backend';
 import { decodeLayout, Flag, FREE, groupFolder, isGroupId, isNodeId, Kind, NONE, UNSCANNED, type Layout, type Rect } from './backend/codec';
-import type { Backend, CatStat, Crumb, Details, PlatformInfo, ScanProgress, SizeMode, Volume } from './backend/types';
+import type { Backend, CatStat, TopFile, Crumb, Details, PlatformInfo, ScanProgress, SizeMode, Volume } from './backend/types';
 import { fmtBytes, fmtSecs } from './format';
 import { catName, fmtNum, joinList, setLang, t, tn } from './i18n.svelte';
 import type { IconName } from './icons';
@@ -114,6 +114,19 @@ export class App implements EngineHost {
   rev = $state(0);
   bytesPerPx = $state(0);
   legend = $state<CatStat[]>([]);
+  /** the biggest files below the view (details pane) */
+  top = $state<TopFile[]>([]);
+  /** the folder that list covers. It follows the view, except when a row of the list moved the
+   *  view: then the list stays, so the next candidate is still where it was. */
+  topView = 0;
+  topName = $state('');
+  private flying = false;
+  /** a file pointed at in that list: the details card shows it, the map lights where it lies */
+  peekId = $state<number | null>(null);
+  /** the tile that shows it: lit like a hovered one, while the details card stays as it is */
+  peekTile: number | null = null;
+  /** a file to select once the layout that shows it has arrived */
+  private wantSel: number | null = null;
   details = $state<Details | null>(null);
   selInfo = $state<SelInfo>({ count: 0, bytes: 0, lockReason: null });
   toast = $state<ToastData | null>(null);
@@ -292,6 +305,7 @@ export class App implements EngineHost {
         if (view !== this.view) continue;
         if (L.view !== view) {
           // the folder vanished (deleted outside Tessera); the core fell back to another view
+          if (this.topView === this.view) this.topView = L.view;
           this.view = L.view;
           void this.refreshNav();
         }
@@ -320,6 +334,15 @@ export class App implements EngineHost {
       this.sel.delete(id);
       selChanged = true;
     }
+    if (this.wantSel != null) {
+      const id = this.wantSel;
+      this.wantSel = null;
+      if (ids.has(id)) {
+        this.selectOnly(id);
+        selChanged = true;
+        this.engine?.kick();
+      }
+    }
     if (selChanged) void this.refreshSel();
     if (this.hoverId != null && !ids.has(this.hoverId)) this.hover(null);
     if (L.rev !== this.rev) this.rev = L.rev;
@@ -338,8 +361,12 @@ export class App implements EngineHost {
     this.undoToken = null;
     this.volume = vol;
     this.view = 0;
+    this.topView = 0;
     this.phase = 'map';
     this.legend = [];
+    this.top = [];
+    this.peekId = null;
+    this.peekTile = null;
     this.nameCache.clear();
     this.engine?.items.clear();
     this.scan = { running: true, files: 0, dirs: 0, scanned: 0, used: vol ? vol.capacity - vol.free : 0, elapsedMs: 0, errors: 0 };
@@ -347,6 +374,7 @@ export class App implements EngineHost {
       const s = await b.scanStart(root);
       this.scanId = s.scanId;
       this.view = s.rootId;
+      this.topView = s.rootId;
       await this.refreshNav();
       this.requestLayout('instant');
     } catch (err) {
@@ -425,6 +453,13 @@ export class App implements EngineHost {
       const v = this.view;
       const st = await this.backend.catStats(v, this.sizeMode);
       if (v === this.view) this.legend = st;
+      const tv = this.topView;
+      const top = (await this.backend.topFiles?.(tv, this.sizeMode, 20)) ?? [];
+      const name = top.length ? ((await this.backend.nav(tv)).crumbs.at(-1)?.name ?? '') : '';
+      if (tv === this.topView) {
+        this.top = top;
+        this.topName = name;
+      }
     };
     if (now) {
       if (this.legendTimer) clearTimeout(this.legendTimer);
@@ -513,6 +548,48 @@ export class App implements EngineHost {
         this.nameCache.set(id, d.name);
         if (this.tip && this.tip.id === id) this.tip = { ...this.tip, name: d.name };
       });
+    }
+  }
+
+  /** the tile that shows `f` right now: the file itself, or the nearest of its folders that is drawn */
+  private tileOf(f: TopFile): number | null {
+    const e = this.engine;
+    if (!e) return null;
+    for (const id of [f.id, ...f.chain]) {
+      const it = e.items.get(id);
+      if (it && !it.rm) return id;
+    }
+    return null;
+  }
+
+  /** point at a file of the biggest-files list (null: stop pointing) */
+  peek(f: TopFile | null) {
+    this.peekId = f ? f.id : null;
+    this.peekTile = f ? this.tileOf(f) : null;
+    this.engine?.kick();
+  }
+
+  /** fly to a file of the biggest-files list: open its folder and select it (the list stays) */
+  async goTo(f: TopFile) {
+    this.peekId = null;
+    this.peekTile = null;
+    const target = f.chain[0] ?? this.topView;
+    if (target !== this.view) {
+      const via = this.tileOf(f) ?? undefined;
+      this.flying = true;
+      try {
+        await this.zoomTo(target, via === f.id ? target : via);
+      } finally {
+        this.flying = false;
+      }
+      this.wantSel = f.id;
+    }
+    if (this.rectOf(f.id)) {
+      this.wantSel = null;
+      this.selectOnly(f.id);
+      void this.refreshSel();
+      void this.refreshDetails();
+      this.engine?.kick();
     }
   }
 
@@ -615,6 +692,7 @@ export class App implements EngineHost {
       };
     }
     this.view = target;
+    if (!this.flying) this.topView = target;
     this.sel.clear();
     this.selInfo = { count: 0, bytes: 0, lockReason: null };
     this.hoverId = null;

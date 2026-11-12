@@ -84,6 +84,18 @@ export interface NavInfo {
   up: number | null;
 }
 
+/** One of the biggest files below the view, wherever it sits. */
+export interface TopFile {
+  id: number;
+  name: string;
+  size: number;
+  cat: number;
+  /** its folders from the parent up to (not including) the view; empty when it lies directly in the view */
+  chain: number[];
+  /** the parent folder's path below the view, e.g. `Users\\Jack\\Videos`; empty when directly in the view */
+  dir: string;
+}
+
 export interface CatStat {
   cat: number;
   bytes: number;
@@ -153,6 +165,8 @@ export interface Backend {
   shellMenu(ids: number[], x: number, y: number, extended: boolean): Promise<ShellAction>;
   relaunchElevated(): Promise<void>;
   on<K extends keyof BackendEvents>(event: K, cb: (payload: BackendEvents[K]) => void): Promise<Unlisten>;
+  /** the biggest files below `view`, largest first (prototype: mock backend only) */
+  topFiles?(view: number, sizeMode: SizeMode, limit: number): Promise<TopFile[]>;
   /** preview-only helpers (live-update demo); absent on the real backend */
   demo?: { startDownload(): boolean };
 }

@@ -18,6 +18,7 @@ import type {
   ScanStarted,
   ShellAction,
   SizeMode,
+  TopFile,
   Unlisten,
   Volume,
 } from '../types';
@@ -318,6 +319,29 @@ export class MockBackend implements Backend {
     const v = this.node(view);
     if (v) walk(v);
     return [...acc].filter(([, b]) => b > 0).map(([cat, bytes]) => ({ cat, bytes })).sort((a, b) => b.bytes - a.bytes);
+  }
+
+  async topFiles(view: number, mode: SizeMode, limit: number): Promise<TopFile[]> {
+    const d = this.d;
+    const v = this.node(view);
+    if (!v) return [];
+    const found: MNode[] = [];
+    const walk = (n: MNode) => {
+      if (!n.seen) return;
+      if (n.kids) for (const k of n.kids) walk(d.nodes[k]);
+      else if (sizeOf(n, mode) > 0) found.push(n);
+    };
+    walk(v);
+    found.sort((a, b) => sizeOf(b, mode) - sizeOf(a, mode));
+    return found.slice(0, limit).map(n => {
+      const chain: number[] = [];
+      const names: string[] = [];
+      for (let p = n.parent; p >= 0 && p !== view; p = d.nodes[p].parent) {
+        chain.push(p);
+        names.unshift(d.nodes[p].name);
+      }
+      return { id: n.id, name: n.name, size: sizeOf(n, mode), cat: n.cat, chain, dir: names.join('\\') };
+    });
   }
 
   async recycle(ids: number[]): Promise<DeleteResult> {

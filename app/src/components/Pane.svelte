@@ -14,10 +14,42 @@
     if (d.kind === 'unscanned') return t('scanning');
     return t('kind.groupShort');
   });
+  let tab = $state<'info' | 'top'>('info');
+  const topMax = $derived(app.top[0]?.size || 1);
   const legendTotal = $derived(app.legend.reduce((a, c) => a + c.bytes, 0) || 1);
 </script>
 
 <aside class="pane">
+  <div class="seg tabs" role="tablist" aria-label={t('pane.views')}>
+    <button role="tab" aria-selected={tab === 'info'} class:on={tab === 'info'} onclick={() => (tab = 'info')}>{t('pane.info')}</button>
+    <button role="tab" aria-selected={tab === 'top'} class:on={tab === 'top'} onclick={() => (tab = 'top')}>{t('pane.top')}</button>
+  </div>
+
+  {#snippet selection()}
+  <section class="card sel">
+    {#if app.selInfo.count}
+      <div class="st">
+        {#each tParts('selected', { n: app.selInfo.count, size: fmtBytes(app.selInfo.bytes) }) as p, i (i)}{#if p.v}<b class:tabular={p.v === 'size'}>{p.text}</b>{:else}{p.text}{/if}{/each}
+      </div>
+    {/if}
+    <div class="sa">
+      <button class="btn" disabled={!app.selInfo.count || !!app.selInfo.lockReason} onclick={() => app.recycle([...app.sel])}><Icon name="trash" />{t('recycle')}</button>
+      <button class="btn danger" disabled={!app.selInfo.count || !!app.selInfo.lockReason} onclick={() => app.confirmPurge([...app.sel])}><Icon name="purge" />{t('purge')}</button>
+    </div>
+    {#if !app.selInfo.count}
+      <div class="tip caption">
+        <span>{t('pane.howToSelect')}</span>
+        <span>{t('pane.howToMore')}</span>
+      </div>
+    {:else if app.selInfo.lockReason}
+      <div class="why caption"><Icon name="lock" size={14} /><span>{app.selInfo.lockReason}</span></div>
+    {/if}
+  </section>
+  {/snippet}
+
+  {#if tab === 'info'}
+  <div class="scroll">
+  <div class="inner">
   <section class="card details" aria-live="polite">
     {#if d}
       <div class="dh">
@@ -70,28 +102,6 @@
     {/if}
   </section>
 
-  <!-- The buttons stay put with nothing selected, greyed out, so the card says what it is for
-       before anything is picked; the two hint lines say how to pick. -->
-  <section class="card sel">
-    {#if app.selInfo.count}
-      <div class="st">
-        {#each tParts('selected', { n: app.selInfo.count, size: fmtBytes(app.selInfo.bytes) }) as p, i (i)}{#if p.v}<b class:tabular={p.v === 'size'}>{p.text}</b>{:else}{p.text}{/if}{/each}
-      </div>
-    {/if}
-    <div class="sa">
-      <button class="btn" disabled={!app.selInfo.count || !!app.selInfo.lockReason} onclick={() => app.recycle([...app.sel])}><Icon name="trash" />{t('recycle')}</button>
-      <button class="btn danger" disabled={!app.selInfo.count || !!app.selInfo.lockReason} onclick={() => app.confirmPurge([...app.sel])}><Icon name="purge" />{t('purge')}</button>
-    </div>
-    {#if !app.selInfo.count}
-      <div class="tip caption">
-        <span>{t('pane.howToSelect')}</span>
-        <span>{t('pane.howToMore')}</span>
-      </div>
-    {:else if app.selInfo.lockReason}
-      <div class="why caption"><Icon name="lock" size={14} /><span>{app.selInfo.lockReason}</span></div>
-    {/if}
-  </section>
-
   <section class="card legend">
     <h2>{t('pane.byType')}</h2>
     {#if app.legend.length}
@@ -113,6 +123,43 @@
       <div class="empty caption">{t('pane.afterScan')}</div>
     {/if}
   </section>
+  </div>
+  </div>
+  <!-- The buttons stay put with nothing selected, greyed out, so the card says what it is for
+       before anything is picked. The actions come last in both tabs and stay in reach: the cards above scroll when the
+       pane is too short, this one keeps its place under them -->
+  {@render selection()}
+  {:else}
+  <!-- the list keeps its place whatever is selected: the actions sit under it, not above -->
+  <section class="card toplist">
+      {#if app.top.length}
+        <!-- pointing at a row lights the tile that holds the file, a click flies there -->
+        <div class="scope caption">{t('pane.topIn', { name: app.topName })}</div>
+        <div class="rows" role="group" aria-label={t('pane.top')} onpointerleave={() => app.peek(null)}>
+          {#each app.top as f (f.id)}
+            <button
+              class="tf"
+              class:on={app.sel.has(f.id)}
+              title={t('pane.topGo', { name: f.name })}
+              onpointerenter={() => app.peek(f)}
+              onfocus={() => app.peek(f)}
+              onblur={() => app.peek(null)}
+              onclick={() => app.goTo(f)}
+            >
+              <i class="sw" style:background="var(--cat-{f.cat})"></i>
+              <span class="tn">{f.name}</span>
+              <span class="lv caption tabular">{fmtBytes(f.size)}</span>
+              <span class="td caption">{f.dir || app.topName}</span>
+              <span class="tb" aria-hidden="true"><i style:width="{((f.size / topMax) * 100).toFixed(1)}%" style:background="var(--cat-{f.cat})"></i></span>
+            </button>
+          {/each}
+        </div>
+      {:else}
+        <div class="empty caption">{t('pane.afterScan')}</div>
+      {/if}
+      </section>
+    {@render selection()}
+  {/if}
 </aside>
 
 <style>
@@ -122,8 +169,21 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+    min-height: 0;
+  }
+  .scroll {
+    flex: 0 1 auto;
+    min-height: 0;
     overflow: auto;
     scrollbar-width: thin;
+  }
+  .inner {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .sel {
+    flex: none;
   }
   .card {
     padding: 14px 16px;
@@ -269,10 +329,6 @@
     flex: none;
     margin-top: 1px;
   }
-  h2 {
-    font: 600 14px/20px var(--font);
-    margin: 0 0 10px;
-  }
   .stack {
     display: flex;
     height: 8px;
@@ -320,5 +376,75 @@
   }
   .lv {
     color: var(--text-2);
+  }
+  .tabs {
+    display: flex;
+    flex: none;
+  }
+  h2 {
+    font: 600 14px/20px var(--font);
+    margin: 0 0 10px;
+  }
+  .toplist {
+    flex: 1;
+    min-height: 120px;
+    overflow: auto;
+    scrollbar-width: thin;
+    padding: 8px 10px;
+  }
+  .scope {
+    padding: 2px 6px 6px;
+    color: var(--text-2);
+  }
+  .toplist .rows {
+    margin: 0;
+  }
+  .tabs button {
+    flex: 1;
+  }
+  /* two lines per file: name and size, then where it lies; a hairline bar compares the sizes */
+  .tf {
+    display: grid;
+    grid-template-columns: 12px 1fr auto;
+    gap: 0 10px;
+    align-items: center;
+    padding: 5px 6px 6px;
+    border: 0;
+    border-radius: var(--r-ctl);
+    background: none;
+    text-align: left;
+    min-width: 0;
+  }
+  .tf:hover,
+  .tf:focus-visible {
+    background: var(--subtle-hover);
+  }
+  .tf.on {
+    background: var(--accent-soft);
+  }
+  .tn,
+  .td {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .td {
+    grid-column: 2 / 4;
+    color: var(--text-3);
+    /* long paths lose their start, not the folder the file is in */
+  }
+  .tb {
+    grid-column: 2 / 4;
+    height: 2px;
+    margin-top: 3px;
+    border-radius: 1px;
+    background: var(--ctl-stroke-2);
+    overflow: hidden;
+  }
+  .tb i {
+    display: block;
+    height: 100%;
+    border-radius: 1px;
   }
 </style>

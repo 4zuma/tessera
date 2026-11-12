@@ -83,6 +83,11 @@ export const zhCN: Partial<Dict> = {
   'pane.byType': '按类型',
   'pane.highlight': '只突出显示{cat}',
   'pane.afterScan': '扫描后显示',
+  'pane.top': '最大的文件',
+  'pane.topIn': '{name} 里最大的 20 个文件',
+  'pane.topGo': '前往 {name}',
+  'pane.info': '详情',
+  'pane.views': '详情栏显示什么',
 
   'stage.label': '磁盘占用矩形树图。方向键移动选择，回车放大，Backspace 返回上级，Delete 移到回收站',
   'stage.progress': '扫描进度',

@@ -100,6 +100,11 @@ export const en = {
   'pane.byType': 'By type',
   'pane.highlight': 'Highlight only {cat}',
   'pane.afterScan': 'Shown after the scan',
+  'pane.top': 'Biggest files',
+  'pane.topIn': 'The 20 biggest files in {name}',
+  'pane.topGo': 'Go to {name}',
+  'pane.info': 'Details',
+  'pane.views': 'What the pane shows',
 
   /* treemap and status bar */
   'stage.label': 'Treemap of disk usage. Arrow keys move the selection, Enter zooms in, Backspace goes up a level, Delete moves to the Recycle Bin.',

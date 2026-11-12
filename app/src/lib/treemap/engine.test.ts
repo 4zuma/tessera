@@ -21,7 +21,7 @@ const layout = (rects: Rect[]): Layout => ({ view: 0, rev: 1, bytesPerPx: 1, rec
 
 function engine() {
   const canvas = { getContext: () => ({}) } as unknown as HTMLCanvasElement;
-  const host: EngineHost = { sel: new Set<number>(), hoverId: null, filter: null, scanning: false, reduced: false, theme: {} as Theme };
+  const host: EngineHost = { sel: new Set<number>(), hoverId: null, peekTile: null, filter: null, scanning: false, reduced: false, theme: {} as Theme };
   const painter = { scene() {}, overlay() {}, inOverlay: () => false, light: 0, reset() {} } as Painter;
   return new TreemapEngine(canvas, host, painter, fluentMotion, 6);
 }

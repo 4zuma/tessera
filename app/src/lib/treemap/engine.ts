@@ -120,6 +120,8 @@ export function camMap(A: Box, B: Box, r: Box): Box {
 export interface EngineHost {
   sel: { has(id: number): boolean; [Symbol.iterator](): Iterator<number> };
   hoverId: number | null;
+  /** a tile pointed at from outside the map (the biggest-files list): lit like the hovered one */
+  peekTile: number | null;
   /** category filter: tiles of other categories are dimmed */
   filter: number | null;
   scanning: boolean;
@@ -135,6 +137,8 @@ export interface PaintState {
   theme: Theme;
   sel: { has(id: number): boolean };
   hoverId: number | null;
+  /** the tile pointed at from the biggest-files list: gets a locating ring */
+  peekId: number | null;
   mouse: { x: number; y: number; in: boolean };
   scanning: boolean;
 }
@@ -415,6 +419,7 @@ export class TreemapEngine {
     const k = 1 - Math.exp(-dt / 55);
     const kd = 1 - Math.exp(-dt / 140);
     const hover = host.hoverId;
+    const peek = host.peekTile;
     const f = host.filter;
     const marked = this.marked;
     marked.length = 0;
@@ -427,7 +432,7 @@ export class TreemapEngine {
         if (!it.done) moving = true;
         else if (it.rm) purge = true;
       }
-      const ht = it.id === hover ? 1 : 0;
+      const ht = it.id === hover || it.id === peek ? 1 : 0;
       if (it.hv !== ht) {
         it.hv += (ht - it.hv) * (host.reduced ? 1 : k);
         if (Math.abs(it.hv - ht) < 0.004) it.hv = ht;
@@ -469,6 +474,7 @@ export class TreemapEngine {
       theme: host.theme,
       sel: host.sel,
       hoverId: hover,
+      peekId: peek,
       mouse: this.mouse,
       scanning: host.scanning,
     };
