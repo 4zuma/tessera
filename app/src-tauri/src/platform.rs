@@ -46,11 +46,16 @@ impl Info {
 /// Builds the main window from its entry in tauri.conf.json (which has `"create": false`)
 /// and gives it its backdrop. Returns the window and the backdrop it got ("mica" or "none").
 ///
-/// Mica needs Windows 11 (build 22000+). There the window is transparent, so Mica shows
-/// through the WebView. On Windows 10 a transparent window has nothing behind it (the
-/// desktop shows through until the page paints, and in the strip a resize uncovers), so
-/// the window is opaque and painted with what WinUI itself shows when Mica is unavailable:
-/// the theme's solid base colour. The page paints the same colour (`--solid-base`).
+/// Mica needs Windows 11 (build 22000+). There the WebView's background is transparent and
+/// the window has no redirection bitmap (no surface of its own: the WebView draws all of
+/// the client area), so Mica shows through the page. The window is not what Tauri calls
+/// transparent: for such a window its runtime keeps a bitmap of the whole client area in
+/// this process, only to clear the window's own surface with (4 bytes a pixel: 9 MB at the
+/// default size at 150%, 30 MB maximized on a 4K screen). On Windows 10 a transparent
+/// window has nothing behind it (the desktop shows through until the page paints, and in
+/// the strip a resize uncovers), so the window is opaque and painted with what WinUI
+/// itself shows when Mica is unavailable: the theme's solid base colour. The page paints
+/// the same colour (`--solid-base`).
 pub fn build_main_window(
     app: &tauri::App,
 ) -> Result<(tauri::WebviewWindow, &'static str), Box<dyn std::error::Error>> {
@@ -63,9 +68,14 @@ pub fn build_main_window(
         .find(|w| w.label == "main")
         .ok_or("main window missing")?;
     let mica = imp::supports_mica();
-    let window = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?
-        .transparent(mica)
-        .build()?;
+    let mut builder = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?;
+    if mica {
+        builder = builder
+            .no_redirection_bitmap(true)
+            // alpha 0 is what makes the WebView's background transparent
+            .background_color(tauri::window::Color(0, 0, 0, 0));
+    }
+    let window = builder.build()?;
     if !mica {
         // still hidden (`"visible": false`), so the colour is in place before the first frame;
         // the window's theme is the one Windows gave its title bar
