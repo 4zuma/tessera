@@ -135,7 +135,12 @@ fn scan_source<R: ReadAt>(
         layout.bitmap = None;
     }
     let in_use = layout.in_use_count() as usize;
-    let mut acc = Accum::new(root_name, layout.records as usize, in_use);
+    let mut acc = Accum::new(
+        root_name,
+        layout.records as usize,
+        in_use,
+        u64::from(geometry.cluster_size),
+    );
     reader::stream_records(src, &layout, tuning, &mut acc, progress)?;
     drop(layout);
     if progress.is_cancelled() {

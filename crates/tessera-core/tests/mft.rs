@@ -154,7 +154,7 @@ fn mft_scan_of_the_system_volume() {
         let id = t
             .lookup_relative(format!("{rel}\\{p}").as_bytes())
             .unwrap_or_else(|| panic!("{p} is missing"));
-        (id, *t.node(id))
+        (id, t.node(id))
     };
 
     let (a_id, a) = node("a.bin");

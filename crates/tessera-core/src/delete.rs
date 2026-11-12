@@ -188,7 +188,7 @@ pub fn restore(
         let mut t = tree.write().unwrap_or_else(PoisonError::into_inner);
         for (item, rep) in todo.into_iter().zip(reports) {
             if exists(&item.path) {
-                let n = *t.node(item.node);
+                let n = t.node(item.node);
                 let parent_live = !t.is_deleted(n.parent);
                 let dup = parent_live && t.find_child(n.parent, &t.name(item.node)).is_some();
                 // A watcher event may already have added it again.
@@ -340,11 +340,11 @@ impl Tree {
         if id == NodeId::ROOT || id.index() >= self.len() {
             return false;
         }
-        let n = *self.node(id);
+        let n = self.node(id);
         if !n.is_deleted() || self.is_deleted(n.parent) {
             return false;
         }
-        self.node_mut(id).flags.remove(NodeFlags::DELETED);
+        self.slot_mut(id).flags.remove(NodeFlags::DELETED);
         self.add_to_ancestors(n.parent, n.size(), n.logical());
         true
     }
@@ -430,7 +430,7 @@ fn remove(
 
     let mut t = tree.write().unwrap_or_else(PoisonError::into_inner);
     for &id in &to_mark {
-        let n = *t.node(id);
+        let n = t.node(id);
         // The watcher may have marked it already; the bytes are freed anyway.
         if t.mark_deleted(id) || n.is_deleted() {
             res.bytes = res.bytes.wrapping_add(n.size());

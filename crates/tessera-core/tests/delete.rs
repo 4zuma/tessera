@@ -399,7 +399,7 @@ fn recycle_and_restore() {
     let doc = find(&tree, "doc.txt");
     let folder = find(&tree, "folder");
     let inner = find(&tree, r"folder\inner.bin");
-    let before = *tree.read().unwrap().node(NodeId::ROOT);
+    let before = tree.read().unwrap().node(NodeId::ROOT);
     let kids_before = tree.read().unwrap().child_count(NodeId::ROOT);
     let undo = UndoStore::new();
 

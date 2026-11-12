@@ -209,7 +209,7 @@ pub fn name_code(name: &[u8]) -> u8 {
 /// the module docs).
 #[inline]
 pub fn of_node(tree: &Tree, id: NodeId) -> u8 {
-    of(tree.node(id))
+    of(&tree.node(id))
 }
 
 /// [`of_node`] for a node at hand.

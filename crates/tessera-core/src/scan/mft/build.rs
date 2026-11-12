@@ -16,7 +16,7 @@ use rayon::slice::ParallelSliceMut;
 use super::parser::*;
 use crate::category;
 use crate::scan::{FrnIndex, ScanProgress};
-use crate::tree::{ChunkedVec, Encoder, NamePool, Node, NodeFlags, NodeId, Tree};
+use crate::tree::{Encoder, NamePool, NodeFlags, NodeId, Tree};
 
 /// One name of a record, waiting to become a node.
 #[derive(Clone, Copy, Debug)]
@@ -44,6 +44,8 @@ struct Extra {
 pub(crate) struct Accum {
     /// Where the root's name is in `names`.
     root: (u32, u16),
+    /// The volume's cluster size in bytes.
+    cluster: u64,
     names: NamePool,
     /// On-disk bytes of the unnamed stream, per record.
     size: Vec<u64>,
@@ -70,12 +72,13 @@ pub(crate) struct Built {
 
 impl Accum {
     /// `records`: number of MFT record slots; `expected_names`: a capacity
-    /// hint (records in use).
-    pub fn new(root_name: &[u8], records: usize, expected_names: usize) -> Accum {
+    /// hint (records in use); `cluster`: the volume's cluster size.
+    pub fn new(root_name: &[u8], records: usize, expected_names: usize, cluster: u64) -> Accum {
         let mut names = NamePool::with_dedup();
         let root = names.push(root_name);
         Accum {
             root,
+            cluster,
             names,
             size: vec![0; records],
             logical: vec![0; records],
@@ -189,6 +192,7 @@ impl Tree {
     fn build_from_mft(acc: Accum) -> Built {
         let Accum {
             root,
+            cluster,
             names,
             size,
             logical,
@@ -203,22 +207,7 @@ impl Tree {
         // The name offset breaks ties so the result is deterministic.
         entries.par_sort_unstable_by_key(|e| (e.parent, e.rec, e.name_off));
 
-        let mut tree = Tree {
-            nodes: ChunkedVec::new(),
-            names,
-            changed: 0,
-            journal: Default::default(),
-        };
-        tree.nodes.push(Node::new(
-            0,
-            0,
-            NodeId::NONE,
-            NodeId(RECORD_ROOT),
-            NodeId::NONE,
-            root.0,
-            root.1,
-            NodeFlags::DIR,
-        ));
+        let mut tree = Tree::with_names(names, root, cluster, NodeId(RECORD_ROOT));
         let mut frn = vec![u32::MAX; records];
         if (RECORD_ROOT as usize) < records {
             frn[RECORD_ROOT as usize] = 0;
@@ -228,8 +217,12 @@ impl Tree {
         let mut i = 0usize;
         while i < tree.nodes.len() {
             let node = *tree.nodes.get(i);
-            let rec = node.first_child.0;
-            tree.nodes.get_mut(i).first_child = NodeId::NONE;
+            if !node.is_dir() {
+                i += 1;
+                continue;
+            }
+            let rec = tree.first_child(NodeId(i as u32)).0;
+            tree.set_first_child(NodeId(i as u32), NodeId::NONE);
             let expandable = node.is_dir()
                 && !node.flags.contains(NodeFlags::HARDLINK)
                 && (rec as usize) < records;
@@ -292,21 +285,19 @@ impl Tree {
                 } else {
                     files += 1;
                 }
-                tree.nodes.push(Node::new(
+                tree.push_node(
                     s,
                     l,
                     NodeId(i as u32),
-                    NodeId(stash),
+                    if is_dir { NodeId(stash) } else { NodeId::NONE },
                     NodeId(id as u32 + 1),
-                    e.name_off,
-                    e.len_code & 0x0FFF,
+                    (e.name_off, e.len_code & 0x0FFF),
                     flags.with_name_cat((e.len_code >> 12) as u8),
-                ));
+                );
             }
             let last = tree.nodes.len();
-            let p = tree.nodes.get_mut(i);
             if last > first {
-                p.first_child = NodeId(first as u32);
+                tree.set_first_child(NodeId(i as u32), NodeId(first as u32));
                 tree.nodes.get_mut(last - 1).next_sibling = NodeId::NONE;
             }
             i += 1;
@@ -318,9 +309,8 @@ impl Tree {
 
         // Parents precede children, so one reverse pass sums every directory.
         for id in (1..tree.nodes.len()).rev() {
-            let n = tree.nodes.get(id);
-            let (s, l, p) = (n.size(), n.logical(), n.parent.index());
-            tree.nodes.get_mut(p).add_sizes(s, l);
+            let n = tree.node(NodeId(id as u32));
+            tree.wide_mut(n.parent).add_sizes(n.size(), n.logical());
         }
 
         let unplaced = meta
@@ -351,7 +341,7 @@ mod tests {
 
     /// Parses `records` and builds a tree rooted at `R:\`.
     fn build(records: Vec<(u32, Vec<u8>)>, slots: usize) -> Built {
-        let mut acc = Accum::new(b"R:\\", slots, records.len());
+        let mut acc = Accum::new(b"R:\\", slots, records.len(), 4096);
         let progress = ScanProgress::new();
         let mut sorted = records;
         sorted.sort_by_key(|r| r.0);

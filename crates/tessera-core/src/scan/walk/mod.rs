@@ -164,6 +164,10 @@ fn walk(
         n => n,
     };
     let cluster = caps.as_ref().map_or(4096, |c| c.cluster);
+    // only a tree not yet filled takes it (not one the watcher adds to)
+    tree.write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .set_cluster_size(cluster);
     let ctx = Ctx::new(tree, progress, link_mode, tweaks.level, cluster, threads);
     let caller = threads;
     let win32_root = nt::win32_root(&root);
