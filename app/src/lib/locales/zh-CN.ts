@@ -26,7 +26,10 @@ export const zhCN: Partial<Dict> = {
   'age.over': '超过 {d}',
   'age.unknown': '时间未知',
   folders: '{n} 个文件夹',
-  smallItems: '{n} 个小项',
+  smallFiles: '{n} 个小文件',
+  smallFolders: '{n} 个小文件夹',
+  // 文件和文件夹都有
+  smallItems: '{n} 个小项目',
   selected: '已选 {n} 项 · {size}',
   shareParent: '占上级 {pct}',
   shareDrive: '占整个盘 {pct}',
@@ -47,7 +50,7 @@ export const zhCN: Partial<Dict> = {
   'cat.11': '系统',
 
   'kind.folderMostly': '文件夹 · 多为{cat}',
-  'kind.group': '合并显示的小项',
+  'kind.group': '合并显示',
   'kind.groupShort': '合并显示',
   'kind.currentFolder': '当前文件夹',
   'kind.levelIn': '在 {folder} 里',
@@ -125,7 +128,7 @@ export const zhCN: Partial<Dict> = {
   'scan.done': '扫描完成 · {files}，{folders} · 用时 {time}',
 
   'menu.freeNote': '这个盘上还空着的部分。先看看最大的几块。',
-  'menu.zoomGroup': '放大查看这些小项',
+  'menu.zoomGroup': '放大查看',
   'menu.zoomFolder': '放大此文件夹',
   'menu.reveal': '在资源管理器中显示',
   'menu.copyPath': '复制路径',
@@ -193,7 +196,7 @@ export const zhCN: Partial<Dict> = {
   'core.localDisk': '本地磁盘',
   'core.freeHint': '卷上还没被使用的空间',
   'core.unscannedHint': '已用空间里还没扫描到的部分，会随扫描缩小',
-  'core.group': '小项合并显示',
+  'core.group': '小项目',
   'core.groupHint': '太小、画不下的项目合并成一块；双击它可以放大查看',
   'core.hiberfil': '可以在管理员终端运行 powercfg /h off 关闭休眠来释放它',
   'core.pagefile': '在“高级系统设置 › 性能 › 虚拟内存”里调整',

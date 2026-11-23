@@ -7,6 +7,7 @@
  */
 import { en, type Dict, type Key, type Msg } from './locales/en';
 import { zhCN } from './locales/zh-CN';
+import { Note } from './backend/codec';
 
 export type Lang = 'en' | 'zh-CN';
 export type { Key };
@@ -113,6 +114,16 @@ export function tn(key: Key, n: number, vars?: Vars, digits = 0): string {
     s = (rules.select(n) === 'one' && m.one) || m.other;
   }
   return fill(s, { n: fmtNum(n, digits), ...vars });
+}
+
+/**
+ * A group's name by what it holds (`holds`: a record's Note.Files / Note.Folders bits):
+ * "12 small files", "3 small folders", or both kinds: "40 small items".
+ */
+export function groupName(count: number, holds = 0): string {
+  const files = holds & Note.Files;
+  const folders = holds & Note.Folders;
+  return tn(files && !folders ? 'smallFiles' : folders && !files ? 'smallFolders' : 'smallItems', count);
 }
 
 export interface Part {

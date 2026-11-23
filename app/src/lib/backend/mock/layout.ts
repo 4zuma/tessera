@@ -17,7 +17,7 @@ interface Item {
   rk: number;
   n?: MNode;
   special?: 'free' | 'unscanned';
-  group?: { count: number; cat: number; hit: number; age: number };
+  group?: { count: number; dirs: number; cat: number; hit: number; age: number };
 }
 
 export interface LayoutInput {
@@ -229,6 +229,8 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     const fit = (cw: number, ch: number, dir: boolean) => (Math.min(cw, ch) < side ? 2 : dir && cw < wide ? 1 : 0);
     let rest = 0;
     let restN = 0;
+    // how many of them are folders, so the group can say what it holds
+    let restDirs = 0;
     let restHit = 0;
     let restAge = 0;
     let restAgeW = 0;
@@ -262,6 +264,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       else {
         rest += c.s;
         restN++;
+        if (isDir(c)) restDirs++;
         restHit += hitPart(c.n!, c.s);
         const a = ageOf(c.n!);
         if (a !== AGE_UNKNOWN) {
@@ -281,6 +284,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     for (let pass = 0; pass < 12; pass++) {
       let gs = rest;
       let gn = restN;
+      let gd = restDirs;
       let gh = restHit;
       let ga = restAge;
       let gw = restAgeW;
@@ -288,6 +292,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       for (let i = cut; i < nodes.length; i++) {
         gs += nodes[i].s;
         gn++;
+        if (isDir(nodes[i])) gd++;
         gh += hitPart(nodes[i].n!, nodes[i].s);
         const a = ageOf(nodes[i].n!);
         if (a !== AGE_UNKNOWN) {
@@ -319,7 +324,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
         }
         grp = lone
           ? { ...lone, s: weight, size: gs, rk: weight }
-          : { s: weight, size: gs, rk: weight, group: { count: gn, cat: best, hit: shareOf(gh, gs), age: gw > 0 ? Math.round(ga / gw) : AGE_UNKNOWN } };
+          : { s: weight, size: gs, rk: weight, group: { count: gn, dirs: gd, cat: best, hit: shareOf(gh, gs), age: gw > 0 ? Math.round(ga / gw) : AGE_UNKNOWN } };
       }
       if (grp && !noGroup) {
         // with minSide the group takes its place by size, not the strip left at the end
@@ -374,7 +379,8 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       if (c.group) {
         const id = groupId(parent.id);
         const size = c.size ?? c.s;
-        out.push({ ...base, id, target: parent.id, count: c.group.count, size, name: '', kind: Kind.Group, cat: c.group.cat, flags: 0, note: size !== c.s ? Note.NotToScale : 0 });
+        const holds = (c.group.count > c.group.dirs ? Note.Files : 0) | (c.group.dirs > 0 ? Note.Folders : 0);
+        out.push({ ...base, id, target: parent.id, count: c.group.count, size, name: '', kind: Kind.Group, cat: c.group.cat, flags: 0, note: (size !== c.s ? Note.NotToScale : 0) | holds });
         continue;
       }
       if (c.special) {

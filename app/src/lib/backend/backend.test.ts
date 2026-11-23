@@ -136,6 +136,10 @@ describe('mock backend', () => {
       const groups = on.filter(r => r.kind === Kind.Group);
       expect(groups.length).toBeGreaterThan(0);
       expect(groups.filter(r => r.cat === 255)).toEqual([]);
+      // and each says what it holds (named small files, small folders or small items)
+      expect(groups.filter(r => !((r.note ?? 0) & (Note.Files | Note.Folders)))).toEqual([]);
+      expect(groups.some(r => (r.note ?? 0) & Note.Folders)).toBe(true);
+      expect(groups.some(r => (r.note ?? 0) & Note.Files)).toBe(true);
     }
   });
 
@@ -180,8 +184,8 @@ describe('mock backend', () => {
         expect(cats.reduce((a, c) => a + c.bytes, 0)).toBe(left);
         // a level's group that would take over a third of the map is drawn smaller
         const total = top.reduce((a, r) => a + r.size, 0);
-        if (level > 0 && g.size > total * 0.34) expect(g.note).toBe(Note.NotToScale);
-        if (level === 0) expect(g.note).toBe(0);
+        if (level > 0 && g.size > total * 0.34) expect(g.note! & Note.NotToScale).toBe(Note.NotToScale);
+        if (level === 0) expect(g.note! & Note.NotToScale).toBe(0);
       }
       expect([...seen].sort((x, y) => x - y)).toEqual(all);
     }

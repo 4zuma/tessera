@@ -9,7 +9,7 @@ import type { Backend, CaptionState, CatStat, Crumb, Details, PlatformInfo, Scan
 import { AGE_EDGES, ageBand } from './age';
 import { makeColoring, type ColorBy, type Coloring } from './coloring';
 import { bandName, fmtBytes, fmtSecs } from './format';
-import { catName, fmtNum, joinList, setLang, t, tn } from './i18n.svelte';
+import { catName, fmtNum, groupName, joinList, setLang, t, tn } from './i18n.svelte';
 import type { IconName } from './icons';
 import { applyThemeCss, makeTheme, type Scheme, type Theme } from './theme';
 import { TreemapEngine, type ApplyOpts, type EngineHost, type EngineStats, type MotionKind } from './treemap/engine';
@@ -94,6 +94,8 @@ export interface Level {
   hide: number[];
   /** how many items it holds: the group's count when it was opened, then the layout's */
   count: number;
+  /** whether they are files, folders or both (Note.Files / Note.Folders), for its name */
+  holds: number;
 }
 
 /** what the selection card shows */
@@ -456,6 +458,7 @@ export class App implements EngineHost {
     const ids = new Set<number>();
     let total = 0;
     let count = 0;
+    let holds = 0;
     const top: number[] = [];
     for (const r of L.rects) {
       ids.add(r.id);
@@ -463,12 +466,14 @@ export class App implements EngineHost {
       if (r.kind !== Kind.Free) total += r.size;
       if (isNodeId(r.id)) top.push(r.id);
       count += r.kind === Kind.Group ? r.count : 1;
+      holds |= r.kind === Kind.Group ? (r.note ?? 0) & (Note.Files | Note.Folders) : r.kind === Kind.File ? Note.Files : r.kind === Kind.Dir || r.kind === Kind.DirLeaf ? Note.Folders : 0;
     }
     this.viewTotal = total;
     this.shownTop = top;
-    // a level's crumb says how many items it holds now (deletes and live changes move it)
+    // a level's crumb says how many items it holds now, and of what kind (deletes and live
+    // changes move it)
     const lv = this.levels.at(-1);
-    if (lv && lv.count !== count && count > 0) this.levels = [...this.levels.slice(0, -1), { ...lv, count }];
+    if (lv && (lv.count !== count || lv.holds !== holds) && count > 0) this.levels = [...this.levels.slice(0, -1), { ...lv, count, holds }];
     let selChanged = false;
     for (const id of [...this.sel]) if (!ids.has(id)) {
       this.sel.delete(id);
@@ -627,10 +632,15 @@ export class App implements EngineHost {
     if (d && lv && id === this.view) {
       // in a level the card is the level's: "160 small items · 118 MB · in Temp"
       const size = this.viewTotal;
-      this.details = { ...d, id: groupId(this.view), kind: 'level', name: tn('smallItems', lv.count), size, share: d.size > 0 ? size / d.size : 0, files: 0, dirs: 0, modified: null, cat: 255, flags: 0, lockReason: null, hint: null };
+      this.details = { ...d, id: groupId(this.view), kind: 'level', name: groupName(lv.count, lv.holds), size, share: d.size > 0 ? size / d.size : 0, files: 0, dirs: 0, modified: null, cat: 255, flags: 0, lockReason: null, hint: null };
       return;
     }
-    if (d && isGroupId(id)) d.size = this.rectOf(id)?.size ?? 0;
+    if (d && isGroupId(id)) {
+      // named as the tile is: "723 small files"
+      const r = this.rectOf(id);
+      d.size = r?.size ?? 0;
+      if (r) d.name = groupName(r.count, r.note);
+    }
     if (d && di) {
       // a folded chain: name it as the tile does, and show what is inside its deepest
       // folder; size, share and the lock stay the whole tile's, since delete takes it all
@@ -700,7 +710,7 @@ export class App implements EngineHost {
     // coloured by age, the tip names the band too: the colours alone don't say it
     const kind = byAge && r.kind !== Kind.Free && r.kind !== Kind.Unscanned ? `${what} · ${bandName(ageBand(r.age, this.ageEdges), this.ageEdges)}` : what;
     const name =
-      r.kind === Kind.Group ? tn('smallItems', r.count) : r.kind === Kind.Free ? t('free') : r.kind === Kind.Unscanned ? t('unscanned') : r.name || this.nameCache.get(id) || '';
+      r.kind === Kind.Group ? groupName(r.count, r.note) : r.kind === Kind.Free ? t('free') : r.kind === Kind.Unscanned ? t('unscanned') : r.name || this.nameCache.get(id) || '';
     this.tip = { x, y, id, name, size: r.size, kind, share: parent ? r.size / Math.max(1, parent.size) : r.kind === Kind.Free ? null : viewSize ? r.size / viewSize : null };
     if (!name && isNodeId(id)) {
       void this.backend?.details(id, this.view, this.sizeMode).then(d => {
@@ -847,7 +857,7 @@ export class App implements EngineHost {
     this.closeOverlays();
     const box = { x: g.x, y: g.y, w: Math.max(1, g.w), h: Math.max(1, g.h) };
     const hide = [...new Set([...(this.hide ?? []), ...this.shownTop])].sort((a, b) => a - b);
-    this.levels = [...this.levels, { hide, count: g.r.count }];
+    this.levels = [...this.levels, { hide, count: g.r.count, holds: (g.r.note ?? 0) & (Note.Files | Note.Folders) }];
     this.clearFocus();
     // the new level's group has the same id: the old one leaves with the camera instead
     this.requestLayout('zoom', { cam: () => ({ A: box, B: e.stageBox() }), renew: [gid] });
@@ -1155,7 +1165,7 @@ export class App implements EngineHost {
       rows.push({ type: 'head', label: `${t('free')} · ${fmtBytes(r.size)}` });
       rows.push({ type: 'note', label: t('menu.freeNote') });
     } else if (isGroupId(id)) {
-      rows.push({ type: 'head', label: `${tn('smallItems', r.count)} · ${fmtBytes(r.size)}` });
+      rows.push({ type: 'head', label: `${groupName(r.count, r.note)} · ${fmtBytes(r.size)}` });
       rows.push({ type: 'item', icon: 'zoom', label: t('menu.zoomGroup'), key: 'Enter', run: () => this.zoomInto(id) });
     } else {
       const multi = ids.length > 1;
