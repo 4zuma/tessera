@@ -1,0 +1,44 @@
+/* What app.css gives the app's own page, for components shown on someone else's page. */
+body {
+  font: 14px/20px var(--font);
+  color: var(--text);
+  background: var(--solid-base);
+  -webkit-font-smoothing: antialiased;
+}
+.tessera-host {
+  font: 14px/20px var(--font);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Tessera.Window fills its slot as a Windows 11 window (8 px corners, Mica-like wash). The
+   browser preview's "window on a desk" margins (App.svelte, .framed) only with frame="desk". */
+.tessera-host[data-frame='window'] > .window {
+  height: 100% !important;
+  margin: 0 !important;
+  border-radius: 8px;
+  border: 1px solid var(--ctl-stroke-2);
+  background: linear-gradient(135deg, var(--mica-a), var(--mica-b));
+  box-shadow: none !important;
+}
+.tessera-host[data-frame='desk'] {
+  background: var(--solid-base);
+}
+
+/* The browser preview's own extras (the "Preview · sample data" chip, "Simulate download",
+   "Performance") are not part of the app on Windows: a design shows the window as users see it. */
+.tessera-host .tb:not(.native) .l > .chip,
+.tessera-host .tb:not(.native) .r > .sbtn {
+  display: none;
+}
+
+/* A design shows the window in use. A canvas artboard or a preview card is a frame that rarely
+   has focus, and the app would then draw Windows' inactive title bar (dimmed title and logo). */
+.tessera-host .tb.inactive .t {
+  color: inherit !important;
+}
+.tessera-host .tb.inactive .logo {
+  opacity: 1 !important;
+}

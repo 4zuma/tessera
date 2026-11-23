@@ -15,5 +15,5 @@
     "skipLibCheck": true,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*.ts", "src/**/*.svelte", "vite.config.ts"]
+  "include": ["src/**/*.ts", "src/**/*.svelte", "vite.config.ts", "design/src/**/*.ts", "design/src/**/*.svelte"]
 }

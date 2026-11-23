@@ -1,5 +1,6 @@
 import { mount } from 'svelte';
 import './app.css';
+import './ui.css';
 import App from './App.svelte';
 
 const target = document.getElementById('app');

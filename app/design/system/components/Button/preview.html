@@ -1,0 +1,12 @@
+<!-- @dsCard group="Controls" height=72 width=640 subtitle="Standard, accent and danger (the .btn classes)" -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Button — preview</title></head>
+<body style="margin:0">
+<div id="root" style="width:640px;height:72px"></div>
+<script>
+  var T = window.Tessera, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h('div', { style: { display: 'flex', gap: 8, padding: 16, flexWrap: 'wrap' } }, h(T.Button, { icon: 'refresh' }, 'Rescan'), h(T.Button, { variant: 'accent', icon: 'undo' }, 'Undo'), h(T.Button, { variant: 'danger', icon: 'purge' }, 'Delete permanently'), h(T.Button, { icon: 'trash', disabled: true }, 'Move to Recycle Bin')));
+</script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+<!-- @dsCard group="Controls" height=64 width=640 subtitle="Transparent command-bar and icon buttons (.sbtn)" -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>SubtleButton — preview</title></head>
+<body style="margin:0">
+<div id="root" style="width:640px;height:64px"></div>
+<script>
+  var T = window.Tessera, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h('div', { style: { display: 'flex', gap: 4, padding: 16, alignItems: 'center' } }, h(T.SubtleButton, { icon: 'up', label: 'Up' }), h(T.SubtleButton, { icon: 'pane', label: 'Details pane', pressed: true }), h(T.SubtleButton, { icon: 'drive' }, 'C:'), h(T.SubtleButton, { icon: 'shield', label: 'Restart as administrator' })));
+</script>
+</body>
+</html>

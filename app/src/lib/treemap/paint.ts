@@ -31,8 +31,15 @@ const F_SEMI = `600 12px ${UI_FONT}`;
 
 const LABEL_MIN_W = 44;
 const LINE = 16;
-const RADIUS = 3;
-const FOLDER_RADIUS = 4;
+/**
+ * Corner radii of the tiles (files, closed folders) and of open folders. A live object rather
+ * than constants so the design-system build (app/design) can turn them into sliders; the app
+ * itself never changes them.
+ */
+export const paintStyle = {
+  radius: 3,
+  folderRadius: 4,
+};
 /** radius of the pointer light, CSS px */
 const LIGHT_R = 90;
 
@@ -158,10 +165,10 @@ export class FluentPainter implements Painter {
       ctx.globalAlpha = it.va;
       if (gpu) {
         // the outline's outer edge lies half a pixel outside the 2D path, so its radius is half a pixel more
-        gpu.push(b.x * dpr, b.y * dpr, b.w * dpr, b.h * dpr, (FOLDER_RADIUS + 0.5) * dpr, gpu.color(t['tm-folder'], it.va), gpu.color(this.folderStroke(dark, r.depth), it.va), dpr);
+        gpu.push(b.x * dpr, b.y * dpr, b.w * dpr, b.h * dpr, (paintStyle.folderRadius + 0.5) * dpr, gpu.color(t['tm-folder'], it.va), gpu.color(this.folderStroke(dark, r.depth), it.va), dpr);
       } else {
         ctx.beginPath();
-        ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, FOLDER_RADIUS);
+        ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, paintStyle.folderRadius);
         ctx.fillStyle = t['tm-folder'];
         ctx.fill();
         ctx.lineWidth = 1;
@@ -171,10 +178,10 @@ export class FluentPainter implements Painter {
       if (r.header && b.h > r.header + 2) {
         if (gpu) {
           // rounded on top only: a box that runs on past its bottom corners, cut at the band's bottom
-          gpu.push((b.x + 1) * dpr, (b.y + 1) * dpr, (b.w - 2) * dpr, (r.header - 1 + 2 * FOLDER_RADIUS) * dpr, (FOLDER_RADIUS - 1) * dpr, gpu.color(t['tm-folder-head'], it.va), null, 0, (b.y + r.header) * dpr);
+          gpu.push((b.x + 1) * dpr, (b.y + 1) * dpr, (b.w - 2) * dpr, (r.header - 1 + 2 * paintStyle.folderRadius) * dpr, (paintStyle.folderRadius - 1) * dpr, gpu.color(t['tm-folder-head'], it.va), null, 0, (b.y + r.header) * dpr);
         } else {
           ctx.beginPath();
-          ctx.roundRect(b.x + 1, b.y + 1, b.w - 2, r.header - 1, [FOLDER_RADIUS - 1, FOLDER_RADIUS - 1, 0, 0]);
+          ctx.roundRect(b.x + 1, b.y + 1, b.w - 2, r.header - 1, [paintStyle.folderRadius - 1, paintStyle.folderRadius - 1, 0, 0]);
           ctx.fillStyle = t['tm-folder-head'];
           ctx.fill();
         }
@@ -206,10 +213,10 @@ export class FluentPainter implements Painter {
       let p = batches.get(col);
       if (!p) batches.set(col, (p = new Path2D()));
       if (b.w < 5 || b.h < 5) p.rect(b.x, b.y, b.w, b.h);
-      else p.roundRect(b.x, b.y, b.w, b.h, RADIUS);
+      else p.roundRect(b.x, b.y, b.w, b.h, paintStyle.radius);
       if (outlined(it) && b.w > 3 && b.h > 3) {
         // a closed folder: outlined like the open ones, so it never reads as a file type
-        outlines.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, Math.min(RADIUS, b.w / 2, b.h / 2));
+        outlines.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, Math.min(paintStyle.radius, b.w / 2, b.h / 2));
         hasOutlines = true;
       }
       if (r.kind === Kind.Group || r.flags & (Flag.NoAccess | Flag.InUse)) overlays.push(it);
@@ -240,12 +247,12 @@ export class FluentPainter implements Painter {
       }
       ctx.beginPath();
       if (b.w < 5 || b.h < 5) ctx.rect(b.x, b.y, b.w, b.h);
-      else ctx.roundRect(b.x, b.y, b.w, b.h, RADIUS);
+      else ctx.roundRect(b.x, b.y, b.w, b.h, paintStyle.radius);
       ctx.fillStyle = leafFill(it);
       ctx.fill();
       if (outlined(it) && b.w > 3 && b.h > 3) {
         ctx.beginPath();
-        ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, Math.min(RADIUS, b.w / 2, b.h / 2));
+        ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, Math.min(paintStyle.radius, b.w / 2, b.h / 2));
         ctx.lineWidth = 1;
         ctx.strokeStyle = t['tm-leafdir-stroke'];
         ctx.stroke();
@@ -259,7 +266,7 @@ export class FluentPainter implements Painter {
       const b = box(it);
       ctx.globalAlpha = it.va;
       ctx.beginPath();
-      ctx.roundRect(b.x, b.y, b.w, b.h, Math.min(RADIUS, b.w / 2, b.h / 2));
+      ctx.roundRect(b.x, b.y, b.w, b.h, Math.min(paintStyle.radius, b.w / 2, b.h / 2));
       if (r.kind === Kind.Group) {
         const p = this.pattern(ctx, 'dots' + th.scheme, 6, dpr, g => {
           g.fillStyle = t['tm-dots'];
@@ -292,8 +299,8 @@ export class FluentPainter implements Painter {
 
   /** a tile on the GPU, as pass 2 paints it: the fill, then a closed folder's outline over it */
   private gpuTile(gpu: BoxBatch, b: Box, dpr: number, fill: RGBA, stroke: RGBA | null) {
-    gpu.push(b.x * dpr, b.y * dpr, b.w * dpr, b.h * dpr, b.w < 5 || b.h < 5 ? 0 : RADIUS * dpr, fill);
-    if (stroke && b.w > 3 && b.h > 3) gpu.push(b.x * dpr, b.y * dpr, b.w * dpr, b.h * dpr, (Math.min(RADIUS, b.w / 2, b.h / 2) + 0.5) * dpr, NONE, stroke, dpr);
+    gpu.push(b.x * dpr, b.y * dpr, b.w * dpr, b.h * dpr, b.w < 5 || b.h < 5 ? 0 : paintStyle.radius * dpr, fill);
+    if (stroke && b.w > 3 && b.h > 3) gpu.push(b.x * dpr, b.y * dpr, b.w * dpr, b.h * dpr, (Math.min(paintStyle.radius, b.w / 2, b.h / 2) + 0.5) * dpr, NONE, stroke, dpr);
   }
 
   inOverlay(it: Item) {
@@ -319,18 +326,18 @@ export class FluentPainter implements Painter {
         ctx.globalAlpha = it.va * it.hv;
         ctx.beginPath();
         if (r.kind === Kind.Dir) {
-          ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, FOLDER_RADIUS);
+          ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, paintStyle.folderRadius);
           ctx.lineWidth = 1;
           ctx.strokeStyle = t['ctl-strong'];
           ctx.stroke();
         } else {
-          ctx.roundRect(b.x, b.y, b.w, b.h, Math.min(RADIUS, b.w / 2, b.h / 2));
+          ctx.roundRect(b.x, b.y, b.w, b.h, Math.min(paintStyle.radius, b.w / 2, b.h / 2));
           ctx.fillStyle = t['tm-hover'];
           ctx.fill();
         }
       }
       if (S.sel.has(it.id) && b.w > 3 && b.h > 3) {
-        const rad = r.kind === Kind.Dir ? FOLDER_RADIUS : RADIUS;
+        const rad = r.kind === Kind.Dir ? paintStyle.folderRadius : paintStyle.radius;
         ctx.globalAlpha = it.va;
         ctx.beginPath();
         ctx.roundRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2, Math.max(0, Math.min(rad, b.w / 2 - 1, b.h / 2 - 1)));
@@ -419,7 +426,7 @@ export class FluentPainter implements Painter {
     const free = it.r.kind === Kind.Free;
     ctx.globalAlpha = it.va;
     ctx.beginPath();
-    ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, FOLDER_RADIUS);
+    ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, paintStyle.folderRadius);
     if (free) {
       ctx.fillStyle = rgba(t.accent, S.theme.scheme === 'dark' ? 0.08 : 0.06);
       ctx.fill();

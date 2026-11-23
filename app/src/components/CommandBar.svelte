@@ -210,7 +210,7 @@
     min-width: 140px;
     margin-right: 4px;
   }
-  /* the segmented control (app.css): with the bar's 4 px gap, 8 px to the neighbours on both sides */
+  /* the segmented control (ui.css): with the bar's 4 px gap, 8 px to the neighbours on both sides */
   .seg {
     margin: 0 4px;
   }
