@@ -27,7 +27,11 @@ import { wrap } from './wrap';
 const fill = { display: 'block', position: 'relative', width: '100%', height: '100%' };
 const flexFill = { display: 'flex', width: '100%', height: '100%', minWidth: 0, minHeight: 0 };
 
-const Window = wrap('Window', App, { host: fill, window: true, attrs: p => ({ 'data-frame': p.frame === 'desk' ? 'desk' : 'window' }) });
+const Window = wrap('Window', App, {
+  host: fill,
+  window: true,
+  attrs: p => ({ 'data-frame': p.frame === 'desk' ? 'desk' : 'window', 'data-backdrop': p.backdrop === 'solid' ? 'solid' : 'mica' }),
+});
 const Treemap = wrap('Treemap', Stage, { host: flexFill });
 const TitleBar_ = wrap('TitleBar', TitleBar, { host: { display: 'block', width: '100%' } });
 const CommandBar_ = wrap('CommandBar', CommandBar, {

@@ -61,5 +61,5 @@ One window: title bar (logo, name, search, caption buttons) · command bar (driv
 
 - **Fonts.** Segoe UI Variable and Segoe Fluent Icons are licensed with Windows and are not copied here; `type.fonts` is empty on purpose.
 - **Icons** live in the component bundle (`Icon`), not as asset files: the app draws them from one SVG path table (`app/src/lib/icons.ts`).
-- **What Windows draws, not the app:** Mica itself (a gradient stands in), the window frame and shadow, and Windows' own context menu behind "Show more options".
+- **What Windows draws, not the app:** Mica itself (a gradient stands in; `Window backdrop="solid"` shows the solid colour Windows uses without it), the window frame and shadow, and Windows' own context menu behind "Show more options".
 - **Data** is the app's built-in sample drive (the mock backend), never a real disk.
