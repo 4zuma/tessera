@@ -83,18 +83,24 @@ for (const s of shas) {
 if (blocked) process.exit(1);
 if (git('status', '--porcelain', '--', '..').out) console.log('! app/ has uncommitted changes: the build is not from a commit, so `via` will not name it');
 
-/** the commits to name in `via`: HEAD when a remote branch holds it, else the parents of a local merge */
+/**
+ * The commits to name in `via`: HEAD when a remote branch holds it; for a local merge (the usual
+ * way to build several unmerged branches together), the pushed commits it was merged from.
+ */
 function sources() {
-  const head = git('rev-parse', '--short', 'HEAD').out;
-  if (git('branch', '-r', '--contains', 'HEAD').out) return [head];
-  const parents = git('rev-list', '--parents', '-n', '1', 'HEAD').out.split(' ').slice(1);
-  if (parents.length > 1) {
-    const unpushed = parents.filter(p => !git('branch', '-r', '--contains', p).out);
-    if (unpushed.length) console.log(`! not pushed yet: ${unpushed.map(p => p.slice(0, 7)).join(', ')}. Push them first, so other threads can merge them.`);
-    return parents.map(p => p.slice(0, 7));
-  }
-  console.log(`! HEAD ${head} is not pushed yet. Push it first, so other threads can merge it.`);
-  return [head];
+  const pushed = c => !!git('branch', '-r', '--contains', c).out;
+  const found = new Set();
+  const walk = c => {
+    if (pushed(c)) return void found.add(c);
+    const parents = git('rev-list', '--parents', '-n', '1', c).out.split(' ').slice(1);
+    if (parents.length > 1) return parents.forEach(walk);
+    console.log(`! ${c.slice(0, 7)} is not pushed yet. Push it first, so other threads can merge it.`);
+    found.add(c);
+  };
+  walk(git('rev-parse', 'HEAD').out);
+  // leave out a commit another one already contains (a branch point, main merged in)
+  const all = [...found];
+  return all.filter(c => !all.some(o => o !== c && git('merge-base', '--is-ancestor', c, o).ok)).map(c => c.slice(0, 7));
 }
 const repo = (() => {
   const m = /github\.com[/:]([^/]+\/[^/.]+)/.exec(git('remote', 'get-url', 'origin').out);
