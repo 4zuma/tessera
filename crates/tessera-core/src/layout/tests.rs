@@ -1437,3 +1437,43 @@ fn ages_go_into_the_records() {
     assert!(t2.set_modified(fresh, now));
     assert_eq!(t2.redated_seq(), seq);
 }
+
+/// Many files of about the same size (a folder of photos or screenshots):
+/// a bigger window must not fold them all into the group. Squarify used to
+/// line the first ones up as slivers beside the group, so the first sibling
+/// came out too thin and every one after it joined the group.
+#[test]
+fn similar_files_stay_tiles_in_bigger_windows() {
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    let mut rnd = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    for n in [300u64, 2000] {
+        let mut t = Tree::new(b"R:\\");
+        let d = t.add_child(NodeId::ROOT, b"d", 0, 0, NodeFlags::DIR);
+        for i in 0..n {
+            let size = 100_000 + rnd() % 1_500_000;
+            let name = format!("shot{i}.png");
+            t.add_child(d, name.as_bytes(), size, size, NodeFlags::NONE);
+        }
+        let mut most = 0;
+        for w in (640..=1920).step_by(16) {
+            let w = w as f32;
+            let req = LayoutRequest::new(d, w, (w * 0.68).round());
+            let files = lay(&t, &req)
+                .records
+                .iter()
+                .filter(|r| r.kind == kind::FILE)
+                .count();
+            assert!(
+                files * 2 >= most,
+                "{n} files at {w} px wide: {files} tiles, {most} in a smaller window"
+            );
+            most = most.max(files);
+        }
+        assert!(most > 0);
+    }
+}
