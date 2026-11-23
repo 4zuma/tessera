@@ -43,11 +43,11 @@ export class TauriBackend implements Backend {
   nav(id: number) {
     return invoke<NavInfo>('nav', { id });
   }
-  catStats(view: number, sizeMode: SizeMode) {
-    return invoke<CatStat[]>('cat_stats', { view, sizeMode });
+  catStats(view: number, sizeMode: SizeMode, hide?: number[]) {
+    return invoke<CatStat[]>('cat_stats', { view, sizeMode, hide: hide ?? null });
   }
-  ageStats(view: number, sizeMode: SizeMode) {
-    return invoke<number[]>('age_stats', { view, sizeMode });
+  ageStats(view: number, sizeMode: SizeMode, hide?: number[]) {
+    return invoke<number[]>('age_stats', { view, sizeMode, hide: hide ?? null });
   }
   recycle(ids: number[]) {
     return invoke<DeleteResult>('recycle', { ids });

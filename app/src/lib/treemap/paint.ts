@@ -18,7 +18,7 @@
  * With a GPU batch, `scene()` hands every folder, header band and tile to it (one draw call
  * on a WebGL canvas under this one) and paints only text and textures here.
  */
-import { Flag, Kind } from '../backend/codec';
+import { Flag, Kind, Note } from '../backend/codec';
 import { fmtBytes } from '../format';
 import { t as tr, tn } from '../i18n.svelte';
 import { rgba } from '../theme';
@@ -267,6 +267,18 @@ export class FluentPainter implements Painter {
         });
         ctx.fillStyle = this.usePattern(p, dpr);
         ctx.fill();
+        if ((r.note ?? 0) & Note.NotToScale && b.w > 3 && b.h > 3) {
+          // a level's group drawn smaller (or bigger) than its size: dashed, like the other
+          // tiles whose area is not a share of the map (docs/ipc.md rule 9)
+          ctx.beginPath();
+          ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, Math.min(RADIUS, b.w / 2, b.h / 2));
+          ctx.setLineDash([4, 3]);
+          ctx.lineWidth = 1;
+          ctx.globalAlpha = it.va * 0.7;
+          ctx.strokeStyle = leafInk(it);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
       } else {
         const p = this.pattern(ctx, 'hatch' + th.scheme, 8, dpr, stripes(t['tm-hatch'], 8, 2));
         ctx.fillStyle = this.usePattern(p, dpr);

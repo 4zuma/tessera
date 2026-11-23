@@ -78,6 +78,23 @@
 //!    numbers the caller passes in [`RootExtras`]: UNSCANNED (`used -
 //!    scanned` while scanning, only above 64 MiB), ranked first, and FREE
 //!    (the volume's free bytes), ranked last.
+//! 8. With a search ([`LayoutEngine::layout_with`]), every record's `hit`
+//!    says how much of it the search found; a group gets the share of its
+//!    items' bytes, so it stays findable when a match has no tile.
+//! 9. A level ([`LayoutEngine::layout_level`]) is a view of what a group
+//!    holds: the view folder's children except the ids the caller hides
+//!    (those drawn with tiles of their own on the way down: the folder,
+//!    then each level above). It is laid out like the folder, without
+//!    pseudo tiles, except that its group takes at most
+//!    [`LEVEL_GROUP_SHARE`] of the map, so the siblings beside it get the
+//!    rest: siblings keep their own tiles, in rank order, while each one
+//!    still gets rule 2's least area at that scale, and the rest form the
+//!    group, even a group of one. The group also gets at least rule 2's
+//!    least area, so it is always drawn; one drawn smaller or bigger than
+//!    its size would take has the NOT_TO_SCALE note. A level never shows
+//!    only its group (on a canvas of any sane size), so opening the group
+//!    again and again reaches every item. `bytesPerPx` is that of the
+//!    siblings.
 //!
 //! Folders are opened largest first, so if the internal safety cap of
 //! [`MAX_RECORDS`] records is ever reached, the big structure is complete
@@ -85,7 +102,7 @@
 //!
 //! # Buffer
 //!
-//! Little-endian. A 36-byte header, `count` records of 52 bytes, then the
+//! Little-endian. A 36-byte header, `count` records of 56 bytes, then the
 //! UTF-8 name pool.
 //!
 //! ```text
@@ -94,7 +111,7 @@
 //!   4  u16  version     1
 //!   6  u16  headerSize  36
 //!   8  u32  count       number of records
-//!  12  u32  recordSize  52
+//!  12  u32  recordSize  56
 //!  16  u32  namesLen    bytes in the name pool
 //!  20  u32  view        echo of the request
 //!  24  u32  rev         tree revision this layout was computed from
@@ -102,7 +119,7 @@
 //!  32  u32  search      id of the search whose hits are in the records
 //!                       ([`crate::search::Hits::id`]), 0 = none
 //!
-//! record (52 bytes)
+//! record (56 bytes)
 //!   0  u32  id          node id, or ids::FREE / ids::UNSCANNED, or
 //!                       ids::GROUP_BIT | folder id for a group
 //!   4  u32  parent      id of the enclosing rect, ids::NONE at the top level
@@ -131,7 +148,9 @@
 //!  52  u8   age         when it was last written, see [`crate::age`]; for
 //!                       folders and groups the size-weighted mean over the
 //!                       files in them; 0 = not known, and for pseudo tiles
-//!  53  u8[3]            reserved, 0
+//!  53  u8   note        see [`note`]: NOT_TO_SCALE for a level's group
+//!                       drawn smaller or bigger than its size (rule 9)
+//!  54  u8[2]            reserved, 0
 //! ```
 //!
 //! Records are in paint order: a folder always comes before its children.
@@ -204,6 +223,14 @@ pub mod flags {
     pub const REPARSE: u8 = 1 << 6;
     /// Still being scanned. Not tracked yet; always 0.
     pub const SCANNING: u8 = 1 << 7;
+}
+
+/// Bits of the record's `note` byte.
+pub mod note {
+    /// Its area is not in proportion to its size: a level's group, drawn
+    /// smaller so the siblings beside it get room, or bigger so it can be
+    /// pointed at (rule 9).
+    pub const NOT_TO_SCALE: u8 = 1 << 0;
 }
 
 /// Which size the areas are proportional to.
@@ -281,6 +308,8 @@ const MIN_SIDE_PASSES: usize = 12;
 /// little too thin and is folded afterwards, and every smaller sibling
 /// with it.
 const MIN_SIDE_ROOM: f64 = 1.3;
+/// Rule 9: in a level, the group takes at most this share of the map.
+pub const LEVEL_GROUP_SHARE: f64 = 1.0 / 3.0;
 /// Default `open_share`: a folder must also be over 0.25 % of the map to
 /// open. This only matters on maps over 2.6 million px² (about
 /// 2000 x 1300), where it keeps a very large window from opening more
@@ -437,6 +466,23 @@ impl LayoutEngine {
         rev: u32,
         hits: Option<&Hits>,
     ) -> Vec<u8> {
+        self.layout_level(tree, req, None, extras, rev, hits)
+    }
+
+    /// [`LayoutEngine::layout_with`], or with `hide` a level of `req.view`
+    /// (rule 9): its children except the ids in `hide`, which must be
+    /// sorted ascending. A level has no pseudo tiles, so `extras` is not
+    /// used then.
+    pub fn layout_level(
+        &mut self,
+        tree: &Tree,
+        req: &LayoutRequest,
+        hide: Option<&[u32]>,
+        extras: RootExtras,
+        rev: u32,
+        hits: Option<&Hits>,
+    ) -> Vec<u8> {
+        debug_assert!(hide.is_none_or(|h| h.is_sorted()), "hide must be sorted");
         self.generation = self.generation.wrapping_add(1);
         self.forget_redated(tree);
         let protected = match self.protected.take() {
@@ -453,6 +499,9 @@ impl LayoutEngine {
             protected: &protected,
             recycle_bin: recycle_bin(tree),
             hits,
+            hide,
+            level_area: None,
+            level_boost: 1.0,
             s: std::mem::take(&mut self.scratch),
             touched: 0,
         };
@@ -646,6 +695,20 @@ struct Item {
     kind: ItemKind,
     node: NodeId,
     size: u64,
+    /// What the area is laid out from: the size, but less for a level's
+    /// group (rule 9).
+    weight: u64,
+}
+
+impl Item {
+    fn new(kind: ItemKind, node: NodeId, size: u64) -> Item {
+        Item {
+            kind,
+            node,
+            size,
+            weight: size,
+        }
+    }
 }
 
 /// One record before encoding.
@@ -663,6 +726,7 @@ struct Rec {
     header: u8,
     hit: u8,
     age: u8,
+    note: u8,
 }
 
 /// A folder tile waiting to be opened.
@@ -754,6 +818,14 @@ struct Run<'a> {
     protected: &'a [u32],
     recycle_bin: Option<NodeId>,
     hits: Option<&'a Hits>,
+    /// The children of the view left out of a level (rule 9), sorted.
+    hide: Option<&'a [u32]>,
+    /// While a level's own children are laid out: the area of its box, for
+    /// the group's least and most area (rule 9).
+    level_area: Option<f64>,
+    /// How many times its least area a level's group gets; doubled while
+    /// it still comes out too thin.
+    level_boost: f64,
     s: Scratch,
     touched: usize,
 }
@@ -785,7 +857,7 @@ impl Run<'_> {
             return 0.0;
         }
         self.st.open_area = self.st.open_min.max(self.st.open_share * map.w * map.h);
-        let (unscanned, free) = if view == NodeId::ROOT {
+        let (unscanned, free) = if view == NodeId::ROOT && self.hide.is_none() {
             (
                 extras.unscanned.filter(|&u| u > UNSCANNED_MIN).unwrap_or(0),
                 extras.free.unwrap_or(0),
@@ -794,8 +866,18 @@ impl Run<'_> {
             (0, 0)
         };
         let area = map.w * map.h;
-        let total = self.collect(view, area, unscanned, free);
+        let mut total = match self.hide {
+            Some(hide) => {
+                self.level_area = Some(area);
+                self.collect_level(view, area, hide)
+            }
+            None => self.collect(view, area, unscanned, free),
+        };
         self.place(map);
+        if self.level_area.take().is_some() {
+            // the map stands for what was laid out, the group at its weight
+            total = self.s.items.iter().map(|i| i.weight).sum();
+        }
         let cells = std::mem::take(&mut self.s.cells);
         self.emit(&cells, ids::NONE, 1);
         self.s.cells = cells;
@@ -993,11 +1075,14 @@ impl Run<'_> {
         self.s.kids.clear();
         self.s.items.clear();
         let mut total = unscanned.saturating_add(free);
-        let (mut small_n, mut small_sum, mut small_hit) = (0u32, 0u64, 0u64);
-        let hits = self.hits;
+        let empty = Rest {
+            folder,
+            unscanned,
+            free,
+            ..Rest::default()
+        };
+        let mut rest = empty;
         let mut lone = None;
-        let mut tally = [0u64; category::COUNT];
-        let mut ages = Mean::default();
         let mut c = dir.first_child;
         while !c.is_none() {
             // Siblings added in one batch have consecutive ids; stepping
@@ -1014,20 +1099,12 @@ impl Run<'_> {
                             node: c,
                         });
                     } else {
-                        small_n += 1;
-                        small_sum = small_sum.saturating_add(size);
-                        small_hit = small_hit.saturating_add(hit_part(hits, c, size));
                         lone = Some(Kid {
                             size,
                             rank: 0,
                             node: c,
                         });
-                        let cat = self.member_cat(c, &n, size);
-                        if (cat as usize) < category::COUNT {
-                            tally[cat as usize] += size;
-                        }
-                        let a = self.age_of(c, &n, size);
-                        ages.add(a, size);
+                        self.join(&mut rest, c, &n, size);
                     }
                 }
                 let next = n.next_sibling;
@@ -1038,11 +1115,10 @@ impl Run<'_> {
                 c = NodeId(c.0 + 1);
             }
         }
-        if small_n == 1 {
+        if rest.n == 1 {
             // A group of one would hide a name for nothing.
             self.s.kids.extend(lone);
-            (small_n, small_sum, small_hit, tally) = (0, 0, 0, [0; category::COUNT]);
-            ages = Mean::default();
+            rest = empty;
         }
         let mut kids = std::mem::take(&mut self.s.kids);
         for k in kids.iter_mut() {
@@ -1052,65 +1128,143 @@ impl Run<'_> {
             let keep = self.st.max_per_dir;
             kids.select_nth_unstable_by(keep, by_rank);
             for k in &kids[keep..] {
-                small_n += 1;
-                small_sum = small_sum.saturating_add(k.size);
-                small_hit = small_hit.saturating_add(hit_part(hits, k.node, k.size));
-                let n = tree.node(k.node);
-                let cat = self.member_cat(k.node, &n, k.size);
-                if (cat as usize) < category::COUNT {
-                    tally[cat as usize] += k.size;
-                }
-                let a = self.age_of(k.node, &n, k.size);
-                ages.add(a, k.size);
+                self.join(&mut rest, k.node, &tree.node(k.node), k.size);
             }
             kids.truncate(keep);
         }
         kids.sort_unstable_by(by_rank);
-
-        self.s.rest = Rest {
-            folder,
-            n: small_n,
-            sum: small_sum,
-            hit: small_hit,
-            tally,
-            age: ages,
-            unscanned,
-            free,
-        };
-        let items = &mut self.s.items;
-        if unscanned > 0 {
-            items.push(Item {
-                kind: ItemKind::Unscanned,
-                node: folder,
-                size: unscanned,
-            });
-        }
-        items.extend(kids.iter().map(|k| Item {
-            kind: ItemKind::Node,
-            node: k.node,
-            size: k.size,
-        }));
-        if small_n > 0 {
-            items.push(Item {
-                kind: ItemKind::Group {
-                    count: small_n,
-                    cat: main_category(&tally),
-                    hit: share_of(small_hit, small_sum),
-                    age: ages.byte(),
-                },
-                node: folder,
-                size: small_sum,
-            });
-        }
-        if free > 0 {
-            items.push(Item {
-                kind: ItemKind::Free,
-                node: folder,
-                size: free,
-            });
-        }
         self.s.kids = kids;
+        self.s.rest = rest;
+        self.push_items();
         total
+    }
+
+    /// Fills `s.items` with what a level of `folder` shows in a box of
+    /// `area` px² (rule 9): its children not in `hide`, as many with tiles
+    /// of their own as rule 2 allows when the group takes at most
+    /// [`LEVEL_GROUP_SHARE`] of the box, the rest in the group. Returns the
+    /// total size.
+    fn collect_level(&mut self, folder: NodeId, area: f64, hide: &[u32]) -> u64 {
+        let tree = self.tree;
+        let mode = self.mode;
+        let mut kids = std::mem::take(&mut self.s.kids);
+        kids.clear();
+        let mut total = 0u64;
+        for c in tree.children(folder) {
+            let n = tree.node(c);
+            let size = mode.of(&n);
+            if size > 0 && !n.is_deleted() && hide.binary_search(&c.0).is_err() {
+                total = total.saturating_add(size);
+                kids.push(Kid {
+                    size,
+                    rank: 0,
+                    node: c,
+                });
+            }
+        }
+        for k in kids.iter_mut() {
+            k.rank = self.rank(k.node, k.size);
+        }
+        kids.sort_unstable_by(by_rank);
+        // With the group capped, the box stands for min(total, kept / (1 -
+        // share)) bytes; a sibling keeps its tile while every one kept so
+        // far still gets its least area at that scale. The scale only
+        // shrinks as more are kept, so the first that fails ends it.
+        let (mut keep, mut kept, mut room) = (0, 0u64, f64::INFINITY);
+        for k in kids.iter().take(self.st.max_per_dir) {
+            let least = self.st.least_area(tree.node(k.node).is_dir());
+            let r = room.min(k.size as f64 / least);
+            let sum = kept.saturating_add(k.size);
+            let drawn = (total as f64).min(sum as f64 / (1.0 - LEVEL_GROUP_SHARE));
+            if r * area < drawn {
+                break;
+            }
+            (keep, kept, room) = (keep + 1, sum, r);
+        }
+        let mut rest = Rest {
+            folder,
+            ..Rest::default()
+        };
+        for k in &kids[keep..] {
+            self.join(&mut rest, k.node, &tree.node(k.node), k.size);
+        }
+        // Even a group of one stays a group here: it is drawn big enough to
+        // be pointed at, where its one item might not be.
+        kids.truncate(keep);
+        self.s.kids = kids;
+        self.s.rest = rest;
+        self.push_items();
+        total
+    }
+
+    /// Counts sibling `id` (`n`, of `size`) into the group.
+    fn join(&mut self, rest: &mut Rest, id: NodeId, n: &Node, size: u64) {
+        rest.n += 1;
+        rest.sum = rest.sum.saturating_add(size);
+        rest.hit = rest.hit.saturating_add(hit_part(self.hits, id, size));
+        let cat = self.member_cat(id, n, size);
+        if let Some(t) = rest.tally.get_mut(cat as usize) {
+            *t += size;
+        }
+        let a = self.age_of(id, n, size);
+        rest.age.add(a, size);
+    }
+
+    /// The group of `rest` as an item, laid out at its size, or in a level
+    /// (rule 9) beside `others` bytes of tiles at most
+    /// [`LEVEL_GROUP_SHARE`] of the box and at least the least area of a
+    /// tile.
+    fn group_item(&self, rest: &Rest, others: u64) -> Item {
+        let mut it = Item::new(
+            ItemKind::Group {
+                count: rest.n,
+                cat: main_category(&rest.tally),
+                hit: share_of(rest.hit, rest.sum),
+                age: rest.age.byte(),
+            },
+            rest.folder,
+            rest.sum,
+        );
+        if let Some(area) = self.level_area
+            && others > 0
+        {
+            // the group's share of the box is w / (others + w)
+            let most = others as f64 * LEVEL_GROUP_SHARE / (1.0 - LEVEL_GROUP_SHARE);
+            let least = self.st.least_area(false) * self.level_boost;
+            let least = if area > 2.0 * least {
+                others as f64 * least / (area - least)
+            } else {
+                0.0
+            };
+            it.weight = (it.size as f64)
+                .clamp(least, most.max(least))
+                .round()
+                .max(1.0) as u64;
+        }
+        it
+    }
+
+    /// Fills `s.items` from `s.kids` and `s.rest` in paint order:
+    /// UNSCANNED, the siblings, the group, FREE.
+    fn push_items(&mut self) {
+        let rest = self.s.rest;
+        let others: u64 = self.s.kids.iter().map(|k| k.size).sum();
+        let group = (rest.n > 0).then(|| self.group_item(&rest, others));
+        let s = &mut self.s;
+        let items = &mut s.items;
+        items.clear();
+        if rest.unscanned > 0 {
+            items.push(Item::new(ItemKind::Unscanned, rest.folder, rest.unscanned));
+        }
+        items.extend(
+            s.kids
+                .iter()
+                .map(|k| Item::new(ItemKind::Node, k.node, k.size)),
+        );
+        items.extend(group);
+        if rest.free > 0 {
+            items.push(Item::new(ItemKind::Free, rest.folder, rest.free));
+        }
     }
 
     /// Squarifies `s.items` into `b`, insets every cell by `gap / 2` and
@@ -1152,14 +1306,14 @@ impl Run<'_> {
         };
         let s = &mut self.s;
         s.boxes.clear();
-        let total: f64 = s.items.iter().map(|i| i.size as f64).sum();
+        let total: f64 = s.items.iter().map(|i| i.weight as f64).sum();
         if total <= 0.0 {
             return;
         }
         let scale = b.w * b.h / total;
         s.areas.clear();
         s.areas
-            .extend(s.items.iter().map(|i| i.size as f64 * scale));
+            .extend(s.items.iter().map(|i| i.weight as f64 * scale));
         squarify(&s.areas, b, min, &mut s.boxes);
     }
 
@@ -1173,6 +1327,7 @@ impl Run<'_> {
         let (mut no_unscanned, mut no_free) = (false, false);
         // siblings (indexes into `kids`) that are folders only too narrow
         let mut narrow: Vec<usize> = Vec::new();
+        self.level_boost = 1.0;
         for _ in 0..MIN_SIDE_PASSES {
             let (head, group) = self.min_size_items(cut, no_group, no_unscanned, no_free);
             self.squarify_items(b);
@@ -1220,6 +1375,9 @@ impl Run<'_> {
                 // behind them shuffled, so put those back in rank order
                 kids[keep..].sort_unstable_by(by_rank);
                 (cut, no_group) = (keep, false);
+            } else if group_thin && self.level_area.is_some() && self.level_boost < 16.0 {
+                // a level's group is never left out (rule 9): give it more
+                self.level_boost *= 2.0;
             } else if group_thin && !no_group {
                 no_group = true;
             } else if !dropped {
@@ -1240,67 +1398,37 @@ impl Run<'_> {
         no_free: bool,
     ) -> (usize, Option<usize>) {
         let tree = self.tree;
-        let hits = self.hits;
-        let mut ages = self.s.rest.age;
-        let mut tally = self.s.rest.tally;
+        let mut rest = self.s.rest;
         for i in cut..self.s.kids.len() {
             let k = self.s.kids[i];
-            let n = tree.node(k.node);
-            ages.add(self.age_of(k.node, &n, k.size), k.size);
-            let cat = self.member_cat(k.node, &n, k.size);
-            if (cat as usize) < category::COUNT {
-                tally[cat as usize] += k.size;
-            }
-        }
-        let s = &mut self.s;
-        let r = &s.rest;
-        let mut rest = *r;
-        rest.age = ages;
-        rest.tally = tally;
-        for k in &s.kids[cut..] {
-            rest.n += 1;
-            rest.sum = rest.sum.saturating_add(k.size);
-            rest.hit = rest.hit.saturating_add(hit_part(hits, k.node, k.size));
+            self.join(&mut rest, k.node, &tree.node(k.node), k.size);
         }
         let group = if no_group || rest.n == 0 {
             None
-        } else if rest.n == 1 && r.n == 0 {
-            // a group of one would hide a name for nothing
-            let k = s.kids[cut];
-            Some(Item {
-                kind: ItemKind::Node,
-                node: k.node,
-                size: k.size,
-            })
+        } else if rest.n == 1 && self.s.rest.n == 0 && self.level_area.is_none() {
+            // a group of one would hide a name for nothing (in a level it
+            // stays a group, drawn big enough to be pointed at)
+            let k = self.s.kids[cut];
+            Some(Item::new(ItemKind::Node, k.node, k.size))
         } else {
-            Some(Item {
-                kind: ItemKind::Group {
-                    count: rest.n,
-                    cat: main_category(&rest.tally),
-                    hit: share_of(rest.hit, rest.sum),
-                    age: rest.age.byte(),
-                },
-                node: rest.folder,
-                size: rest.sum,
-            })
+            let others = self.s.kids[..cut].iter().map(|k| k.size).sum();
+            Some(self.group_item(&rest, others))
         };
+        let s = &mut self.s;
         let items = &mut s.items;
         items.clear();
         let mut head = 0;
         if rest.unscanned > 0 && !no_unscanned {
-            items.push(Item {
-                kind: ItemKind::Unscanned,
-                node: rest.folder,
-                size: rest.unscanned,
-            });
+            items.push(Item::new(ItemKind::Unscanned, rest.folder, rest.unscanned));
             head = 1;
         }
         let kids = &s.kids[..cut];
         let at = group.map(|g| {
+            // by its size among the others (a level's group by its weight)
             let rank = if matches!(g.kind, ItemKind::Node) {
                 s.kids[cut].rank
             } else {
-                g.size
+                g.weight
             };
             kids.iter()
                 .position(|k| k.rank < rank)
@@ -1310,21 +1438,13 @@ impl Run<'_> {
             if at == Some(i) {
                 items.extend(group);
             }
-            items.push(Item {
-                kind: ItemKind::Node,
-                node: k.node,
-                size: k.size,
-            });
+            items.push(Item::new(ItemKind::Node, k.node, k.size));
         }
         if at == Some(kids.len()) {
             items.extend(group);
         }
         if rest.free > 0 && !no_free {
-            items.push(Item {
-                kind: ItemKind::Free,
-                node: rest.folder,
-                size: rest.free,
-            });
+            items.push(Item::new(ItemKind::Free, rest.folder, rest.free));
         }
         (head, at.map(|a| head + a))
     }
@@ -1347,6 +1467,11 @@ impl Run<'_> {
                 header: 0,
                 hit: 0,
                 age: age::UNKNOWN,
+                note: if it.weight != it.size {
+                    note::NOT_TO_SCALE
+                } else {
+                    0
+                },
             };
             match it.kind {
                 ItemKind::Free => {
@@ -1468,7 +1593,7 @@ impl Run<'_> {
             out.extend_from_slice(&off.to_le_bytes());
             out.extend_from_slice(&len.to_le_bytes());
             out.extend_from_slice(&[r.depth, r.kind, r.cat, r.flags, r.header, r.hit]);
-            out.extend_from_slice(&[r.age, 0, 0, 0]);
+            out.extend_from_slice(&[r.age, r.note, 0, 0]);
         }
         out[16..20].copy_from_slice(&(names.len() as u32).to_le_bytes());
         out.extend_from_slice(&names);
@@ -1685,6 +1810,8 @@ pub struct Record {
     pub header: u8,
     pub hit: u8,
     pub age: u8,
+    /// See [`note`].
+    pub note: u8,
 }
 
 /// Parses and validates a layout buffer.
@@ -1744,6 +1871,7 @@ pub fn decode(buf: &[u8]) -> Result<Decoded> {
             header: buf[o + 50],
             hit: buf[o + 51],
             age: buf[o + 52],
+            note: buf[o + 53],
         });
     }
     Ok(Decoded {
@@ -1764,7 +1892,7 @@ pub fn header_bytes_per_px(buf: &[u8]) -> Option<f32> {
 
 /// True when two encoded layouts draw the same picture: the same search,
 /// the same rects in the same order, with the same ids, names, kinds,
-/// categories, flags, headers, hits, ages and item counts, the same size labels
+/// categories, flags, headers, hits, ages, notes and item counts, the same size labels
 /// (see [`size_label`]), and no edge more than `tolerance` CSS px from
 /// where it was. The revision and `bytesPerPx` are not compared. Live updates use it to skip redraws that
 /// would not change a single visible pixel by more than `tolerance`.
@@ -1789,6 +1917,7 @@ pub fn same_picture(a: &[u8], b: &[u8], tolerance: f32) -> bool {
                 && r.header == s.header
                 && r.hit == s.hit
                 && r.age == s.age
+                && r.note == s.note
                 && r.name == s.name
                 // only named rects show their size
                 && (r.name.is_none() || size_label(r.size) == size_label(s.size))

@@ -34,6 +34,12 @@ export const Flag = {
   Scanning: 128,
 } as const;
 
+/** bits of a record's `note` byte */
+export const Note = {
+  /** its area is not in proportion to its size: a level's group (docs/ipc.md rule 9) */
+  NotToScale: 1,
+} as const;
+
 export const CAT_NONE = 255;
 
 /** One rectangle as the UI uses it. */
@@ -58,6 +64,8 @@ export interface Rect {
   hit: number;
   /** how long ago it was modified, as an age byte (see ../age.ts); folders and groups: by size */
   age: number;
+  /** see `Note`; absent = 0 */
+  note?: number;
 }
 
 export interface Layout {
@@ -130,6 +138,7 @@ export function decodeLayout(buf: ArrayBuffer): Layout {
       header: dv.getUint8(o + 50),
       hit: dv.getUint8(o + 51),
       age: dv.getUint8(o + 52),
+      note: dv.getUint8(o + 53),
     };
   }
   return { view, rev, bytesPerPx, search, rects };
@@ -184,6 +193,7 @@ export function encodeLayout(l: Layout): ArrayBuffer {
     dv.setUint8(o + 50, Math.min(255, Math.round(r.header)));
     dv.setUint8(o + 51, Math.max(0, Math.min(255, Math.round(r.hit))));
     dv.setUint8(o + 52, Math.max(0, Math.min(255, Math.round(r.age ?? 0))));
+    dv.setUint8(o + 53, (r.note ?? 0) & 0xff);
     o += RECORD_SIZE;
   });
   const pool = new Uint8Array(buf, o, namesLen);

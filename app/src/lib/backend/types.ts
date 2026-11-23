@@ -58,9 +58,12 @@ export interface LayoutRequest {
   height: number;
   sizeMode: SizeMode;
   style: LayoutStyle;
+  /** a level of `view` (docs/ipc.md rule 9): the children it leaves out */
+  hide?: number[];
 }
 
-export type DetailsKind = 'file' | 'dir' | 'group' | 'free' | 'unscanned';
+/** 'level' is the UI's own card for a level of the view (docs/ipc.md rule 9); the core never sends it */
+export type DetailsKind = 'file' | 'dir' | 'group' | 'free' | 'unscanned' | 'level';
 
 export interface Details {
   id: number;
@@ -169,12 +172,13 @@ export interface Backend {
   layout(req: LayoutRequest): Promise<ArrayBuffer>;
   details(id: number, view: number, sizeMode: SizeMode): Promise<Details | null>;
   nav(id: number): Promise<NavInfo>;
-  catStats(view: number, sizeMode: SizeMode): Promise<CatStat[]>;
+  /** the legend by type; with `hide`, of a level of `view` (what it does not leave out) */
+  catStats(view: number, sizeMode: SizeMode, hide?: number[]): Promise<CatStat[]>;
   /**
-   * the legend by age: bytes of the files in `view` per age bin (AGE_BINS entries, 0 = date
-   * not known; see ageBin in lib/age.ts)
+   * the legend by age: bytes of the files in `view` (with `hide`, in a level of it) per age
+   * bin (AGE_BINS entries, 0 = date not known; see ageBin in lib/age.ts)
    */
-  ageStats(view: number, sizeMode: SizeMode): Promise<number[]>;
+  ageStats(view: number, sizeMode: SizeMode, hide?: number[]): Promise<number[]>;
   recycle(ids: number[]): Promise<DeleteResult>;
   restore(token: number): Promise<DeleteResult>;
   purge(ids: number[]): Promise<DeleteResult>;

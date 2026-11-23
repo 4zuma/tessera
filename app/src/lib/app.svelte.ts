@@ -4,7 +4,7 @@
  */
 import { SvelteSet } from 'svelte/reactivity';
 import { createBackend } from './backend';
-import { contentOf, decodeLayout, Flag, FREE, groupFolder, isGroupId, isNodeId, Kind, NONE, UNSCANNED, type Layout, type Rect } from './backend/codec';
+import { contentOf, decodeLayout, Flag, FREE, groupFolder, groupId, isGroupId, isNodeId, Kind, NONE, Note, UNSCANNED, type Layout, type Rect } from './backend/codec';
 import type { Backend, CaptionState, CatStat, Crumb, Details, PlatformInfo, ScanProgress, SearchResult, SizeMode, Volume } from './backend/types';
 import { AGE_EDGES, ageBand } from './age';
 import { makeColoring, type ColorBy, type Coloring } from './coloring';
@@ -85,6 +85,17 @@ export interface SearchState {
   error: string | null;
 }
 
+/**
+ * A level of the view (docs/ipc.md rule 9): what a group of the folder holds, opened like a
+ * folder of its own. Levels nest: each one is what the group of the one above holds.
+ */
+export interface Level {
+  /** the folder's children it leaves out: what had tiles of their own on the way down */
+  hide: number[];
+  /** how many items it holds: the group's count when it was opened, then the layout's */
+  count: number;
+}
+
 /** what the selection card shows */
 export interface SelInfo {
   count: number;
@@ -124,6 +135,8 @@ export class App implements EngineHost {
   view = $state(0);
   crumbs = $state<Crumb[]>([]);
   up = $state<number | null>(null);
+  /** the levels of the view open, outermost first (none: the folder itself); not saved */
+  levels = $state.raw<Level[]>([]);
   sizeMode = $state<SizeMode>('disk');
   /** the details pane is wanted (it shows when the window is wide enough) */
   paneWanted = $state(true);
@@ -186,9 +199,23 @@ export class App implements EngineHost {
   private nameCache = new Map<number, string>();
   /** bytes shown in the current view (without free space) */
   private viewTotal = 0;
+  /** the ids drawn with tiles of their own at the top of the map: a level opened now hides them */
+  private shownTop: number[] = [];
+  /** the `hide` of the layout on screen: a level opens only from the one shown */
+  private shownHide: number[] | undefined;
 
   get scanning() {
     return !!this.scan?.running;
+  }
+
+  /** what the level shown leaves out of the view; undefined: the folder itself is shown */
+  get hide(): number[] | undefined {
+    return this.levels.at(-1)?.hide;
+  }
+
+  /** "up" goes somewhere: out of a level, or to the folder above */
+  get canGoUp(): boolean {
+    return this.levels.length > 0 || this.up != null;
   }
 
   /* ------------------------------------------------------------------ boot */
@@ -400,7 +427,8 @@ export class App implements EngineHost {
         this.pending = null;
         const e = this.engine;
         const view = this.view;
-        const buf = await this.backend.layout({ view, width: e.W, height: e.H, sizeMode: this.sizeMode, style: fluentLayout });
+        const hide = this.hide;
+        const buf = await this.backend.layout({ view, width: e.W, height: e.H, sizeMode: this.sizeMode, style: fluentLayout, hide });
         let L: Layout;
         try {
           L = decodeLayout(buf);
@@ -409,13 +437,20 @@ export class App implements EngineHost {
           break;
         }
         // the user moved on while we waited: the newer request is already pending
-        if (view !== this.view) continue;
+        if (view !== this.view || hide !== this.hide) continue;
         if (L.view !== view) {
           // the folder vanished (deleted outside Tessera); the core fell back to another view
           this.view = L.view;
+          this.levels = [];
           void this.refreshNav();
+          this.refreshLegend(true);
+        } else if (hide && e.W > 60 && e.H > 60 && !L.rects.length) {
+          // everything in the level is gone (deleted): back to the one above
+          this.backToLevel(this.levels.length - 1);
+          continue;
         }
         for (const r of L.rects) if (r.name && isNodeId(r.id)) this.nameCache.set(r.id, r.name);
+        this.shownHide = this.hide;
         e.apply(L, kind, opt);
         this.bytesPerPx = L.bytesPerPx;
         this.afterLayout(L);
@@ -430,11 +465,20 @@ export class App implements EngineHost {
   private afterLayout(L: Layout) {
     const ids = new Set<number>();
     let total = 0;
+    let count = 0;
+    const top: number[] = [];
     for (const r of L.rects) {
       ids.add(r.id);
-      if (r.depth === 1 && r.kind !== Kind.Free) total += r.size;
+      if (r.depth !== 1) continue;
+      if (r.kind !== Kind.Free) total += r.size;
+      if (isNodeId(r.id)) top.push(r.id);
+      count += r.kind === Kind.Group ? r.count : 1;
     }
     this.viewTotal = total;
+    this.shownTop = top;
+    // a level's crumb says how many items it holds now (deletes and live changes move it)
+    const lv = this.levels.at(-1);
+    if (lv && lv.count !== count && count > 0) this.levels = [...this.levels.slice(0, -1), { ...lv, count }];
     let selChanged = false;
     for (const id of [...this.sel]) if (!ids.has(id)) {
       this.sel.delete(id);
@@ -461,6 +505,7 @@ export class App implements EngineHost {
     this.undoToken = null;
     this.volume = vol;
     this.view = 0;
+    this.levels = [];
     this.phase = 'map';
     this.legend = [];
     this.ageHist = [];
@@ -552,13 +597,15 @@ export class App implements EngineHost {
       this.lastLegend = performance.now();
       if (!this.backend || !this.volume) return;
       const v = this.view;
+      const hide = this.hide;
+      const same = () => v === this.view && hide === this.hide;
       if (this.colorBy === 'age') {
-        const h = await this.backend.ageStats(v, this.sizeMode);
-        if (v === this.view) this.ageHist = h;
+        const h = await this.backend.ageStats(v, this.sizeMode, hide);
+        if (same()) this.ageHist = h;
         return;
       }
-      const st = await this.backend.catStats(v, this.sizeMode);
-      if (v === this.view) this.legend = st;
+      const st = await this.backend.catStats(v, this.sizeMode, hide);
+      if (same()) this.legend = st;
     };
     if (now) {
       if (this.legendTimer) clearTimeout(this.legendTimer);
@@ -586,6 +633,13 @@ export class App implements EngineHost {
       inner !== id ? this.backend.details(inner, this.view, this.sizeMode) : null,
     ]);
     if (seq !== this.detailsSeq) return;
+    const lv = this.levels.at(-1);
+    if (d && lv && id === this.view) {
+      // in a level the card is the level's: "160 small items · 118 MB · in Temp"
+      const size = this.viewTotal;
+      this.details = { ...d, id: groupId(this.view), kind: 'level', name: tn('smallItems', lv.count), size, share: d.size > 0 ? size / d.size : 0, files: 0, dirs: 0, modified: null, cat: 255, flags: 0, lockReason: null, hint: null };
+      return;
+    }
     if (d && isGroupId(id)) d.size = this.rectOf(id)?.size ?? 0;
     if (d && di) {
       // a folded chain: name it as the tile does, and show what is inside its deepest
@@ -645,7 +699,9 @@ export class App implements EngineHost {
       : r.kind === Kind.Dir || r.kind === Kind.DirLeaf
         ? t('folder')
         : r.kind === Kind.Group
-          ? t('kind.group')
+          ? (r.note ?? 0) & Note.NotToScale
+            ? `${t('kind.group')} · ${t('kind.notToScale')}`
+            : t('kind.group')
           : r.kind === Kind.Free
             ? t('free')
             : r.kind === Kind.Unscanned
@@ -725,7 +781,12 @@ export class App implements EngineHost {
 
   zoomInto(id: number | null) {
     if (id == null) return;
-    if (isGroupId(id)) return void this.zoomTo(groupFolder(id));
+    if (isGroupId(id)) {
+      // the view's own group opens as a level; another folder's group opens that folder
+      // first, one step at a time, so a level's crumb always says what the tile said
+      if (groupFolder(id) === this.view && this.rectOf(id)?.parent === NONE) return this.openLevel(id);
+      return void this.zoomTo(groupFolder(id));
+    }
     if (!isNodeId(id)) return;
     const r = this.rectOf(id);
     if (!r) return;
@@ -739,7 +800,12 @@ export class App implements EngineHost {
    * shrinks the stage back into the old folder's tile in the parent's layout.
    */
   async zoomTo(target: number, viaTile?: number) {
-    if (!this.backend || target === this.view) return;
+    if (!this.backend) return;
+    if (target === this.view) {
+      // the folder's own crumb, from a level: back to the folder itself
+      if (this.levels.length) this.backToLevel(0);
+      return;
+    }
     this.closeOverlays();
     const prev = this.view;
     const e = this.engine;
@@ -764,16 +830,60 @@ export class App implements EngineHost {
       };
     }
     this.view = target;
-    this.sel.clear();
-    this.selInfo = { count: 0, bytes: 0, lockReason: null };
-    this.hoverId = null;
-    this.tip = null;
+    this.levels = [];
+    this.clearFocus();
     this.requestLayout(cam ? 'zoom' : 'morph', { cam });
     await this.refreshNav();
     this.refreshLegend(true);
   }
 
+  /** after a move to another folder or level nothing is selected or pointed at */
+  private clearFocus() {
+    this.sel.clear();
+    this.selInfo = { count: 0, bytes: 0, lockReason: null };
+    this.hoverId = null;
+    this.tip = null;
+  }
+
+  /**
+   * Opens the view's group as a level (docs/ipc.md rule 9): the camera grows the group's tile
+   * to fill the stage, and what had tiles of its own here stays out of the level.
+   */
+  private openLevel(gid: number) {
+    const e = this.engine;
+    const g = e?.items.get(gid);
+    // (a second double-click before the level is drawn would open the same level again)
+    if (!e || !g || g.rm || this.shownHide !== this.hide) return;
+    this.closeOverlays();
+    const box = { x: g.x, y: g.y, w: Math.max(1, g.w), h: Math.max(1, g.h) };
+    const hide = [...new Set([...(this.hide ?? []), ...this.shownTop])].sort((a, b) => a - b);
+    this.levels = [...this.levels, { hide, count: g.r.count }];
+    this.clearFocus();
+    // the new level's group has the same id: the old one leaves with the camera instead
+    this.requestLayout('zoom', { cam: () => ({ A: box, B: e.stageBox() }), renew: [gid] });
+    this.refreshLegend(true);
+  }
+
+  /** back out to the level `depth` levels deep (0: the folder itself), the map shrinking into its group */
+  backToLevel(depth: number) {
+    if (depth < 0 || depth >= this.levels.length) return;
+    this.closeOverlays();
+    const e = this.engine;
+    const gid = groupId(this.view);
+    this.levels = this.levels.slice(0, depth);
+    this.clearFocus();
+    const cam = e
+      ? (rects: Rect[]) => {
+          const r = rects.find(q => q.id === gid && q.parent === NONE);
+          return r ? { A: e.stageBox(), B: r } : null;
+        }
+      : undefined;
+    this.requestLayout('zoom', { cam, renew: [gid] });
+    this.refreshLegend(true);
+  }
+
   zoomOut() {
+    if (this.levels.length) return this.backToLevel(this.levels.length - 1);
     if (this.up != null) void this.zoomTo(this.up);
   }
 
