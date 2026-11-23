@@ -22,10 +22,12 @@
 //!    group of one.
 //!
 //!    With `minSide` (CSS px, not counting the gap) every tile drawn is at
-//!    least that wide and tall, since a thin sliver hardly reads as a tile:
-//!    * siblings whose area would be below `(minSide + gap)²` go to the
-//!      group at once, and the group takes its place among the others by
-//!      its size instead of coming last;
+//!    least that wide and tall, since a thin sliver hardly reads as a tile,
+//!    and with `minWidth` at least that wide, since names are written
+//!    across and a tall narrow tile shows only a letter or two of one:
+//!    * siblings whose area would be below `(minSide + gap) x (max(minSide,
+//!      minWidth) + gap)` go to the group at once, and the group takes its
+//!      place among the others by its size instead of coming last;
 //!    * after squarifying, the first sibling (in rank order) that came out
 //!      too thin and every one after it join the group, and the folder is
 //!      laid out again;
@@ -230,6 +232,10 @@ pub struct LayoutStyle {
     /// No tile is narrower or shorter than this (CSS px, the gap not
     /// counted): thinner ones join the group (rule 2). 0 turns it off.
     pub min_side: f32,
+    /// No tile is narrower than this (CSS px, the gap not counted), so a
+    /// tile has room for a few letters of its name (rule 2). 0 turns it
+    /// off.
+    pub min_width: f32,
     /// A folder opens only if its area is above `min_area * recurse`.
     pub recurse: f32,
     /// A folder opens only if its area is above this share (0 to 1) of the
@@ -252,6 +258,9 @@ pub const RECURSE: f32 = 60.0;
 /// more than the 13 x 20 px of Windows' standard arrow pointer at the same
 /// scale, so every tile can be pointed at.
 pub const MIN_SIDE: f32 = 24.0;
+/// Default `min_width`: with 7 px of padding on each side, 48 px leaves
+/// room for about five letters of a name.
+pub const MIN_WIDTH: f32 = 48.0;
 /// Times a folder is laid out again at most to get rid of thin tiles.
 const MIN_SIDE_PASSES: usize = 12;
 /// Default `open_share`: a folder must also be over 0.25 % of the map to
@@ -270,6 +279,7 @@ impl Default for LayoutStyle {
             min_header_w: 60.0,
             min_area: 110.0,
             min_side: MIN_SIDE,
+            min_width: MIN_WIDTH,
             recurse: RECURSE,
             open_share: OPEN_SHARE,
             max_depth: 14,
@@ -455,8 +465,10 @@ struct Style {
     min_header_w: f64,
     min_area: f64,
     /// `min_side` plus the gap: the least width and height of a cell
-    /// before it is inset; 0 when the rule is off.
+    /// before it is inset; 0 when that limit is off.
     min_cell: f64,
+    /// `min_width` plus the gap: the least width of a cell; 0 when off.
+    min_cell_w: f64,
     /// `min_area * recurse`.
     open_min: f64,
     open_share: f64,
@@ -479,7 +491,7 @@ impl Style {
             }
         };
         let min_area = v(s.min_area).max(1.0);
-        let min_side = v(s.min_side);
+        let with_gap = |x: f64| if x > 0.0 { x + v(s.gap) } else { 0.0 };
         Style {
             outer: v(s.outer),
             pad: v(s.pad),
@@ -487,11 +499,8 @@ impl Style {
             header: v(s.header).min(255.0),
             min_header_w: v(s.min_header_w),
             min_area,
-            min_cell: if min_side > 0.0 {
-                min_side + v(s.gap)
-            } else {
-                0.0
-            },
+            min_cell: with_gap(v(s.min_side)),
+            min_cell_w: with_gap(v(s.min_width)),
             open_min: min_area * v(s.recurse),
             open_share: v(s.open_share).min(1.0),
             open_area: 0.0,
@@ -502,6 +511,16 @@ impl Style {
             label_w: v(s.label_min_w),
             label_h: v(s.label_min_h),
         }
+    }
+
+    /// Rule 2's `minSide` / `minWidth` are on.
+    fn min_size(&self) -> bool {
+        self.min_cell > 0.0 || self.min_cell_w > 0.0
+    }
+
+    /// A cell (before the inset) is below `minSide` or `minWidth`.
+    fn too_small(&self, c: &BoxF) -> bool {
+        c.w.min(c.h) < self.min_cell || c.w < self.min_cell_w
     }
 }
 
@@ -825,7 +844,11 @@ impl Run<'_> {
         // children), so one pass over the siblings sorts them out; the
         // areas use the sum actually seen.
         let expect = mode.of(&dir).saturating_add(unscanned).saturating_add(free);
-        let min_area = self.st.min_area.max(self.st.min_cell * self.st.min_cell);
+        // The least area a tile can have: `minSide` high, `minWidth` wide.
+        let st = &self.st;
+        let min_area = st
+            .min_area
+            .max(st.min_cell * st.min_cell.max(st.min_cell_w));
         let threshold = (min_area * expect as f64 / area).ceil() as u64;
         self.s.kids.clear();
         self.s.items.clear();
@@ -945,15 +968,16 @@ impl Run<'_> {
     /// keeps those at least 1 px wide and tall in `s.cells` (rule 3), and
     /// at least `minSide` (rule 2).
     fn place(&mut self, b: BoxF) {
-        if self.st.min_cell > 0.0 {
-            self.fit_min_side(b);
+        let min_size = self.st.min_size();
+        if min_size {
+            self.fit_min_size(b);
         } else {
             self.squarify_items(b);
         }
+        let st = &self.st;
         let s = &mut self.s;
         s.cells.clear();
-        let g = self.st.half_gap;
-        let min_cell = self.st.min_cell;
+        let g = st.half_gap;
         for (it, c) in s.items.iter().zip(&s.boxes) {
             let r = BoxF {
                 x: c.x + g,
@@ -961,7 +985,7 @@ impl Run<'_> {
                 w: c.w - 2.0 * g,
                 h: c.h - 2.0 * g,
             };
-            if r.w >= 1.0 && r.h >= 1.0 && c.w.min(c.h) >= min_cell {
+            if r.w >= 1.0 && r.h >= 1.0 && !(min_size && st.too_small(c)) {
                 s.cells.push((*it, r));
             }
         }
@@ -983,23 +1007,21 @@ impl Run<'_> {
         squarify(&s.areas, b, &mut s.boxes);
     }
 
-    /// Rule 2 with `minSide`: lays `s.items` out again until no sibling is
-    /// too thin, moving the thin ones into the group and leaving out a
-    /// group or pseudo tile that is too thin itself.
-    fn fit_min_side(&mut self, b: BoxF) {
-        let min_cell = self.st.min_cell;
-        let thin = |c: &BoxF| c.w.min(c.h) < min_cell;
+    /// Rule 2 with `minSide` / `minWidth`: lays `s.items` out again until
+    /// no sibling is too small, moving those into the group and leaving out
+    /// a group or pseudo tile that is too small itself.
+    fn fit_min_size(&mut self, b: BoxF) {
         let mut cut = self.s.kids.len();
         let mut no_group = false;
         let (mut no_unscanned, mut no_free) = (false, false);
         for _ in 0..MIN_SIDE_PASSES {
-            let (head, group) = self.min_side_items(cut, no_group, no_unscanned, no_free);
+            let (head, group) = self.min_size_items(cut, no_group, no_unscanned, no_free);
             self.squarify_items(b);
             let mut first = None;
             let mut group_thin = false;
             let mut dropped = false;
             for (i, (it, c)) in self.s.items.iter().zip(&self.s.boxes).enumerate() {
-                if !thin(c) {
+                if !self.st.too_small(c) {
                     continue;
                 }
                 if group == Some(i) {
@@ -1025,11 +1047,11 @@ impl Run<'_> {
         }
     }
 
-    /// Fills `s.items` for [`Self::fit_min_side`]: the siblings before
+    /// Fills `s.items` for [`Self::fit_min_size`]: the siblings before
     /// `cut` get their own tiles, the rest join the group, which goes in
     /// among them by its size. Returns how many items come before the
     /// siblings (UNSCANNED) and where the group is, if any.
-    fn min_side_items(
+    fn min_size_items(
         &mut self,
         cut: usize,
         no_group: bool,

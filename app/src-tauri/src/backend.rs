@@ -426,6 +426,7 @@ struct StyleReq {
     min_header_w: f32,
     min_area: f32,
     min_side: f32,
+    min_width: f32,
     recurse: f32,
     open_share: f32,
     max_depth: u8,
@@ -450,6 +451,7 @@ impl From<&LayoutReq> for LayoutRequest {
                 min_header_w: s.min_header_w,
                 min_area: s.min_area,
                 min_side: s.min_side,
+                min_width: s.min_width,
                 recurse: s.recurse,
                 open_share: s.open_share,
                 max_depth: s.max_depth,
@@ -1268,7 +1270,7 @@ mod tests {
     #[test]
     fn layout_request_parses_the_contract() {
         let r: LayoutReq = serde_json::from_str(
-            r#"{"view":0,"width":800,"height":600,"sizeMode":"logical","style":{"outer":6,"pad":3,"gap":2,"header":21,"minHeaderW":60,"minArea":110,"minSide":24,"recurse":60,"openShare":0.0025,"maxDepth":14,"maxPerDir":400,"labelMinW":44,"labelMinH":20}}"#,
+            r#"{"view":0,"width":800,"height":600,"sizeMode":"logical","style":{"outer":6,"pad":3,"gap":2,"header":21,"minHeaderW":60,"minArea":110,"minSide":24,"minWidth":48,"recurse":60,"openShare":0.0025,"maxDepth":14,"maxPerDir":400,"labelMinW":44,"labelMinH":20}}"#,
         )
         .unwrap();
         let q = LayoutRequest::from(&r);

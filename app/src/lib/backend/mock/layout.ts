@@ -172,7 +172,9 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     // thin is not drawn: the others take its room. A tile still too thin after the last pass
     // is left out and its room stays empty.
     const side = o.minSide > 0 ? o.minSide + o.gap : 0;
-    const thin = (cw: number, ch: number) => Math.min(cw, ch) < side;
+    const wide = o.minWidth > 0 ? o.minWidth + o.gap : 0;
+    const sized = side > 0 || wide > 0;
+    const thin = (cw: number, ch: number) => Math.min(cw, ch) < side || cw < wide;
     let rest = 0;
     let restN = 0;
     let restHit = 0;
@@ -184,7 +186,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     for (const c of items) {
       if (c.special === 'unscanned') head.push(c);
       else if (c.special) tail.push(c);
-      else if (c.s * k >= Math.max(o.minArea, side * side) && nodes.length < o.maxPerDir) nodes.push(c);
+      else if (c.s * k >= Math.max(o.minArea, side * Math.max(side, wide)) && nodes.length < o.maxPerDir) nodes.push(c);
       else {
         rest += c.s;
         restN++;
@@ -219,14 +221,14 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       }
       if (grp && !noGroup) {
         // with minSide the group takes its place by size, not the strip left at the end
-        let at = side ? mid.findIndex(c => c.rk < grp.rk) : -1;
+        let at = sized ? mid.findIndex(c => c.rk < grp.rk) : -1;
         if (at < 0) at = mid.length;
         mid.splice(at, 0, grp);
       }
       const list = [...head, ...mid, ...tail].filter(c => !gone.has(c));
       rs = [];
       squarify(list, x, y, w, h, rs);
-      if (!side) break;
+      if (!sized) break;
       let first = -1;
       let grpThin = false;
       let dropped = false;
@@ -254,7 +256,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       const ry = ry0 + g;
       const rw = rw0 - 2 * g;
       const rh = rh0 - 2 * g;
-      if (rw < 1 || rh < 1 || thin(rw0, rh0)) continue;
+      if (rw < 1 || rh < 1 || (sized && thin(rw0, rh0))) continue;
       const base = { x: rx, y: ry, w: rw, h: rh, depth, parent: pid, count: 0, header: 0, hit: c.n ? hitOf(c.n) : (c.group?.hit ?? 0) };
       if (c.group) {
         const id = groupId(parent.id);

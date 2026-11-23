@@ -6,7 +6,7 @@ import { MockBackend } from './mock';
 import { BadSize, parseQuery } from './mock/search';
 import type { LayoutRequest, ScanProgress } from './types';
 
-const STYLE = { outer: 6, pad: 3, gap: 2, header: 21, minHeaderW: 60, minArea: 110, minSide: 0, recurse: 60, openShare: 0.0025, maxDepth: 14, maxPerDir: 400, labelMinW: 44, labelMinH: 20 };
+const STYLE = { outer: 6, pad: 3, gap: 2, header: 21, minHeaderW: 60, minArea: 110, minSide: 0, minWidth: 0, recurse: 60, openShare: 0.0025, maxDepth: 14, maxPerDir: 400, labelMinW: 44, labelMinH: 20 };
 const req = (view = 0): LayoutRequest => ({ view, width: 1200, height: 800, sizeMode: 'disk', style: STYLE });
 
 async function scanned(b: MockBackend, root = 'C:\\') {
@@ -102,15 +102,15 @@ describe('mock backend', () => {
     await b.scanCancel();
   });
 
-  it('keeps every tile at least minSide wide and tall', async () => {
+  it('keeps every tile at least minSide tall and minWidth wide', async () => {
     const b = new MockBackend({}, { scanMs: 300 });
     await scanned(b);
-    const style = { ...STYLE, minSide: 24 };
+    const style = { ...STYLE, minSide: 24, minWidth: 48 };
     for (const [width, height] of [[900, 640], [1280, 820], [1700, 1050]]) {
       const off = decodeLayout(await b.layout({ ...req(), width, height })).rects;
       const on = decodeLayout(await b.layout({ ...req(), width, height, style })).rects;
       expect(off.some(r => Math.min(r.w, r.h) < 24)).toBe(true);
-      const thin = on.filter(r => Math.min(r.w, r.h) < 24 - 1e-3);
+      const thin = on.filter(r => r.w < 48 - 1e-3 || r.h < 24 - 1e-3);
       expect(thin).toEqual([]);
       expect(on.length).toBeLessThan(off.length);
     }

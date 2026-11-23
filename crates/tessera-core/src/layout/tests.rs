@@ -151,8 +151,8 @@ fn check(tree: &Tree, req: &LayoutRequest, d: &Decoded, extras: u64) {
         assert!(index.insert(r.id, i).is_none(), "duplicate id {r:?}");
         assert!(r.w >= 1.0 && r.h >= 1.0, "{r:?} below 1 px");
         assert!(
-            r.w >= st.min_side - eps && r.h >= st.min_side - eps,
-            "{r:?} thinner than minSide"
+            r.w >= st.min_side.max(st.min_width) - eps && r.h >= st.min_side - eps,
+            "{r:?} smaller than minSide / minWidth"
         );
         let (px, py, pw, ph, pdepth) = if r.parent == ids::NONE {
             (map.0, map.1, map.2, map.3, 0)
@@ -264,7 +264,7 @@ fn check(tree: &Tree, req: &LayoutRequest, d: &Decoded, extras: u64) {
             + if parent == ids::NONE { extras } else { 0 };
         // With minSide, tiles left out give their room to the others, so
         // the scale is the same for all siblings but can be larger.
-        let scale = if st.min_side > 0.0 {
+        let scale = if st.min_side > 0.0 || st.min_width > 0.0 {
             let r = group
                 .iter()
                 .map(|&i| &d.records[i])
@@ -471,6 +471,7 @@ fn styles_are_respected() {
         min_header_w: 100.0,
         min_area: 400.0,
         min_side: 30.0,
+        min_width: 50.0,
         recurse: 1.0,
         open_share: 0.0,
         max_depth: 3,
@@ -492,7 +493,7 @@ fn styles_are_respected() {
     }
     assert!(per_parent.values().all(|&n| n <= 5), "{per_parent:?}");
     assert!(d.records.iter().any(|r| r.header == 30));
-    assert!(d.records.iter().all(|r| r.w >= 30.0 && r.h >= 30.0));
+    assert!(d.records.iter().all(|r| r.w >= 50.0 && r.h >= 30.0));
 }
 
 #[test]
@@ -616,6 +617,7 @@ fn small_and_surplus_children_are_grouped() {
     );
     let mut req = LayoutRequest::new(NodeId::ROOT, 800.0, 600.0);
     req.style.min_side = 0.0;
+    req.style.min_width = 0.0;
     let dd = lay(&t, &req);
     let group = dd.records.iter().find(|r| r.kind == kind::GROUP).unwrap();
     assert_eq!(group.id, ids::GROUP_BIT | d.0);
@@ -641,6 +643,7 @@ fn small_and_surplus_children_are_grouped() {
     let mut req = LayoutRequest::new(NodeId::ROOT, 1000.0, 800.0);
     req.style.max_per_dir = 10;
     req.style.min_side = 0.0;
+    req.style.min_width = 0.0;
     let dd = lay(&t, &req);
     assert_eq!(dd.records.len(), 11);
     let g = dd.records.last().unwrap();
@@ -743,6 +746,9 @@ fn folders_open_by_size_and_depth() {
     let (t, chain) = chain_tree();
     let mut req = LayoutRequest::new(NodeId::ROOT, 3000.0, 3000.0);
     req.style.max_depth = 4;
+    // (the deepest folders get too small for minSide / minWidth)
+    req.style.min_side = 0.0;
+    req.style.min_width = 0.0;
     let d = lay(&t, &req);
     let by_id: HashMap<u32, &Record> = d.records.iter().map(|r| (r.id, r)).collect();
     assert_eq!(by_id[&chain[0].0].kind, kind::DIR);
@@ -801,7 +807,8 @@ fn closed_folders_take_their_main_category() {
     t.add_child(tie, b"c.zip", 700, 700, NodeFlags::NONE);
     t.add_child(tie, b"d.mp3", 700, 700, NodeFlags::NONE);
     // Too small to open, so both folders are closed.
-    let req = LayoutRequest::new(NodeId::ROOT, 100.0, 100.0);
+    let mut req = LayoutRequest::new(NodeId::ROOT, 100.0, 100.0);
+    req.style.min_width = 0.0;
     let mut eng = LayoutEngine::new();
     let cat_of = |eng: &mut LayoutEngine, t: &Tree, req: &LayoutRequest, id: NodeId| {
         let d = decode(&eng.layout(t, req, RootExtras::default(), 0)).unwrap();
@@ -936,6 +943,7 @@ fn flags_names_and_skipped_nodes() {
     assert!(t.mark_deleted(gone));
     let mut req = LayoutRequest::new(NodeId::ROOT, 1000.0, 800.0);
     req.style.min_side = 0.0;
+    req.style.min_width = 0.0;
     let d = lay(&t, &req);
     let get = |id: NodeId| d.records.iter().find(|r| r.id == id.0);
     assert_eq!(get(bin).unwrap().flags, flags::RECYCLE_BIN);
@@ -1073,6 +1081,7 @@ fn record_cap_keeps_the_big_structure() {
     let mut req = LayoutRequest::new(NodeId::ROOT, 8000.0, 8000.0);
     req.style.min_area = 1.0;
     req.style.min_side = 0.0;
+    req.style.min_width = 0.0;
     req.style.max_per_dir = u32::MAX;
     let d = lay(&t, &req);
     assert!(d.records.len() <= MAX_RECORDS);
@@ -1205,11 +1214,16 @@ fn min_side_keeps_every_tile_wide_enough() {
     t.add_children(d, &b);
     let mut req = LayoutRequest::new(d, 900.0, 640.0);
     req.style.min_side = 0.0;
+    req.style.min_width = 0.0;
     let off = lay(&t, &req);
     assert!(off.records.iter().any(|r| r.w.min(r.h) < 24.0));
     req.style.min_side = 24.0;
     let on = lay(&t, &req); // `check` asserts every tile is at least 24 x 24
     assert!(on.records.len() < off.records.len());
+    assert!(on.records.iter().any(|r| r.w < 48.0));
+    req.style.min_width = 48.0;
+    let wide = lay(&t, &req); // ... and here at least 48 wide
+    assert!(wide.records.len() <= on.records.len());
     let g = on
         .records
         .iter()
