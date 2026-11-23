@@ -88,10 +88,10 @@ const GB = MB * 1024;
 const TB = GB * 1024;
 
 /**
- * How wide a folder must be to hold its size label (rule 2, `sizeFit`): on one line, and with
- * the number over the unit. The number is written as the UI writes it (format.ts fmtBytes).
+ * How wide a folder must be to hold its size label on one line (rule 2, `sizeFit`). The number
+ * is written as the UI writes it (format.ts fmtBytes).
  */
-export function labelRoom(b: number, f: SizeFit): [number, number] {
+export function labelRoom(b: number, f: SizeFit): number {
   const [num, unit] =
     b >= TB ? [(b / TB).toFixed(2), 4]
     : b >= GB ? [(b / GB).toFixed(b >= 100 * GB ? 0 : 1), 3]
@@ -100,8 +100,7 @@ export function labelRoom(b: number, f: SizeFit): [number, number] {
     : [Math.round(b).toLocaleString('en'), 0];
   let nw = 0;
   for (const ch of num) nw += ch >= '0' && ch <= '9' ? f.digit : f.dot;
-  const uw = f.units[unit];
-  return [nw + f.space + uw + f.inset, Math.max(nw, uw) + f.inset];
+  return nw + f.space + f.units[unit] + f.inset;
 }
 
 export function squarify<T extends { s: number }>(items: T[], x: number, y: number, w: number, h: number, out: [T, number, number, number, number][], min = 0) {
@@ -248,20 +247,18 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     const tall = (o.minHeight ?? 0) > 0 ? o.minHeight! + o.gap : 0;
     const sized = side > 0 || wide > 0 || tall > 0 || !!o.sizeFit;
     const isDir = (c: Item) => !!c.n?.kids;
-    // with sizeFit a folder needs room for its own size label instead of minHeight (on one
-    // line, or the number over the unit), and still minWidth for its name: its least width
-    // and height follow the label
+    // with sizeFit a folder needs room for its own size label on one line instead of
+    // minHeight, and still minWidth for its name: its least width follows the label
     const sf = o.sizeFit;
-    const labelW = new Map<Item, [number, number]>();
+    const labelW = new Map<Item, number>();
     const roomOf = (c: Item) => {
       let r = labelW.get(c);
-      if (!r) labelW.set(c, (r = labelRoom(c.size ?? c.s, sf!)));
+      if (r === undefined) labelW.set(c, (r = labelRoom(c.size ?? c.s, sf!)));
       return r;
     };
     const short = (cw: number, ch: number, c: Item) => {
       if (!sf) return cw < wide || ch < tall;
-      const [one, two] = roomOf(c);
-      return !((cw >= Math.max(wide, one + o.gap) && ch >= sf.one + o.gap) || (cw >= Math.max(wide, two + o.gap) && ch >= sf.two + o.gap));
+      return cw < Math.max(wide, roomOf(c) + o.gap) || ch < sf.height + o.gap;
     };
     // 0 fits, 1 a folder only too narrow (or too short for minHeight / its label), 2 below minSide
     const fit = (cw: number, ch: number, c: Item) => (Math.min(cw, ch) < side ? 2 : isDir(c) && short(cw, ch, c) ? 1 : 0);
@@ -281,9 +278,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     const least = (c: Item | null) => {
       if (!c || !isDir(c)) return Math.max(o.minArea, ROOM * side * side);
       if (!sf) return Math.max(o.minArea, ROOM * Math.max(side, wide) * Math.max(side, tall));
-      const [one, two] = roomOf(c);
-      const a = (cw: number, ch: number) => Math.max(side, wide, cw + o.gap) * Math.max(side, ch + o.gap);
-      return Math.max(o.minArea, ROOM * Math.min(a(one, sf.one), a(two, sf.two)));
+      return Math.max(o.minArea, ROOM * Math.max(side, wide, roomOf(c) + o.gap) * Math.max(side, sf.height + o.gap));
     };
     // in a level (rule 9) the group takes at most LEVEL_GROUP_SHARE of the box, so the box
     // stands for min(total, kept / (1 - share)) bytes; an item keeps its tile while every

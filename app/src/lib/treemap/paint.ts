@@ -63,14 +63,13 @@ export const paintStyle = {
   compact: false,
   /** band look: a folder's white area is at least this tall (the layout's folder minimum height follows), px; 18 holds a closed folder's size line */
   minWhite: 6,
-  /** band look: every folder gets room for its own size label, on one line or the number over the unit (the layout's sizeFit; minimum width and height follow the label) */
+  /** band look: every folder gets room for its own size label on one line (the layout's sizeFit; the minimum width follows the label) */
   fitSize: false,
 };
 /** band look: the header band's height, px */
 export const BAND = 21;
-/** band look: the white area height a closed folder's size line needs, px; two lines (number over unit) need SIZE_LINE2 */
+/** band look: the white area height a closed folder's size line needs, px */
 const SIZE_LINE = 18;
-const SIZE_LINE2 = SIZE_LINE + LINE;
 /** band look: how much further each tone step mixes the file colour into the ground */
 const TONE_MIX = [0, 0.25, 0.42, 0.58];
 /**
@@ -93,8 +92,7 @@ let measured: { key: string; fit: SizeFit } | null = null;
 /**
  * The room a closed folder's size label takes (the layout's sizeFit), measured once with the
  * font the label is drawn in, so the layout's least folder fits what is painted. A closed
- * folder writes its size 8 px in from either side of its white area, one line SIZE_LINE tall
- * or the number over the unit in SIZE_LINE2.
+ * folder writes its size 8 px in from either side of its white area, one line SIZE_LINE tall.
  */
 export function sizeFit(): SizeFit {
   const foot = paintStyle.foot + 1;
@@ -111,8 +109,7 @@ export function sizeFit(): SizeFit {
     space: w(' '),
     units,
     inset: 16,
-    one: BAND + SIZE_LINE + foot,
-    two: BAND + SIZE_LINE2 + foot,
+    height: BAND + SIZE_LINE + foot,
   };
   measured = { key, fit };
   return { ...fit };
@@ -649,21 +646,11 @@ export class FluentPainter implements Painter {
       ctx.fillStyle = t['text-3'];
       ctx.fillText(sz, b.x + b.w - sw - 8, base);
     } else if (at === 'white' || (at === 'auto' && roomBelow >= SIZE_LINE)) {
-      const room = b.w - 16;
-      ctx.fillStyle = t['text-2'];
-      // too narrow for one line but tall enough for two: the number over the unit
-      if (at === 'auto' && sw > room && roomBelow >= SIZE_LINE2) {
-        const k = sz.lastIndexOf(' ');
-        const num = sz.slice(0, k);
-        const unit = sz.slice(k + 1);
-        if (k > 0 && textFit.measure(ctx, num) <= room && textFit.measure(ctx, unit) <= room) {
-          ctx.fillText(num, b.x + 8, yW + 14);
-          ctx.fillText(unit, b.x + 8, yW + 14 + LINE);
-          return;
-        }
+      const s = at === 'white' ? sz : textFit.fit(ctx, sz, b.w - 16);
+      if (s) {
+        ctx.fillStyle = t['text-2'];
+        ctx.fillText(s, b.x + 8, yW + 14);
       }
-      const s = at === 'white' ? sz : textFit.fit(ctx, sz, room);
-      if (s) ctx.fillText(s, b.x + 8, yW + 14);
     }
   }
 

@@ -56,7 +56,7 @@ export interface PageProps {
   compact?: 'on' | 'off';
   /** band look: the least white area a folder gets, px (6; 18 holds a closed folder's size); the folder minimum height follows */
   minWhite?: number;
-  /** band look: every folder gets room for its own size label, on one line or the number over the unit ('on' / 'off'); minWidth still holds (the name), minWhite no longer applies */
+  /** band look: every folder gets room for its own size label on one line ('on' / 'off'); its least width follows the label (never under minWidth), minWhite no longer applies */
   fitSize?: 'on' | 'off';
 }
 
