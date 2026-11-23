@@ -19,7 +19,8 @@
  * on a WebGL canvas under this one) and paints only text and textures here.
  */
 import { Flag, Kind, Note } from '../backend/codec';
-import { fmtBytes } from '../format';
+import type { SizeFit } from '../backend/types';
+import { fmtBytes, GB, KB, MB, TB } from '../format';
 import { t as tr, tn } from '../i18n.svelte';
 import { mix, rgba } from '../theme';
 import type { Box, Item, Painter, PaintState } from './engine';
@@ -62,11 +63,14 @@ export const paintStyle = {
   compact: false,
   /** band look: a folder's white area is at least this tall (the layout's folder minimum height follows), px; 18 holds a closed folder's size line */
   minWhite: 6,
+  /** band look: every folder gets room for its own size label, on one line or the number over the unit (the layout's sizeFit; minimum width and height follow the label) */
+  fitSize: false,
 };
 /** band look: the header band's height, px */
 export const BAND = 21;
-/** band look: the white area height a closed folder's size line needs, px */
+/** band look: the white area height a closed folder's size line needs, px; two lines (number over unit) need SIZE_LINE2 */
 const SIZE_LINE = 18;
+const SIZE_LINE2 = SIZE_LINE + LINE;
 /** band look: how much further each tone step mixes the file colour into the ground */
 const TONE_MIX = [0, 0.25, 0.42, 0.58];
 /**
@@ -77,7 +81,41 @@ const TONE_MIX = [0, 0.25, 0.42, 0.58];
  */
 export function bandLayout() {
   const ring = paintStyle.ring ? 1 : 0;
-  return { pad: paintStyle.white + ring, header: BAND - 1 + paintStyle.white, minFolderH: BAND + paintStyle.minWhite + paintStyle.foot + 1 };
+  return {
+    pad: paintStyle.white + ring,
+    header: BAND - 1 + paintStyle.white,
+    minFolderH: BAND + paintStyle.minWhite + paintStyle.foot + 1,
+    sizeFit: paintStyle.fitSize ? sizeFit() : undefined,
+  };
+}
+
+let measured: { key: string; fit: SizeFit } | null = null;
+/**
+ * The room a closed folder's size label takes (the layout's sizeFit), measured once with the
+ * font the label is drawn in, so the layout's least folder fits what is painted. A closed
+ * folder writes its size 8 px in from either side of its white area, one line SIZE_LINE tall
+ * or the number over the unit in SIZE_LINE2.
+ */
+export function sizeFit(): SizeFit {
+  const foot = paintStyle.foot + 1;
+  const key = `${fmtBytes(500)}|${foot}`;
+  if (measured?.key === key) return { ...measured.fit };
+  const ctx = (typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(1, 1) : document.createElement('canvas')).getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+  ctx.font = F_REG;
+  const w = (s: string) => ctx.measureText(s).width;
+  const unit = (s: string) => w(s.slice(s.lastIndexOf(' ') + 1));
+  const units = [500, 500 * KB, 500 * MB, 500 * GB, 5 * TB].map(b => unit(fmtBytes(b))) as SizeFit['units'];
+  const fit: SizeFit = {
+    digit: Math.max(...'0123456789'.split('').map(w)),
+    dot: Math.max(w('.'), w(',')),
+    space: w(' '),
+    units,
+    inset: 16,
+    one: BAND + SIZE_LINE + foot,
+    two: BAND + SIZE_LINE2 + foot,
+  };
+  measured = { key, fit };
+  return { ...fit };
 }
 /** radius of the pointer light, CSS px */
 const LIGHT_R = 90;
@@ -611,11 +649,21 @@ export class FluentPainter implements Painter {
       ctx.fillStyle = t['text-3'];
       ctx.fillText(sz, b.x + b.w - sw - 8, base);
     } else if (at === 'white' || (at === 'auto' && roomBelow >= SIZE_LINE)) {
-      const s = at === 'white' ? sz : textFit.fit(ctx, sz, b.w - 16);
-      if (s) {
-        ctx.fillStyle = t['text-2'];
-        ctx.fillText(s, b.x + 8, yW + 14);
+      const room = b.w - 16;
+      ctx.fillStyle = t['text-2'];
+      // too narrow for one line but tall enough for two: the number over the unit
+      if (at === 'auto' && sw > room && roomBelow >= SIZE_LINE2) {
+        const k = sz.lastIndexOf(' ');
+        const num = sz.slice(0, k);
+        const unit = sz.slice(k + 1);
+        if (k > 0 && textFit.measure(ctx, num) <= room && textFit.measure(ctx, unit) <= room) {
+          ctx.fillText(num, b.x + 8, yW + 14);
+          ctx.fillText(unit, b.x + 8, yW + 14 + LINE);
+          return;
+        }
       }
+      const s = at === 'white' ? sz : textFit.fit(ctx, sz, room);
+      if (s) ctx.fillText(s, b.x + 8, yW + 14);
     }
   }
 

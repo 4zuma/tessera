@@ -56,6 +56,8 @@ export interface PageProps {
   compact?: 'on' | 'off';
   /** band look: the least white area a folder gets, px (6; 18 holds a closed folder's size); the folder minimum height follows */
   minWhite?: number;
+  /** band look: every folder gets room for its own size label, on one line or the number over the unit ('on' / 'off'); minWidth and the folder minimum height no longer apply to folders */
+  fitSize?: 'on' | 'off';
 }
 
 const LAYOUT_KEYS = ['pad', 'gap', 'header', 'minHeaderW', 'minArea', 'minSide', 'minWidth', 'labelMinW', 'labelMinH'] as const;
@@ -134,7 +136,7 @@ export async function apply(p: PageProps) {
 }
 
 /** the layout as the app ships it, for going back from the band look */
-const SHIPPED = { pad: fluentLayout.pad, header: fluentLayout.header, minHeight: fluentLayout.minHeight };
+const SHIPPED = { pad: fluentLayout.pad, header: fluentLayout.header, minHeight: fluentLayout.minHeight, sizeFit: fluentLayout.sizeFit };
 
 function applyTreemapStyle(p: PageProps, live: boolean) {
   let paint = false;
@@ -177,12 +179,17 @@ function applyTreemapStyle(p: PageProps, live: boolean) {
     paintStyle.compact = p.compact === 'on';
     paint = true;
   }
+  if ((p.fitSize === 'on' || p.fitSize === 'off') && paintStyle.fitSize !== (p.fitSize === 'on')) {
+    paintStyle.fitSize = p.fitSize === 'on';
+    paint = true;
+  }
   // the layout the band look needs, or the shipped one back when it is switched off
-  const want = band ? bandLayout() : wasBand ? { pad: p.pad ?? SHIPPED.pad, header: p.header ?? SHIPPED.header, minFolderH: SHIPPED.minHeight } : null;
-  if (want && (fluentLayout.pad !== want.pad || fluentLayout.header !== want.header || fluentLayout.minHeight !== want.minFolderH)) {
+  const want = band ? bandLayout() : wasBand ? { pad: p.pad ?? SHIPPED.pad, header: p.header ?? SHIPPED.header, minFolderH: SHIPPED.minHeight, sizeFit: SHIPPED.sizeFit } : null;
+  if (want && (fluentLayout.pad !== want.pad || fluentLayout.header !== want.header || fluentLayout.minHeight !== want.minFolderH || JSON.stringify(fluentLayout.sizeFit) !== JSON.stringify(want.sizeFit))) {
     fluentLayout.pad = want.pad;
     fluentLayout.header = want.header;
     fluentLayout.minHeight = want.minFolderH;
+    fluentLayout.sizeFit = want.sizeFit;
     layout = true;
   }
   if (!live) return;

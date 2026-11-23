@@ -4,7 +4,7 @@
  */
 import { CAT_NONE, FREE, Flag, Kind, NONE, Note, UNSCANNED, groupId, type Rect } from '../codec';
 import { CAT_COUNT } from '../categories';
-import type { LayoutStyle, SizeMode } from '../types';
+import type { LayoutStyle, SizeFit, SizeMode } from '../types';
 import type { Drive, MNode } from './drive';
 import { shareOf } from './search';
 import { AGE_UNKNOWN, ageByte } from '../../age';
@@ -82,6 +82,28 @@ export function flagsOf(drive: Drive, n: MNode): number {
  * along a row that is already `min` thick starts the next row instead, so small items do
  * not line up as slivers beside a big one.
  */
+const KB = 1024;
+const MB = KB * 1024;
+const GB = MB * 1024;
+const TB = GB * 1024;
+
+/**
+ * How wide a folder must be to hold its size label (rule 2, `sizeFit`): on one line, and with
+ * the number over the unit. The number is written as the UI writes it (format.ts fmtBytes).
+ */
+export function labelRoom(b: number, f: SizeFit): [number, number] {
+  const [num, unit] =
+    b >= TB ? [(b / TB).toFixed(2), 4]
+    : b >= GB ? [(b / GB).toFixed(b >= 100 * GB ? 0 : 1), 3]
+    : b >= MB ? [(b / MB).toFixed(b >= 10 * MB ? 0 : 1), 2]
+    : b >= KB ? [String(Math.round(b / KB)), 1]
+    : [Math.round(b).toLocaleString('en'), 0];
+  let nw = 0;
+  for (const ch of num) nw += ch >= '0' && ch <= '9' ? f.digit : f.dot;
+  const uw = f.units[unit];
+  return [nw + f.space + uw + f.inset, Math.max(nw, uw) + f.inset];
+}
+
 export function squarify<T extends { s: number }>(items: T[], x: number, y: number, w: number, h: number, out: [T, number, number, number, number][], min = 0) {
   let total = 0;
   for (const it of items) total += it.s;
@@ -224,10 +246,24 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     const side = o.minSide > 0 ? o.minSide + o.gap : 0;
     const wide = o.minWidth > 0 ? o.minWidth + o.gap : 0;
     const tall = (o.minHeight ?? 0) > 0 ? o.minHeight! + o.gap : 0;
-    const sized = side > 0 || wide > 0 || tall > 0;
+    const sized = side > 0 || wide > 0 || tall > 0 || !!o.sizeFit;
     const isDir = (c: Item) => !!c.n?.kids;
-    // 0 fits, 1 a folder only too narrow (or too short for minHeight), 2 below minSide
-    const fit = (cw: number, ch: number, dir: boolean) => (Math.min(cw, ch) < side ? 2 : dir && (cw < wide || ch < tall) ? 1 : 0);
+    // with sizeFit a folder needs room for its own size label instead (on one line, or the
+    // number over the unit): its least width and height follow the label
+    const sf = o.sizeFit;
+    const labelW = new Map<Item, [number, number]>();
+    const roomOf = (c: Item) => {
+      let r = labelW.get(c);
+      if (!r) labelW.set(c, (r = labelRoom(c.size ?? c.s, sf!)));
+      return r;
+    };
+    const short = (cw: number, ch: number, c: Item) => {
+      if (!sf) return cw < wide || ch < tall;
+      const [one, two] = roomOf(c);
+      return !((cw >= one + o.gap && ch >= sf.one + o.gap) || (cw >= two + o.gap && ch >= sf.two + o.gap));
+    };
+    // 0 fits, 1 a folder only too narrow (or too short for minHeight / its label), 2 below minSide
+    const fit = (cw: number, ch: number, c: Item) => (Math.min(cw, ch) < side ? 2 : isDir(c) && short(cw, ch, c) ? 1 : 0);
     let rest = 0;
     let restN = 0;
     let restHit = 0;
@@ -239,7 +275,13 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       const ct = c.n!.kids ? folderCat(c.n!) : c.n!.cat;
       m.set(ct, (m.get(ct) || 0) + c.s);
     };
-    const least = (dir: boolean) => Math.max(o.minArea, ROOM * (dir ? Math.max(side, wide) * Math.max(side, tall) : side * side));
+    const least = (c: Item | null) => {
+      if (!c || !isDir(c)) return Math.max(o.minArea, ROOM * side * side);
+      if (!sf) return Math.max(o.minArea, ROOM * Math.max(side, wide) * Math.max(side, tall));
+      const [one, two] = roomOf(c);
+      const a = (cw: number, ch: number) => Math.max(side, cw + o.gap) * Math.max(side, ch + o.gap);
+      return Math.max(o.minArea, ROOM * Math.min(a(one, sf.one), a(two, sf.two)));
+    };
     // in a level (rule 9) the group takes at most LEVEL_GROUP_SHARE of the box, so the box
     // stands for min(total, kept / (1 - share)) bytes; an item keeps its tile while every
     // one kept so far still gets its least area at that scale, and the first that fails ends it
@@ -247,9 +289,9 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     let room = Infinity;
     let open = true;
     const keeps = (c: Item): boolean => {
-      if (!level) return c.s * k >= least(isDir(c)) && nodes.length < o.maxPerDir;
+      if (!level) return c.s * k >= least(c) && nodes.length < o.maxPerDir;
       if (!open || nodes.length >= o.maxPerDir) return (open = false);
-      const r = Math.min(room, c.s / least(isDir(c)));
+      const r = Math.min(room, c.s / least(c));
       const sum = kept + c.s;
       if (r * w * h < Math.min(total, sum / (1 - LEVEL_GROUP_SHARE))) return (open = false);
       kept = sum;
@@ -314,7 +356,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
         const others = mid.reduce((a, c) => a + c.s, 0);
         if (level && others > 0) {
           const most = (others * LEVEL_GROUP_SHARE) / (1 - LEVEL_GROUP_SHARE);
-          const l = least(!!lone && isDir(lone)) * boost;
+          const l = least(lone) * boost;
           const fewest = w * h > 2 * l ? (others * l) / (w * h - l) : 0;
           weight = Math.max(1, Math.round(Math.min(Math.max(gs, fewest), Math.max(most, fewest))));
         }
@@ -338,7 +380,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       let grpThin = false;
       let dropped = false;
       for (const [c, , , cw, ch] of rs) {
-        const f = fit(cw, ch, isDir(c));
+        const f = fit(cw, ch, c);
         if (!f) continue;
         if (c === grp) grpThin = true;
         else if (c.special) {
@@ -370,7 +412,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       const ry = ry0 + g;
       const rw = rw0 - 2 * g;
       const rh = rh0 - 2 * g;
-      if (rw < 1 || rh < 1 || (sized && fit(rw0, rh0, isDir(c)))) continue;
+      if (rw < 1 || rh < 1 || (sized && fit(rw0, rh0, c))) continue;
       const base = { x: rx, y: ry, w: rw, h: rh, depth, parent: pid, count: 0, header: 0, hit: c.n ? hitOf(c.n) : (c.group?.hit ?? 0), age: c.n ? ageOf(c.n) : (c.group?.age ?? AGE_UNKNOWN) };
       if (c.group) {
         const id = groupId(parent.id);
@@ -415,7 +457,8 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
         }
       }
       if (r.kind === Kind.DirLeaf) r.cat = folderCat(n);
-      if (r.header || named(rw, rh)) r.name = name;
+      // with sizeFit every folder tile has room for its name over its size, however narrow
+      if (r.header || named(rw, rh) || o.sizeFit) r.name = name;
     }
     return drawn;
   }
