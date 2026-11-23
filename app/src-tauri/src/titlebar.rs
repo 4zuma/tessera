@@ -14,11 +14,12 @@
 //! `caption` event) and maximizes or restores on a click.
 //!
 //! "Transparent" hands the question to the windows below the child that belong to the same
-//! thread, in turn, before the main window. The WebView lives in a window of its own that
-//! wry puts between the two (`WRY_WEBVIEW`, ours; the WebView's own windows belong to
-//! another process and are skipped). Left alone it would answer "client" and keep the
-//! pointer, and the button would neither light up nor click, so it answers "transparent"
-//! over the button too.
+//! thread, in turn, before the main window. Several sit in between: Tauri's resize borders
+//! (`TAURI_DRAG_RESIZE_BORDERS`), wry's WebView holder (`WRY_WEBVIEW`) and the WebView's
+//! own host windows (`Chrome_WidgetWin_0`); only the windows that draw the page belong to
+//! another process and are skipped. Left alone they answer "client" and keep the pointer,
+//! and the button neither lights up nor clicks, so they answer "transparent" over the
+//! button too.
 //!
 //! Windows 10 keeps its own title bar (Mica is missing there, and with it the look this is
 //! for, see `platform::build_main_window`). `TESSERA_TITLEBAR=native` keeps it on
@@ -185,10 +186,10 @@ mod imp {
         pass_through(main);
     }
 
-    /// Makes the main window's other windows of this thread (wry's `WRY_WEBVIEW`, which
-    /// holds the WebView) pass the hit test on over the button, so that it reaches the main
-    /// window (see the module docs). Doing it again is harmless, so `place` repeats it in
-    /// case a window came later.
+    /// Makes the main window's other windows of this thread pass the hit test on over the
+    /// button, so that it reaches the main window (see the module docs). The WebView makes
+    /// its windows after the main window is built, so `place` (called once the page has
+    /// drawn its button) does it again; doing it twice is harmless.
     fn pass_through(main: HWND) {
         unsafe extern "system" fn each(h: HWND, _: LPARAM) -> BOOL {
             let ours =

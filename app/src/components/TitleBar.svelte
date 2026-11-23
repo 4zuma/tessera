@@ -30,7 +30,10 @@
 
   onMount(() => {
     active = document.hasFocus();
-    report();
+  });
+  // the buttons come once the platform is known, which can be after the first frame
+  $effect(() => {
+    if (maxBtn && native) report();
   });
 </script>
 
