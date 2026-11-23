@@ -694,19 +694,19 @@ export class App implements EngineHost {
     const viewSize = this.viewTotal || null;
     const byAge = this.colorBy === 'age';
     const mostly = r.kind === Kind.DirLeaf && !byAge ? catName(r.cat) : undefined;
-    const what = mostly
+    const plain = mostly
       ? t('kind.folderMostly', { cat: mostly })
       : r.kind === Kind.Dir || r.kind === Kind.DirLeaf
         ? t('folder')
         : r.kind === Kind.Group
-          ? (r.note ?? 0) & Note.NotToScale
-            ? `${t('kind.group')} · ${t('kind.notToScale')}`
-            : t('kind.group')
+          ? t('kind.group')
           : r.kind === Kind.Free
             ? t('free')
             : r.kind === Kind.Unscanned
               ? t('scanning')
               : (catName(r.cat) ?? t('file'));
+    // a level's group, or the one item it left over, drawn bigger or smaller than its size
+    const what = (r.note ?? 0) & Note.NotToScale ? `${plain} · ${t('kind.notToScale')}` : plain;
     // coloured by age, the tip names the band too: the colours alone don't say it
     const kind = byAge && r.kind !== Kind.Free && r.kind !== Kind.Unscanned ? `${what} · ${bandName(ageBand(r.age, this.ageEdges), this.ageEdges)}` : what;
     const name =

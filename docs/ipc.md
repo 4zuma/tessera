@@ -179,7 +179,8 @@ record (56 bytes)
                       own; DIR_LEAF, open DIR and GROUP: the mean of the files in it,
                       weighted by their bytes; 0 for pseudo tiles
  53  u8   note        bit0 NOT_TO_SCALE: its area is not in proportion to its size (a
-                      level's GROUP, rule 9); the UI draws it dashed
+                      level's GROUP or lone left-over item, rule 9); the UI
+                      draws it dashed
  54  u8[2] reserved   0
 ```
 
@@ -273,9 +274,11 @@ These are what make the map calm while it changes, and they were tuned in the pr
    the folder, without pseudo tiles, except that its group takes at most a third of the
    map (`LEVEL_GROUP_SHARE`), so the siblings beside it get the rest: siblings keep their
    own tiles, in rank order, while each still gets rule 2's least area at that scale, and
-   the rest form the group, even a group of one. The group also gets at least rule 2's
-   least area, so it is never left out. A group drawn smaller or bigger than its size has
-   `note` NOT_TO_SCALE. A level therefore never shows only its group (on a canvas of any
+   the rest form the group. The group also gets at least rule 2's least area, so it is
+   never left out. A group drawn smaller or bigger than its size has `note` NOT_TO_SCALE.
+   A level never shows a group of one: an item left over alone gets a tile of its own,
+   drawn like the group (at least the least area, NOT_TO_SCALE when that is more than its
+   size would take). A level therefore never shows only its group (on a canvas of any
    sane size), and opening the group again and again reaches every item. Which items a
    level holds depends only on `hide`, not on the canvas size. `bytesPerPx` is that of the
    siblings. The group's id is the same on every level (`0x80000000 | view`), so the UI

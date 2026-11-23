@@ -89,12 +89,14 @@
 //!    [`LEVEL_GROUP_SHARE`] of the map, so the siblings beside it get the
 //!    rest: siblings keep their own tiles, in rank order, while each one
 //!    still gets rule 2's least area at that scale, and the rest form the
-//!    group, even a group of one. The group also gets at least rule 2's
-//!    least area, so it is always drawn; one drawn smaller or bigger than
-//!    its size would take has the NOT_TO_SCALE note. A level never shows
-//!    only its group (on a canvas of any sane size), so opening the group
-//!    again and again reaches every item. `bytesPerPx` is that of the
-//!    siblings.
+//!    group. The group also gets at least rule 2's least area, so it is
+//!    always drawn; one drawn smaller or bigger than its size would take
+//!    has the NOT_TO_SCALE note. A level never shows a group of one: an
+//!    item left over alone gets a tile of its own, drawn like the group
+//!    (at least the least area, NOT_TO_SCALE when that is more than its
+//!    size would take). A level never shows only its group (on a canvas
+//!    of any sane size), so opening the group again and again reaches
+//!    every item. `bytesPerPx` is that of the siblings.
 //!
 //! Folders are opened largest first, so if the internal safety cap of
 //! [`MAX_RECORDS`] records is ever reached, the big structure is complete
@@ -149,7 +151,8 @@
 //!                       folders and groups the size-weighted mean over the
 //!                       files in them; 0 = not known, and for pseudo tiles
 //!  53  u8   note        see [`note`]: NOT_TO_SCALE for a level's group
-//!                       drawn smaller or bigger than its size (rule 9)
+//!                       drawn smaller or bigger than its size, or a lone
+//!                       item left over drawn bigger (rule 9)
 //!  54  u8[2]            reserved, 0
 //! ```
 //!
@@ -228,8 +231,8 @@ pub mod flags {
 /// Bits of the record's `note` byte.
 pub mod note {
     /// Its area is not in proportion to its size: a level's group, drawn
-    /// smaller so the siblings beside it get room, or bigger so it can be
-    /// pointed at (rule 9).
+    /// smaller so the siblings beside it get room, or a level's group or
+    /// lone left-over item drawn bigger so it can be pointed at (rule 9).
     pub const NOT_TO_SCALE: u8 = 1 << 0;
 }
 
@@ -766,6 +769,8 @@ impl Eq for Pending {}
 struct Rest {
     folder: NodeId,
     n: u32,
+    /// The last sibling counted in: with `n == 1`, the only one.
+    one: NodeId,
     sum: u64,
     /// Bytes of it the search found ([`hit_part`]).
     hit: u64,
@@ -780,6 +785,7 @@ impl Default for Rest {
         Rest {
             folder: NodeId::ROOT,
             n: 0,
+            one: NodeId::ROOT,
             sum: 0,
             hit: 0,
             tally: [0; category::COUNT],
@@ -1188,8 +1194,7 @@ impl Run<'_> {
         for k in &kids[keep..] {
             self.join(&mut rest, k.node, &tree.node(k.node), k.size);
         }
-        // Even a group of one stays a group here: it is drawn big enough to
-        // be pointed at, where its one item might not be.
+        // (one left over alone is drawn as itself: see group_item)
         kids.truncate(keep);
         self.s.kids = kids;
         self.s.rest = rest;
@@ -1200,6 +1205,7 @@ impl Run<'_> {
     /// Counts sibling `id` (`n`, of `size`) into the group.
     fn join(&mut self, rest: &mut Rest, id: NodeId, n: &Node, size: u64) {
         rest.n += 1;
+        rest.one = id;
         rest.sum = rest.sum.saturating_add(size);
         rest.hit = rest.hit.saturating_add(hit_part(self.hits, id, size));
         let cat = self.member_cat(id, n, size);
@@ -1213,24 +1219,31 @@ impl Run<'_> {
     /// The group of `rest` as an item, laid out at its size, or in a level
     /// (rule 9) beside `others` bytes of tiles at most
     /// [`LEVEL_GROUP_SHARE`] of the box and at least the least area of a
-    /// tile.
+    /// tile. In a level, one left over alone is that item itself, weighed
+    /// the same way: a group of one would only ask for another level.
     fn group_item(&self, rest: &Rest, others: u64) -> Item {
-        let mut it = Item::new(
-            ItemKind::Group {
-                count: rest.n,
-                cat: main_category(&rest.tally),
-                hit: share_of(rest.hit, rest.sum),
-                age: rest.age.byte(),
-            },
-            rest.folder,
-            rest.sum,
-        );
+        let lone = self.level_area.is_some() && rest.n == 1;
+        let mut it = if lone {
+            Item::new(ItemKind::Node, rest.one, rest.sum)
+        } else {
+            Item::new(
+                ItemKind::Group {
+                    count: rest.n,
+                    cat: main_category(&rest.tally),
+                    hit: share_of(rest.hit, rest.sum),
+                    age: rest.age.byte(),
+                },
+                rest.folder,
+                rest.sum,
+            )
+        };
         if let Some(area) = self.level_area
             && others > 0
         {
             // the group's share of the box is w / (others + w)
             let most = others as f64 * LEVEL_GROUP_SHARE / (1.0 - LEVEL_GROUP_SHARE);
-            let least = self.st.least_area(false) * self.level_boost;
+            let folder = lone && self.tree.node(rest.one).is_dir();
+            let least = self.st.least_area(folder) * self.level_boost;
             let least = if area > 2.0 * least {
                 others as f64 * least / (area - least)
             } else {
@@ -1376,7 +1389,8 @@ impl Run<'_> {
                 kids[keep..].sort_unstable_by(by_rank);
                 (cut, no_group) = (keep, false);
             } else if group_thin && self.level_area.is_some() && self.level_boost < 16.0 {
-                // a level's group is never left out (rule 9): give it more
+                // a level's group (or lone item) is never left out (rule 9):
+                // give it more
                 self.level_boost *= 2.0;
             } else if group_thin && !no_group {
                 no_group = true;
@@ -1403,11 +1417,12 @@ impl Run<'_> {
             let k = self.s.kids[i];
             self.join(&mut rest, k.node, &tree.node(k.node), k.size);
         }
+        let level = self.level_area.is_some();
         let group = if no_group || rest.n == 0 {
             None
         } else if rest.n == 1 && self.s.rest.n == 0 && self.level_area.is_none() {
-            // a group of one would hide a name for nothing (in a level it
-            // stays a group, drawn big enough to be pointed at)
+            // a group of one would hide a name for nothing (in a level,
+            // group_item draws it big enough to be pointed at)
             let k = self.s.kids[cut];
             Some(Item::new(ItemKind::Node, k.node, k.size))
         } else {
@@ -1424,8 +1439,8 @@ impl Run<'_> {
         }
         let kids = &s.kids[..cut];
         let at = group.map(|g| {
-            // by its size among the others (a level's group by its weight)
-            let rank = if matches!(g.kind, ItemKind::Node) {
+            // by its size among the others (in a level by its weight)
+            let rank = if matches!(g.kind, ItemKind::Node) && !level {
                 s.kids[cut].rank
             } else {
                 g.weight

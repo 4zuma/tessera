@@ -298,9 +298,11 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       }
       const mid = nodes.slice(0, cut);
       let grp: Item | null = null;
-      // a group of one would hide a name for nothing (in a level it stays a group, drawn big
-      // enough to be pointed at)
-      if (gn === 1 && !level) grp = cut < nodes.length ? nodes[cut] : items.find(c => !c.special && !nodes.includes(c))!;
+      // a group of one would hide a name for nothing; in a level the one left over is weighed
+      // like the group, so it is drawn big enough to be pointed at (a group of one would only
+      // ask for another level)
+      const lone = gn === 1 ? (cut < nodes.length ? nodes[cut] : items.find(c => !c.special && !nodes.includes(c))!) : null;
+      if (lone && !level) grp = lone;
       else if (gn >= 1) {
         let best = CAT_NONE;
         let bb = -1;
@@ -311,11 +313,13 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
         const others = mid.reduce((a, c) => a + c.s, 0);
         if (level && others > 0) {
           const most = (others * LEVEL_GROUP_SHARE) / (1 - LEVEL_GROUP_SHARE);
-          const l = least(false) * boost;
+          const l = least(!!lone && isDir(lone)) * boost;
           const fewest = w * h > 2 * l ? (others * l) / (w * h - l) : 0;
           weight = Math.max(1, Math.round(Math.min(Math.max(gs, fewest), Math.max(most, fewest))));
         }
-        grp = { s: weight, size: gs, rk: weight, group: { count: gn, cat: best, hit: shareOf(gh, gs), age: gw > 0 ? Math.round(ga / gw) : AGE_UNKNOWN } };
+        grp = lone
+          ? { ...lone, s: weight, size: gs, rk: weight }
+          : { s: weight, size: gs, rk: weight, group: { count: gn, cat: best, hit: shareOf(gh, gs), age: gw > 0 ? Math.round(ga / gw) : AGE_UNKNOWN } };
       }
       if (grp && !noGroup) {
         // with minSide the group takes its place by size, not the strip left at the end
@@ -378,8 +382,11 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
         continue;
       }
       const n = c.n!;
+      // a level's lone left-over item is laid out from its weight (rule 9)
+      const size = c.size ?? c.s;
+      const note = size !== c.s ? Note.NotToScale : 0;
       if (!n.kids) {
-        out.push({ ...base, id: n.id, target: n.id, size: c.s, name: named(rw, rh) ? n.name : '', kind: Kind.File, cat: n.cat, flags: flagsOf(drive, n) });
+        out.push({ ...base, id: n.id, target: n.id, size, name: named(rw, rh) ? n.name : '', kind: Kind.File, cat: n.cat, flags: flagsOf(drive, n), note });
         continue;
       }
       // fold chains of single sub-folders into one tile: "archive › pc › content"
@@ -391,7 +398,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
         name += ' › ' + deep.name;
         kidsOf = visibleKids(drive, deep, sizeMode);
       }
-      const r: Rect = { ...base, id: n.id, target: deep.id, size: c.s, name: '', kind: Kind.DirLeaf, cat: CAT_NONE, flags: flagsOf(drive, n) | flagsOf(drive, deep) };
+      const r: Rect = { ...base, id: n.id, target: deep.id, size, name: '', kind: Kind.DirLeaf, cat: CAT_NONE, flags: flagsOf(drive, n) | flagsOf(drive, deep), note };
       out.push(r);
       const hh = rh >= o.header * 2.2 && rw >= o.minHeaderW ? o.header : 0;
       // an open folder always has a header, so it is never a nameless frame

@@ -188,11 +188,13 @@ fn check_level(tree: &Tree, req: &LayoutRequest, d: &Decoded, extras: u64, hide:
         if r.parent == ids::NONE {
             assert!(!hidden(r.id), "hidden {r:?} drawn");
         }
-        // only a level's own group is drawn out of scale
+        // only a level's own group, or the one item it leaves over alone,
+        // is drawn out of scale
         assert!(
             r.note == 0
                 || (r.note == note::NOT_TO_SCALE
-                    && r.kind == kind::GROUP
+                    && r.kind != kind::FREE
+                    && r.kind != kind::UNSCANNED
                     && r.parent == ids::NONE
                     && hide.is_some()),
             "{r:?}"
@@ -1579,6 +1581,10 @@ fn levels_reach_every_small_item() {
         (390, 700.0, 500.0),
         (2000, 524.0, 356.0),
         (6000, 1920.0, 1040.0),
+        (40, 640.0, 480.0),
+        (150, 800.0, 600.0),
+        (1000, 1280.0, 800.0),
+        (3000, 1180.0, 700.0),
     ] {
         let (t, d) = screenshots(n);
         let req = LayoutRequest::new(d, w, h);
@@ -1620,6 +1626,8 @@ fn levels_reach_every_small_item() {
             hide.extend(&tiles);
             hide.sort_unstable();
             let Some(g) = group else { break };
+            // a lone item left over gets a tile of its own, not a group of one
+            assert!(g.count > 1, "{n} files, level {levels}: {g:?}");
             let left = all.len() - hide.len();
             assert_eq!(g.count as usize, left, "{n} files, level {levels}: {g:?}");
             level = Some(hide.clone());
@@ -1685,6 +1693,66 @@ fn levels_keep_their_items() {
     let req = LayoutRequest::new(d, 800.0, 600.0);
     let dec = decode(&engine.layout_level(&t, &req, Some(&all), extras, 1, None)).unwrap();
     assert!(dec.records.is_empty());
+}
+
+/// A level never shows a group of one: an item left over alone gets a tile
+/// of its own, drawn big enough to point at and marked not to scale.
+#[test]
+fn a_lone_small_item_in_a_level_gets_its_own_tile() {
+    let mut t = Tree::new(b"R:\\");
+    let d = t.add_child(NodeId::ROOT, b"d", 0, 0, NodeFlags::DIR);
+    let mut big = Vec::new();
+    for i in 0..6u64 {
+        let s = 1_000_000_000 + i;
+        big.push(
+            t.add_child(d, format!("big{i}").as_bytes(), s, s, NodeFlags::NONE)
+                .0,
+        );
+    }
+    let tiny = t.add_child(d, b"tiny", 10, 10, NodeFlags::NONE).0;
+    let sub = t.add_child(d, b"sub", 0, 0, NodeFlags::DIR);
+    t.add_child(sub, b"f", 20, 20, NodeFlags::NONE);
+    let req = LayoutRequest::new(d, 800.0, 600.0);
+    let mut engine = LayoutEngine::new();
+    // five big files and the tiny one: the tiny one is a file tile
+    let mut hide = vec![big[0], sub.0];
+    hide.sort_unstable();
+    let dec = decode(&engine.layout_level(&t, &req, Some(&hide), RootExtras::default(), 1, None))
+        .unwrap();
+    check_level(&t, &req, &dec, 0, Some(&hide));
+    assert!(dec.records.iter().all(|r| r.kind != kind::GROUP), "{dec:?}");
+    let r = dec
+        .records
+        .iter()
+        .find(|r| r.id == tiny)
+        .expect("the tiny file");
+    assert_eq!(
+        (r.kind, r.size, r.note),
+        (kind::FILE, 10, note::NOT_TO_SCALE)
+    );
+    // the same with a small folder left over alone
+    let mut hide = vec![big[0], tiny];
+    hide.sort_unstable();
+    let dec = decode(&engine.layout_level(&t, &req, Some(&hide), RootExtras::default(), 1, None))
+        .unwrap();
+    check_level(&t, &req, &dec, 0, Some(&hide));
+    assert!(dec.records.iter().all(|r| r.kind != kind::GROUP), "{dec:?}");
+    let r = dec
+        .records
+        .iter()
+        .find(|r| r.id == sub.0)
+        .expect("the folder");
+    assert_eq!((r.size, r.note), (20, note::NOT_TO_SCALE));
+    assert!(r.kind == kind::DIR_LEAF || r.kind == kind::DIR, "{r:?}");
+    // drawn to scale when it is big enough anyway: no note
+    let mut hide = big.clone();
+    hide.push(sub.0);
+    hide.sort_unstable();
+    let dec = decode(&engine.layout_level(&t, &req, Some(&hide), RootExtras::default(), 1, None))
+        .unwrap();
+    check_level(&t, &req, &dec, 0, Some(&hide));
+    assert_eq!(shown_top(&dec), vec![tiny]);
+    assert_eq!(dec.records[0].note, 0);
 }
 
 /// A level's group of a few tiny files beside big ones is drawn big enough

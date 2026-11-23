@@ -149,6 +149,8 @@ export class FluentPainter implements Painter {
       return c < 0 || c >= n;
     };
     const box = (it: Item) => snapBox(it, dpr);
+    /** dots for a group, hatching for a locked file, a dashed edge when not to scale */
+    const overlaid = (r: Item['r']) => r.kind === Kind.Group || r.flags & (Flag.NoAccess | Flag.InUse) || (r.note ?? 0) & Note.NotToScale;
 
     /* ---------- pass 1: open folders (containers), shallow to deep ---------- */
     for (const it of list) {
@@ -200,7 +202,7 @@ export class FluentPainter implements Painter {
       const col = leafFill(it);
       if (gpu) {
         this.gpuTile(gpu, b, dpr, gpu.color(col), outlined(it) ? gpu.color(t['tm-leafdir-stroke']) : null);
-        if (r.kind === Kind.Group || r.flags & (Flag.NoAccess | Flag.InUse)) overlays.push(it);
+        if (overlaid(r)) overlays.push(it);
         continue;
       }
       let p = batches.get(col);
@@ -212,7 +214,7 @@ export class FluentPainter implements Painter {
         outlines.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, Math.min(RADIUS, b.w / 2, b.h / 2));
         hasOutlines = true;
       }
-      if (r.kind === Kind.Group || r.flags & (Flag.NoAccess | Flag.InUse)) overlays.push(it);
+      if (overlaid(r)) overlays.push(it);
     }
     ctx.globalAlpha = 1;
     for (const [col, p] of batches) {
@@ -235,7 +237,7 @@ export class FluentPainter implements Painter {
       if (gpu) {
         const a = ctx.globalAlpha;
         this.gpuTile(gpu, b, dpr, gpu.color(leafFill(it), a), outlined(it) ? gpu.color(t['tm-leafdir-stroke'], a) : null);
-        if (r.kind === Kind.Group || r.flags & (Flag.NoAccess | Flag.InUse)) overlays.push(it);
+        if (overlaid(r)) overlays.push(it);
         continue;
       }
       ctx.beginPath();
@@ -250,10 +252,10 @@ export class FluentPainter implements Painter {
         ctx.strokeStyle = t['tm-leafdir-stroke'];
         ctx.stroke();
       }
-      if (r.kind === Kind.Group || r.flags & (Flag.NoAccess | Flag.InUse)) overlays.push(it);
+      if (overlaid(r)) overlays.push(it);
     }
 
-    /* ---------- pass 3: texture overlays (merged items, locked files) ---------- */
+    /* ---------- pass 3: overlays (merged items, locked files, not to scale) ---------- */
     for (const it of overlays) {
       const r = it.r;
       const b = box(it);
@@ -267,22 +269,22 @@ export class FluentPainter implements Painter {
         });
         ctx.fillStyle = this.usePattern(p, dpr);
         ctx.fill();
-        if ((r.note ?? 0) & Note.NotToScale && b.w > 3 && b.h > 3) {
-          // a level's group drawn smaller (or bigger) than its size: dashed, like the other
-          // tiles whose area is not a share of the map (docs/ipc.md rule 9)
-          ctx.beginPath();
-          ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, Math.min(RADIUS, b.w / 2, b.h / 2));
-          ctx.setLineDash([4, 3]);
-          ctx.lineWidth = 1;
-          ctx.globalAlpha = it.va * 0.7;
-          ctx.strokeStyle = leafInk(it);
-          ctx.stroke();
-          ctx.setLineDash([]);
-        }
-      } else {
+      } else if (r.flags & (Flag.NoAccess | Flag.InUse)) {
         const p = this.pattern(ctx, 'hatch' + th.scheme, 8, dpr, stripes(t['tm-hatch'], 8, 2));
         ctx.fillStyle = this.usePattern(p, dpr);
         ctx.fill();
+      }
+      if ((r.note ?? 0) & Note.NotToScale && b.w > 3 && b.h > 3) {
+        // a level's group, or the one item it left over, drawn smaller or bigger than its
+        // size: a dashed edge says its area is not a share of the map (docs/ipc.md rule 9)
+        ctx.beginPath();
+        ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, Math.min(RADIUS, b.w / 2, b.h / 2));
+        ctx.setLineDash([4, 3]);
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = it.va * 0.7;
+        ctx.strokeStyle = leafInk(it);
+        ctx.stroke();
+        ctx.setLineDash([]);
       }
     }
 
