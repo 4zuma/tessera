@@ -1381,23 +1381,30 @@ mod tests {
         let id = s.search_seq.fetch_add(1, Relaxed) + 1;
         let r = run_search(&s, &q, SizeMode::Disk, id).unwrap();
         assert_eq!((r.id, r.count, r.bytes), (id, 2, 4096 * 100 + 8192));
-        let req = LayoutRequest::new(NodeId::ROOT, 800.0, 600.0);
-        let draw = |s: &Session| {
+        let draw = |s: &Session, view: NodeId| {
+            let req = LayoutRequest::new(view, 800.0, 600.0);
             let hits = lock(&s.hits).clone();
             let t = s.tree();
             let buf =
                 LayoutEngine::new().layout_with(&t, &req, s.extras(&t, &req), 1, hits.as_deref());
             layout::decode(&buf).unwrap()
         };
-        let d = draw(&s);
+        // (at the root, free space leaves Users too small to open)
+        let me = id_of(&s, &[b"Users", b"me"]);
+        let d = draw(&s, me);
         assert_eq!(d.search, id);
         let mp4 = id_of(&s, &[b"Users", b"me", b"a.mp4"]);
         assert!(d.records.iter().any(|r| r.id == mp4.0 && r.hit == 255));
+        // a closed folder is lit by the share of its bytes that matched
+        let users = id_of(&s, &[b"Users"]);
+        let top = draw(&s, NodeId::ROOT);
+        let u = top.records.iter().find(|r| r.id == users.0).unwrap();
+        assert!(u.hit > 200 && u.hit < 255, "{u:?}");
         // a newer search wins over one that finishes late
         let stale = s.search_seq.load(Relaxed);
         clear_search(&s);
         assert!(run_search(&s, &q, SizeMode::Disk, stale).is_none());
-        assert_eq!(draw(&s).search, 0);
+        assert_eq!(draw(&s, me).search, 0);
     }
 
     #[test]
