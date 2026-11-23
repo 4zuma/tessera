@@ -72,6 +72,8 @@ export interface PageProps {
   fade?: number;
   /** band look: "on": a closed folder's size always sits in its white area, and one too small for it has no white area (grey down to its colour band) ("off") */
   compact?: 'on' | 'off';
+  /** band look: the least white area a folder gets, px; the folder minimum height (band + this + foot + 1) follows. 18 holds a closed folder's size line (6) */
+  minWhite?: number;
   /** the host element's style: where the component sits in its slot */
   style?: Record<string, string | number>;
 }

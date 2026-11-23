@@ -54,6 +54,8 @@ export interface PageProps {
   fade?: number;
   /** band look: a closed folder too small to show its size in the white area has no white area ('on' / 'off') */
   compact?: 'on' | 'off';
+  /** band look: the least white area a folder gets, px (6; 18 holds a closed folder's size); the folder minimum height follows */
+  minWhite?: number;
 }
 
 const LAYOUT_KEYS = ['pad', 'gap', 'header', 'minHeaderW', 'minArea', 'minSide', 'minWidth', 'labelMinW', 'labelMinH'] as const;
@@ -160,7 +162,7 @@ function applyTreemapStyle(p: PageProps, live: boolean) {
     paintStyle.folderRadius = p.folderRadius;
     paint = true;
   }
-  for (const k of ['white', 'foot', 'tone', 'fade'] as const) {
+  for (const k of ['white', 'foot', 'tone', 'fade', 'minWhite'] as const) {
     const v = p[k];
     if (typeof v === 'number' && Number.isFinite(v) && paintStyle[k] !== v) {
       paintStyle[k] = v;

@@ -60,13 +60,13 @@ export const paintStyle = {
   fade: 0,
   /** band look: a closed folder whose size does not fit in its white area has none: grey down to its colour band */
   compact: false,
+  /** band look: a folder's white area is at least this tall (the layout's folder minimum height follows), px; 18 holds a closed folder's size line */
+  minWhite: 6,
 };
 /** band look: the header band's height, px */
 export const BAND = 21;
 /** band look: the white area height a closed folder's size line needs, px */
 const SIZE_LINE = 18;
-/** band look: the least white area that still reads as one, px */
-const BAND_MIN_WHITE = 6;
 /** band look: how much further each tone step mixes the file colour into the ground */
 const TONE_MIX = [0, 0.25, 0.42, 0.58];
 /**
@@ -77,7 +77,7 @@ const TONE_MIX = [0, 0.25, 0.42, 0.58];
  */
 export function bandLayout() {
   const ring = paintStyle.ring ? 1 : 0;
-  return { pad: paintStyle.white + ring, header: BAND - 1 + paintStyle.white, minFolderH: BAND + BAND_MIN_WHITE + paintStyle.foot + 1 };
+  return { pad: paintStyle.white + ring, header: BAND - 1 + paintStyle.white, minFolderH: BAND + paintStyle.minWhite + paintStyle.foot + 1 };
 }
 /** radius of the pointer light, CSS px */
 const LIGHT_R = 90;
