@@ -1,0 +1,30 @@
+# Temporary: drives the maximize button of built exes with a real mouse.
+name: captest
+on:
+  push:
+    branches: [claude/project-thread-dzbrgb-captest]
+permissions:
+  actions: read
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe each listed build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, BuildNumber | Format-List
+          foreach ($line in Get-Content captest/runs.txt) {
+            $tag, $run = $line -split '\s+'
+            if (-not $run) { continue }
+            Write-Host "=== $tag (run $run) ==="
+            gh run download $run -R ${{ github.repository }} -n tessera-app-windows-x64 -D "exe-$tag"
+            ./captest/captest.ps1 -Exe "exe-$tag/tessera-app.exe" -Tag $tag
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shots
+          path: shots
