@@ -338,6 +338,8 @@ pub struct LayoutEngine {
     /// Main category and age of closed folders (rule 6) and of folders in
     /// groups, by folder id.
     tints: HashMap<u32, Tint, BuildHasherDefault<IdHasher>>,
+    /// [`Tree::redated_seq`] at the last layout.
+    redated: u64,
     generation: u32,
     /// Protected node ids (sorted) and the tree length they were found at.
     protected: Option<(usize, Vec<u32>)>,
@@ -372,7 +374,31 @@ impl LayoutEngine {
     pub fn reset(&mut self) {
         self.ranks.clear();
         self.tints.clear();
+        self.redated = 0;
         self.protected = None;
+    }
+
+    /// Forgets the tints of the folders above files whose age changed
+    /// since the last layout (a write that keeps a file's size would not
+    /// move a folder's size enough to refresh its tint).
+    fn forget_redated(&mut self, tree: &Tree) {
+        let now = tree.redated_seq();
+        if now == self.redated {
+            return;
+        }
+        match tree.redated_since(self.redated) {
+            Some(dirs) => {
+                for d in dirs {
+                    let mut cur = d;
+                    while !cur.is_none() && cur.index() < tree.len() {
+                        self.tints.remove(&cur.0);
+                        cur = tree.node(cur).parent;
+                    }
+                }
+            }
+            None => self.tints.clear(),
+        }
+        self.redated = now;
     }
 
     /// Lays out `req.view` and returns the encoded buffer (see the module
@@ -399,6 +425,7 @@ impl LayoutEngine {
         hits: Option<&Hits>,
     ) -> Vec<u8> {
         self.generation = self.generation.wrapping_add(1);
+        self.forget_redated(tree);
         let protected = match self.protected.take() {
             Some((len, ids)) if len == tree.len() => ids,
             _ => crate::delete::protected_nodes(tree),

@@ -525,7 +525,20 @@ pub struct Tree {
     pub(crate) changed: u64,
     /// See [`Tree::touched_since`].
     pub(crate) journal: Journal,
+    /// See [`Tree::redated_since`].
+    redated: Redated,
 }
+
+/// The folders of the last [`REDATED_LEN`] files whose age changed after
+/// they had one (a write to an old file); see [`Tree::redated_since`].
+#[derive(Default)]
+struct Redated {
+    ring: Vec<NodeId>,
+    seq: u64,
+}
+
+/// How many re-dated files [`Tree::redated_since`] reaches back to (4 KiB).
+pub const REDATED_LEN: usize = 1024;
 
 /// How many folder changes the journal keeps (16 KiB).
 pub const JOURNAL_LEN: usize = 4096;
@@ -614,6 +627,7 @@ impl Tree {
             names,
             changed: 0,
             journal: Journal::default(),
+            redated: Redated::default(),
         };
         t.set_cluster_size(cluster);
         t.push_node(
@@ -1155,9 +1169,40 @@ impl Tree {
         if *a == b {
             return false;
         }
-        *a = b;
-        self.touch(if s.parent.is_none() { id } else { s.parent });
+        let had = std::mem::replace(a, b) != crate::age::UNKNOWN;
+        let dir = if s.parent.is_none() { id } else { s.parent };
+        self.touch(dir);
+        if had {
+            // ages count from when the tree was made, so a file is re-dated
+            // about once a session: when an old one is written to
+            let r = &mut self.redated;
+            let i = (r.seq % REDATED_LEN as u64) as usize;
+            if i == r.ring.len() {
+                r.ring.push(dir);
+            } else {
+                r.ring[i] = dir;
+            }
+            r.seq += 1;
+        }
         true
+    }
+
+    /// How many files have been re-dated (their known age changed) so far.
+    pub fn redated_seq(&self) -> u64 {
+        self.redated.seq
+    }
+
+    /// The folders of the files re-dated since [`Tree::redated_seq`] was
+    /// `seq` (a file that is new to the tree is not re-dated: its bytes
+    /// changed too). `None` when that is more than [`REDATED_LEN`] files
+    /// ago, or `seq` is from another tree.
+    pub fn redated_since(&self, seq: u64) -> Option<impl Iterator<Item = NodeId> + '_> {
+        const LEN: u64 = REDATED_LEN as u64;
+        let r = &self.redated;
+        if seq > r.seq || r.seq - seq > LEN {
+            return None;
+        }
+        Some((seq..r.seq).map(move |i| r.ring[(i % LEN) as usize]))
     }
 
     /// Number of live children. Linear in the length of the sibling list

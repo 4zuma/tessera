@@ -1329,4 +1329,24 @@ fn ages_go_into_the_records() {
     t2.set_modified(f, ago(100));
     let b = e.layout(&t2, &req, RootExtras::default(), 2);
     assert!(!same_picture(&a, &b, 0.5));
+
+    // a write to an old file in a closed folder that keeps its size: the
+    // folder's cached tint is dropped, so its age follows
+    let old = t2.lookup_relative(b"open\\shut\\old.iso").unwrap();
+    let seq = t2.redated_seq();
+    assert!(t2.set_modified(old, now));
+    assert_eq!(t2.redated_since(seq).unwrap().collect::<Vec<_>>(), [shut]);
+    let c = e.layout(&t2, &req, RootExtras::default(), 3);
+    let rec = decode(&c).unwrap();
+    let shut_now = rec.records.iter().find(|r| r.id == shut.0).unwrap().age;
+    let mut m = Mean::default();
+    m.add(1, 300 << 20);
+    m.add(byte_of_days(10.0), 100 << 20);
+    assert_eq!(shut_now, m.byte());
+    assert_ne!(shut_now, shut_age);
+    // a new file's first time is not a re-dating
+    let seq = t2.redated_seq();
+    let fresh = t2.add_child(shut, b"fresh.txt", 1, 1, NodeFlags::NONE);
+    assert!(t2.set_modified(fresh, now));
+    assert_eq!(t2.redated_seq(), seq);
 }

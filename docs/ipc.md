@@ -119,7 +119,9 @@ one `layout` call in flight; there is no polling and no timer when nothing chang
 the last layout it sent and how many bytes changed since (`Tree::changed_bytes`). Below one
 px² of the shown view it stays silent; past that it lays the view out again and sends the
 event only when some edge moved by more than 0.5 px or a tile, colour or size label changed
-(`layout::same_picture`). Changes Windows keeps making on a system drive (logs, caches) thus
+(`layout::same_picture`). A batch that renamed something in sight, or re-dated a file (about
+once per file a session, since ages count from when the tree was made), skips the bytes
+bound and goes straight to the comparison. Changes Windows keeps making on a system drive (logs, caches) thus
 cost no IPC, no layout in the WebView and no frame. While a search is shown, a change is
 sent anyway when it touches what the search found or would find now (`Hits::touched_by`: a
 folder that matched, a child that was found, or a child that matches now), so the count and
@@ -245,7 +247,8 @@ These are what make the map calm while it changes, and they were tuned in the pr
 6. A DIR_LEAF's `cat` is the category with the most bytes among all files below it (lower
    category on a tie), so the UI can tint closed folders by what fills them; its `age` comes
    from the same walk. The core caches both per folder and walks the folder again only when
-   its size moved by over 1/8.
+   its size moved by over 1/8, or a file below it was re-dated (an old file written to,
+   `Tree::redated_since`), which can move its age without moving its size.
 7. At the volume root, two pseudo children are added: UNSCANNED (`used - scanned`, while
    scanning and above 64 MiB) ranked first, and FREE (the volume's free bytes) ranked last.
 8. With a search set, every record's `hit` says how much of it the search found. A GROUP
