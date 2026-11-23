@@ -150,8 +150,15 @@ fn check(tree: &Tree, req: &LayoutRequest, d: &Decoded, extras: u64) {
     for (i, r) in d.records.iter().enumerate() {
         assert!(index.insert(r.id, i).is_none(), "duplicate id {r:?}");
         assert!(r.w >= 1.0 && r.h >= 1.0, "{r:?} below 1 px");
+        // minWidth is for folders only (rule 2)
+        let folder = r.kind == kind::DIR || r.kind == kind::DIR_LEAF;
+        let min_w = if folder {
+            st.min_side.max(st.min_width)
+        } else {
+            st.min_side
+        };
         assert!(
-            r.w >= st.min_side.max(st.min_width) - eps && r.h >= st.min_side - eps,
+            r.w >= min_w - eps && r.h >= st.min_side - eps,
             "{r:?} smaller than minSide / minWidth"
         );
         let (px, py, pw, ph, pdepth) = if r.parent == ids::NONE {
@@ -501,7 +508,12 @@ fn styles_are_respected() {
     }
     assert!(per_parent.values().all(|&n| n <= 5), "{per_parent:?}");
     assert!(d.records.iter().any(|r| r.header == 30));
-    assert!(d.records.iter().all(|r| r.w >= 50.0 && r.h >= 30.0));
+    let folder = |r: &Record| r.kind == kind::DIR || r.kind == kind::DIR_LEAF;
+    assert!(
+        d.records
+            .iter()
+            .all(|r| r.w >= if folder(r) { 50.0 } else { 30.0 } && r.h >= 30.0)
+    );
 }
 
 #[test]
@@ -1214,6 +1226,62 @@ fn layout_bench() {
 }
 
 #[test]
+fn min_width_is_for_folders() {
+    // Big files, then folders and files of middling sizes side by side.
+    let mut t = Tree::new(b"R:\\");
+    let d = t.add_child(NodeId::ROOT, b"d", 0, 0, NodeFlags::DIR);
+    for (i, s) in [500u64, 200].into_iter().enumerate() {
+        let name = format!("big{i}.mkv");
+        t.add_child(d, name.as_bytes(), s << 20, s << 20, NodeFlags::NONE);
+    }
+    for i in 0..80u64 {
+        let size = (2 + i % 7) << 20;
+        let sub = format!("sub{i}");
+        let f = t.add_child(d, sub.as_bytes(), 0, 0, NodeFlags::DIR);
+        t.add_child(f, b"a.bin", size, size, NodeFlags::NONE);
+        let file = format!("file{i}.iso");
+        t.add_child(d, file.as_bytes(), size, size, NodeFlags::NONE);
+    }
+    let mut req = LayoutRequest::new(d, 900.0, 640.0);
+    req.style.min_width = 0.0;
+    let side = lay(&t, &req);
+    let thin = |dd: &Decoded, k: u8| {
+        dd.records
+            .iter()
+            .filter(|r| r.kind == k && r.w < 44.0)
+            .count()
+    };
+    assert!(thin(&side, kind::DIR_LEAF) > 0);
+    req.style.min_width = 44.0;
+    let wide = lay(&t, &req); // `check` asserts every folder is 44 wide
+    assert_eq!(thin(&wide, kind::DIR_LEAF), 0);
+    // so every folder tile is named, while narrow files stay
+    assert!(
+        wide.records
+            .iter()
+            .all(|r| r.kind != kind::DIR_LEAF || r.name.is_some())
+    );
+    // Only the narrow folders joined the group, not every sibling ranked
+    // after the first of them: files smaller than a grouped folder remain.
+    let shown: Vec<u32> = wide.records.iter().map(|r| r.id).collect();
+    let grouped_dir = t
+        .children(d)
+        .filter(|&c| t.node(c).is_dir() && !shown.contains(&c.0))
+        .map(|c| SizeMode::Disk.of(&t.node(c)))
+        .max()
+        .unwrap();
+    let smallest_file = wide
+        .records
+        .iter()
+        .filter(|r| r.kind == kind::FILE)
+        .map(|r| r.size)
+        .min()
+        .unwrap();
+    assert!(smallest_file < grouped_dir);
+    assert!(thin(&wide, kind::FILE) > 0);
+}
+
+#[test]
 fn min_side_keeps_every_tile_wide_enough() {
     // A folder with a few big files, a long tail of middling ones and
     // many tiny ones: without minSide the tail comes out as slivers.
@@ -1255,14 +1323,8 @@ fn min_side_keeps_every_tile_wide_enough() {
     assert!(on.records.len() < off.records.len());
     assert!(on.records.iter().any(|r| r.w < 44.0));
     req.style.min_width = 44.0;
-    let wide = lay(&t, &req); // ... and here at least 44 wide
-    assert!(wide.records.len() <= on.records.len());
-    // so every file tile is named
-    assert!(
-        wide.records
-            .iter()
-            .all(|r| r.kind != kind::FILE || r.name.is_some())
-    );
+    // minWidth is for folders: files keep their tiles down to 24 x 24
+    assert_eq!(lay(&t, &req).records, on.records);
     let g = on
         .records
         .iter()

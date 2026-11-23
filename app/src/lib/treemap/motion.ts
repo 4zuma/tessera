@@ -27,9 +27,10 @@ export const fluentLayout = {
   header: 21,
   minHeaderW: 60,
   minArea: 110,
-  // no tile thinner than 24 px either way (a bit more than the 13 x 20 arrow pointer) or
-  // narrower than 44 px (labelMinW: names are written across, so every tile gets one):
-  // smaller ones join the "small items" tile, which takes its place by size
+  // no tile thinner than 24 px either way (a bit more than the 13 x 20 arrow pointer), and
+  // no folder narrower than 44 px (labelMinW: a folder is known by its name, written
+  // across; a file by its colour): smaller ones join the "small items" tile, which takes
+  // its place by size
   minSide: 24,
   minWidth: 44,
   // a folder opens only when it gets a header, is over 110 * 60 = 6,600 px² (about

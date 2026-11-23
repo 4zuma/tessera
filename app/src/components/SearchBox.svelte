@@ -69,7 +69,11 @@
 </div>
 
 <style>
-  /* WinUI TextBox: control fill, a stronger bottom stroke, the accent underline when focused */
+  /*
+   * WinUI TextBox: control fill, a stronger bottom stroke, and when focused a 2 px accent
+   * underline that is part of the border, so it follows the rounded corners and thins out
+   * up their curve instead of running past them.
+   */
   .search {
     position: relative;
     display: flex;
@@ -93,12 +97,10 @@
   .search:focus-within::after {
     content: '';
     position: absolute;
-    left: -1px;
-    right: -1px;
-    bottom: -1px;
-    height: 2px;
-    border-radius: 0 0 var(--r-ctl) var(--r-ctl);
-    background: var(--accent);
+    inset: -1px;
+    border-radius: inherit;
+    border-bottom: 2px solid var(--accent);
+    pointer-events: none;
   }
   .glyph {
     display: grid;
