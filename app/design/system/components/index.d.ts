@@ -81,7 +81,7 @@ export type TooltipProps = PageProps;
 
 export type IconName =
   | 'drive' | 'folder' | 'file' | 'refresh' | 'stop' | 'up' | 'back' | 'trash' | 'purge' | 'sweep' | 'copy' | 'reveal' | 'search' | 'zoom'
-  | 'lock' | 'undo' | 'chev' | 'chevDown' | 'check' | 'cloud' | 'warn' | 'info' | 'shield' | 'pane' | 'dismiss' | 'more' | 'download' | 'edit';
+  | 'lock' | 'undo' | 'chev' | 'chevDown' | 'check' | 'cloud' | 'warn' | 'info' | 'shield' | 'pane' | 'dismiss' | 'more' | 'download' | 'edit' | 'tiles';
 
 export interface IconProps {
   name: IconName;

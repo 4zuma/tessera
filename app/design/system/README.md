@@ -41,7 +41,7 @@ The map is the app; everything else serves it. Rules the painter and the layout 
 
 ## Iconography
 
-28 line icons in the spirit of Fluent System Icons: a 24-unit grid, 1.5 stroke, round caps and joins, `currentColor`, drawn at 16 px (12 px in breadcrumbs). Use `Icon` with a name from its list; never emoji, never a filled icon. Caption buttons (minimise, maximise, close) use Segoe Fluent Icons, as Windows does. The logo is the app icon's 16 px artwork (`Logo`, Logos group); its colours are fixed and do not follow the accent.
+29 line icons in the spirit of Fluent System Icons: a 24-unit grid, 1.5 stroke, round caps and joins, `currentColor`, drawn at 16 px (12 px in breadcrumbs). Use `Icon` with a name from its list; never emoji, never a filled icon. Caption buttons (minimise, maximise, close) use Segoe Fluent Icons, as Windows does. The logo is the app icon's 16 px artwork (`Logo`, Logos group); its colours are fixed and do not follow the accent.
 
 ## Layout
 

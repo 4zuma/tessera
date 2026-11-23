@@ -285,7 +285,7 @@ export class FluentPainter implements Painter {
         // a level's group, or the one item it left over, drawn smaller or bigger than its
         // size: a dashed edge says its area is not a share of the map (docs/ipc.md rule 9)
         ctx.beginPath();
-        ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, Math.min(RADIUS, b.w / 2, b.h / 2));
+        ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, Math.min(paintStyle.radius, b.w / 2, b.h / 2));
         ctx.setLineDash([4, 3]);
         ctx.lineWidth = 1;
         ctx.globalAlpha = it.va * 0.7;
