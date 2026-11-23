@@ -32,8 +32,8 @@ Scan a drive, see every folder as a treemap, and delete what you don't need.</p>
 * **Light.** The whole app uses about 300 MB of memory after that scan, and close
   to no CPU while it keeps the map up to date.
 * **Smooth.** The treemap animates at 60 fps. Double-click a folder to zoom in,
-  press Backspace to go back. Files too small to draw are merged into one
-  "small items" tile; double-click it to see them.
+  press Backspace to go back. Files and folders too small to draw are merged
+  into one tile; double-click it to see them.
 * **Live.** Files that change after the scan show up in the map within about half
   a second.
 * **Searchable.** Press Ctrl+F and type part of a name, a file type like `.iso`, a
@@ -64,8 +64,8 @@ is nothing to install.
   the fast MFT scan. Without admin rights Tessera walks the folders instead.
 * Tessera writes no files of its own. It remembers its window size and the view
   options you changed in the registry, under `HKEY_CURRENT_USER\Software\Tessera`,
-  and only once something differs from the default. **⋯ › Clear saved settings**
-  removes the key.
+  and only once something differs from the default. To start fresh, close Tessera
+  and delete that key, for example with `reg delete HKCU\Software\Tessera /f`.
 
 ## Compared with SpaceSniffer
 

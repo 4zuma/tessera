@@ -1,7 +1,7 @@
 <script lang="ts">
   import { app, type MenuRow } from '../lib/app.svelte';
   import { fmtBytes } from '../lib/format';
-  import { t, tn } from '../lib/i18n.svelte';
+  import { groupName, t } from '../lib/i18n.svelte';
   import Icon from './Icon.svelte';
   import SearchBox from './SearchBox.svelte';
 
@@ -14,7 +14,7 @@
   }
   const steps = $derived<Step[]>([
     ...app.crumbs.map(c => ({ key: `n${c.id}`, name: c.name, level: false, go: () => void app.zoomTo(c.id) })),
-    ...app.levels.map((l, i) => ({ key: `l${i}`, name: tn('smallItems', l.count), level: true, go: () => app.backToLevel(i + 1) })),
+    ...app.levels.map((l, i) => ({ key: `l${i}`, name: groupName(l.count, l.holds), level: true, go: () => app.backToLevel(i + 1) })),
   ]);
 
   // As in Explorer, a path too long for the bar folds from the left into a "…" step, which
@@ -85,11 +85,6 @@
   function pickDrive(root: string) {
     drivesOpen = false;
     void app.startScan(root);
-  }
-  function openAppMenu(e: MouseEvent) {
-    const b = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    // under the button, right edges lined up (the menu flips left when it meets the window edge)
-    app.openAppMenu(b.right, b.bottom + 4);
   }
   function onDocDown(e: PointerEvent) {
     if (drivesOpen && !(e.target as HTMLElement).closest('.drives-fly, .drive-btn')) drivesOpen = false;
@@ -179,9 +174,6 @@
       <Icon name="pane" />
     </button>
   {/if}
-  <button class="sbtn app-menu" aria-haspopup="menu" onclick={openAppMenu} title={t('cmd.moreTip')} aria-label={t('cmd.more')}>
-    <Icon name="more" />
-  </button>
 </div>
 
 <style>

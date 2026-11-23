@@ -34,6 +34,9 @@ export const en = {
   'age.over': 'Older than {d}',
   'age.unknown': 'Date not known',
   folders: { one: '{n} folder', other: '{n} folders' },
+  smallFiles: { one: '{n} small file', other: '{n} small files' },
+  smallFolders: { one: '{n} small folder', other: '{n} small folders' },
+  // files and folders together
   smallItems: { one: '{n} small item', other: '{n} small items' },
   selected: '{n} selected · {size}',
   shareParent: '{pct} of parent',
@@ -59,8 +62,8 @@ export const en = {
 
   /* what a tile is (tooltip, details card) */
   'kind.folderMostly': 'Folder · mostly {cat}',
-  'kind.group': 'Small items, grouped',
-  'kind.groupShort': 'Small items',
+  'kind.group': 'Grouped',
+  'kind.groupShort': 'Grouped',
   'kind.currentFolder': 'Current folder',
   'kind.levelIn': 'In {folder}',
   'kind.notToScale': 'not to scale',
@@ -101,8 +104,6 @@ export const en = {
   'cmd.pane': 'Details pane',
   'cmd.showPane': 'Show details pane',
   'cmd.hidePane': 'Hide details pane',
-  'cmd.more': 'More',
-  'cmd.moreTip': 'More options',
 
   /* search box (Ctrl+F) */
   'search.placeholder': 'Search {drive}',
@@ -147,7 +148,7 @@ export const en = {
 
   /* context menu */
   'menu.freeNote': 'The empty part of this drive. Start with the biggest tiles.',
-  'menu.zoomGroup': 'Zoom in to see these items',
+  'menu.zoomGroup': 'Zoom in',
   'menu.zoomFolder': 'Zoom into this folder',
   'menu.reveal': 'Show in File Explorer',
   'menu.copyPath': 'Copy path',
@@ -156,8 +157,6 @@ export const en = {
   'menu.purge': 'Delete permanently…',
   'menu.more': 'Show more options',
   'menu.moreMixed': "Windows' menu works only for items in one folder.",
-  'menu.clearSettings': 'Clear saved settings',
-  'menu.settingsNote': 'Tessera remembers its window size and view options in the registry (HKEY_CURRENT_USER\\Software\\Tessera), only the ones you changed.',
 
   /* confirmations */
   'confirm.purgeTitle': 'Delete permanently?',

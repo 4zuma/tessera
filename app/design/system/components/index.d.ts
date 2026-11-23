@@ -83,6 +83,8 @@ export interface PageProps {
 export interface WindowProps extends PageProps {
   /** "window": fills its slot as a Windows 11 window (default). "desk": the browser preview's window on a desk. */
   frame?: 'window' | 'desk';
+  /** "mica": the Mica-like wash (default). "solid": the solid base colour Windows shows when Mica is off (Transparency effects off, battery saver). */
+  backdrop?: 'mica' | 'solid';
 }
 export type TreemapProps = PageProps;
 export type TitleBarProps = PageProps;

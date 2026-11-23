@@ -152,7 +152,8 @@
 //!                       files in them; 0 = not known, and for pseudo tiles
 //!  53  u8   note        see [`note`]: NOT_TO_SCALE for a level's group
 //!                       drawn smaller or bigger than its size, or a lone
-//!                       item left over drawn bigger (rule 9)
+//!                       item left over drawn bigger (rule 9); FILES and
+//!                       FOLDERS for what a group holds
 //!  54  u8[2]            reserved, 0
 //! ```
 //!
@@ -234,6 +235,11 @@ pub mod note {
     /// smaller so the siblings beside it get room, or a level's group or
     /// lone left-over item drawn bigger so it can be pointed at (rule 9).
     pub const NOT_TO_SCALE: u8 = 1 << 0;
+    /// A group holds files (so the UI can name it: small files, small
+    /// folders, or both).
+    pub const FILES: u8 = 1 << 1;
+    /// A group holds folders.
+    pub const FOLDERS: u8 = 1 << 2;
 }
 
 /// Which size the areas are proportional to.
@@ -685,6 +691,8 @@ enum ItemKind {
     /// `node` is the folder whose children were merged.
     Group {
         count: u32,
+        /// how many of `count` are folders
+        dirs: u32,
         cat: u8,
         hit: u8,
         age: u8,
@@ -771,6 +779,8 @@ struct Rest {
     n: u32,
     /// The last sibling counted in: with `n == 1`, the only one.
     one: NodeId,
+    /// How many of `n` are folders.
+    dirs: u32,
     sum: u64,
     /// Bytes of it the search found ([`hit_part`]).
     hit: u64,
@@ -786,6 +796,7 @@ impl Default for Rest {
             folder: NodeId::ROOT,
             n: 0,
             one: NodeId::ROOT,
+            dirs: 0,
             sum: 0,
             hit: 0,
             tally: [0; category::COUNT],
@@ -1206,6 +1217,7 @@ impl Run<'_> {
     fn join(&mut self, rest: &mut Rest, id: NodeId, n: &Node, size: u64) {
         rest.n += 1;
         rest.one = id;
+        rest.dirs += u32::from(n.is_dir());
         rest.sum = rest.sum.saturating_add(size);
         rest.hit = rest.hit.saturating_add(hit_part(self.hits, id, size));
         let cat = self.member_cat(id, n, size);
@@ -1229,6 +1241,7 @@ impl Run<'_> {
             Item::new(
                 ItemKind::Group {
                     count: rest.n,
+                    dirs: rest.dirs,
                     cat: main_category(&rest.tally),
                     hit: share_of(rest.hit, rest.sum),
                     age: rest.age.byte(),
@@ -1498,6 +1511,7 @@ impl Run<'_> {
                 }
                 ItemKind::Group {
                     count,
+                    dirs,
                     cat,
                     hit,
                     age,
@@ -1505,6 +1519,12 @@ impl Run<'_> {
                     rec.id = ids::GROUP_BIT | it.node.0;
                     (rec.count, rec.cat, rec.kind, rec.hit) = (count, cat, kind::GROUP, hit);
                     rec.age = age;
+                    if count > dirs {
+                        rec.note |= note::FILES;
+                    }
+                    if dirs > 0 {
+                        rec.note |= note::FOLDERS;
+                    }
                 }
                 ItemKind::Node => {
                     let n = tree.node(it.node);
