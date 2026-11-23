@@ -160,6 +160,32 @@ fn fold(cp: u32) -> u32 {
     }
 }
 
+/// Appends `bytes` (WTF-8) to `out` with every code point folded the way
+/// [`eq_ignore_case`] compares them, so a case-insensitive substring test is
+/// a plain byte search in two folded buffers. Lone surrogates and malformed
+/// bytes come out as they are (U+FFFD for the latter).
+pub fn push_folded(out: &mut Vec<u8>, bytes: &[u8]) {
+    if bytes.is_ascii() {
+        out.extend(bytes.iter().map(u8::to_ascii_uppercase));
+        return;
+    }
+    for cp in code_points(bytes) {
+        let f = fold(cp);
+        match char::from_u32(f) {
+            Some(c) => {
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            }
+            // a lone surrogate, written back the way WTF-8 stores it
+            None => out.extend_from_slice(&[
+                0xE0 | (f >> 12) as u8,
+                0x80 | ((f >> 6) & 0x3F) as u8,
+                0x80 | (f & 0x3F) as u8,
+            ]),
+        }
+    }
+}
+
 /// Case-insensitive comparison of two WTF-8 names, Windows style.
 pub fn eq_ignore_case(a: &[u8], b: &[u8]) -> bool {
     if a == b {
@@ -217,5 +243,19 @@ mod tests {
         assert!(eq_ignore_case("ΣΊΣΥΦΟΣ".as_bytes(), "σίσυφοσ".as_bytes()));
         assert!(!eq_ignore_case(b"abc", b"abd"));
         assert!(!eq_ignore_case(b"abc", b"abcd"));
+    }
+
+    #[test]
+    fn folding_matches_the_comparison() {
+        let fold = |b: &[u8]| {
+            let mut v = Vec::new();
+            push_folded(&mut v, b);
+            v
+        };
+        assert_eq!(fold(b"Setup.EXE"), b"SETUP.EXE");
+        assert_eq!(fold("Übung".as_bytes()), fold("üBUNG".as_bytes()));
+        assert_eq!(fold("照片 a".as_bytes()), "照片 A".as_bytes());
+        let lone = from_utf16(&[0x61, 0xD800]);
+        assert_eq!(fold(&lone), from_utf16(&[0x41, 0xD800]));
     }
 }

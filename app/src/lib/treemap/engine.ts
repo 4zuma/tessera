@@ -46,7 +46,7 @@ export class Item {
   a = 0;
   /** hover amount 0..1, eased */
   hv = 0;
-  /** dimmed by the category filter 0..1, eased */
+  /** dimmed by the category filter or the search 0..1, eased */
   dm = 0;
   /** visible alpha after dimming */
   va = 0;
@@ -117,11 +117,24 @@ export function camMap(A: Box, B: Box, r: Box): Box {
   return { x: B.x + (r.x - A.x) * sx, y: B.y + (r.y - A.y) * sy, w: r.w * sx, h: r.h * sy };
 }
 
+/**
+ * how much the search dims a tile: not at all when it matched, fully when nothing in it
+ * did, and a folder or group in between by the share of its bytes that matched (a small
+ * share already lifts it a good deal, so it can be found)
+ */
+export function searchDim(r: Rect): number {
+  if (r.kind === Kind.Free || r.kind === Kind.Unscanned || r.hit === 0) return 1;
+  if (r.hit === 255) return 0;
+  return 0.2 + 0.6 * (1 - Math.sqrt(r.hit / 255));
+}
+
 export interface EngineHost {
   sel: { has(id: number): boolean; [Symbol.iterator](): Iterator<number> };
   hoverId: number | null;
   /** category filter: tiles of other categories are dimmed */
   filter: number | null;
+  /** the layout's `hit` bytes count: what the search didn't find is dimmed */
+  hits: boolean;
   scanning: boolean;
   reduced: boolean;
   theme: Theme;
@@ -141,7 +154,7 @@ export interface PaintState {
 
 export interface Painter {
   /**
-   * the map itself: changes only with the layout, the theme or the category filter (cached).
+   * the map itself: changes only with the layout, the theme, the category filter or the search (cached).
    * With `gpu` the boxes go to it and `ctx` gets only what is drawn over them.
    */
   scene(ctx: CanvasRenderingContext2D, list: readonly Item[], S: PaintState, gpu: BoxBatch | null): void;
@@ -416,6 +429,7 @@ export class TreemapEngine {
     const kd = 1 - Math.exp(-dt / 140);
     const hover = host.hoverId;
     const f = host.filter;
+    const hits = host.hits;
     const marked = this.marked;
     marked.length = 0;
     const ovTiles = this.ovTiles;
@@ -434,7 +448,7 @@ export class TreemapEngine {
         else easing = true;
       }
       const r = it.r;
-      const dtgt = f != null && r.kind !== Kind.Dir && (r.kind === Kind.Free || r.kind === Kind.Unscanned || r.cat !== f) ? 1 : 0;
+      const dtgt = r.kind === Kind.Dir ? 0 : Math.max(f != null && (r.kind === Kind.Free || r.kind === Kind.Unscanned || r.cat !== f) ? 1 : 0, hits ? searchDim(r) : 0);
       if (it.dm !== dtgt) {
         it.dm += (dtgt - it.dm) * (host.reduced ? 1 : kd);
         if (Math.abs(it.dm - dtgt) < 0.004) it.dm = dtgt;

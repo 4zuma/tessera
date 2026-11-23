@@ -5,7 +5,7 @@
 
 export const MAGIC = 0x4c525354; // "TSRL"
 export const VERSION = 1;
-export const HEADER_SIZE = 32;
+export const HEADER_SIZE = 36;
 export const RECORD_SIZE = 52;
 
 export const NONE = 0xffffffff;
@@ -54,12 +54,16 @@ export interface Rect {
   cat: number;
   flags: number;
   header: number;
+  /** with a search: how much of it matches, 0 (none) to 255 (all); 0 without one */
+  hit: number;
 }
 
 export interface Layout {
   view: number;
   rev: number;
   bytesPerPx: number;
+  /** id of the search whose hits are in `hit`, 0 = none */
+  search: number;
   rects: Rect[];
 }
 
@@ -94,6 +98,8 @@ export function decodeLayout(buf: ArrayBuffer): Layout {
   const view = dv.getUint32(20, true);
   const rev = dv.getUint32(24, true);
   const bytesPerPx = dv.getFloat32(28, true);
+  if (headerSize < HEADER_SIZE) throw new LayoutFormatError(`header size ${headerSize} < ${HEADER_SIZE}`);
+  const search = dv.getUint32(32, true);
   if (recordSize < RECORD_SIZE) throw new LayoutFormatError(`record size ${recordSize} < ${RECORD_SIZE}`);
   const namesAt = headerSize + count * recordSize;
   if (namesAt + namesLen > buf.byteLength) throw new LayoutFormatError('layout buffer truncated');
@@ -120,9 +126,10 @@ export function decodeLayout(buf: ArrayBuffer): Layout {
       cat: dv.getUint8(o + 48),
       flags: dv.getUint8(o + 49),
       header: dv.getUint8(o + 50),
+      hit: dv.getUint8(o + 51),
     };
   }
-  return { view, rev, bytesPerPx, rects };
+  return { view, rev, bytesPerPx, search, rects };
 }
 
 /** Writes the same format the Rust core produces (used by the mock and by tests). */
@@ -151,6 +158,7 @@ export function encodeLayout(l: Layout): ArrayBuffer {
   dv.setUint32(20, l.view >>> 0, true);
   dv.setUint32(24, l.rev >>> 0, true);
   dv.setFloat32(28, l.bytesPerPx, true);
+  dv.setUint32(32, l.search >>> 0, true);
   let o = HEADER_SIZE;
   l.rects.forEach((r, i) => {
     dv.setUint32(o, r.id >>> 0, true);
@@ -171,6 +179,7 @@ export function encodeLayout(l: Layout): ArrayBuffer {
     dv.setUint8(o + 48, r.cat);
     dv.setUint8(o + 49, r.flags);
     dv.setUint8(o + 50, Math.min(255, Math.round(r.header)));
+    dv.setUint8(o + 51, Math.max(0, Math.min(255, Math.round(r.hit))));
     o += RECORD_SIZE;
   });
   const pool = new Uint8Array(buf, o, namesLen);

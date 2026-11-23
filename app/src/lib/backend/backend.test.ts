@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { contentOf, decodeLayout, encodeLayout, FREE, GROUP_BIT, Kind, NONE, RECORD_SIZE, HEADER_SIZE, UNSCANNED, type Rect } from './codec';
+import { contentOf, decodeLayout, encodeLayout, FREE, GROUP_BIT, isNodeId, Kind, NONE, RECORD_SIZE, HEADER_SIZE, UNSCANNED, type Rect } from './codec';
 import { categoryOf, Cat } from './categories';
 import { t } from '../i18n.svelte';
 import { MockBackend } from './mock';
+import { BadSize, parseQuery } from './mock/search';
 import type { LayoutRequest, ScanProgress } from './types';
 
 const STYLE = { outer: 6, pad: 3, gap: 2, header: 21, minHeaderW: 60, minArea: 110, recurse: 60, openShare: 0.0025, maxDepth: 14, maxPerDir: 400, labelMinW: 44, labelMinH: 20 };
@@ -17,20 +18,21 @@ async function scanned(b: MockBackend, root = 'C:\\') {
 describe('codec', () => {
   it('round-trips records, big sizes and UTF-8 names', () => {
     const rects: Rect[] = [
-      { id: 7, parent: NONE, target: 9, count: 0, x: 1.5, y: 2, w: 300, h: 200, size: Math.round(499.8 * 2 ** 30), name: '屏幕截图 › archive', depth: 1, kind: Kind.Dir, cat: 255, flags: 1, header: 21 },
-      { id: GROUP_BIT + 7, parent: 7, target: 7, count: 42, x: 4, y: 30, w: 10, h: 10, size: 12345, name: '', depth: 2, kind: Kind.Group, cat: 4, flags: 0, header: 0 },
-      { id: FREE, parent: NONE, target: FREE, count: 0, x: 0, y: 0, w: 5, h: 5, size: 2 ** 40 + 3, name: '', depth: 1, kind: Kind.Free, cat: 255, flags: 0, header: 0 },
+      { id: 7, parent: NONE, target: 9, count: 0, x: 1.5, y: 2, w: 300, h: 200, size: Math.round(499.8 * 2 ** 30), name: '屏幕截图 › archive', depth: 1, kind: Kind.Dir, cat: 255, flags: 1, header: 21, hit: 0 },
+      { id: GROUP_BIT + 7, parent: 7, target: 7, count: 42, x: 4, y: 30, w: 10, h: 10, size: 12345, name: '', depth: 2, kind: Kind.Group, cat: 4, flags: 0, header: 0, hit: 127 },
+      { id: FREE, parent: NONE, target: FREE, count: 0, x: 0, y: 0, w: 5, h: 5, size: 2 ** 40 + 3, name: '', depth: 1, kind: Kind.Free, cat: 255, flags: 0, header: 0, hit: 255 },
     ];
-    const buf = encodeLayout({ view: 3, rev: 99, bytesPerPx: 1024, rects });
+    const buf = encodeLayout({ view: 3, rev: 99, bytesPerPx: 1024, search: 5, rects });
     expect(buf.byteLength).toBe(HEADER_SIZE + 3 * RECORD_SIZE + new TextEncoder().encode(rects[0].name).length);
     const l = decodeLayout(buf);
     expect(l.view).toBe(3);
     expect(l.rev).toBe(99);
+    expect(l.search).toBe(5);
     expect(l.rects).toEqual(rects);
   });
 
   it('points a tile at the folder whose contents it shows', () => {
-    const r = (kind: Kind, id: number, target: number): Rect => ({ id, parent: NONE, target, count: 0, x: 0, y: 0, w: 9, h: 9, size: 1, name: '', depth: 1, kind, cat: 255, flags: 0, header: 0 });
+    const r = (kind: Kind, id: number, target: number): Rect => ({ id, parent: NONE, target, count: 0, x: 0, y: 0, w: 9, h: 9, size: 1, name: '', depth: 1, kind, cat: 255, flags: 0, header: 0, hit: 0 });
     expect(contentOf(r(Kind.Dir, 7, 9))).toBe(9); // a › b › c: c
     expect(contentOf(r(Kind.DirLeaf, 7, 9))).toBe(9);
     expect(contentOf(r(Kind.Dir, 7, 7))).toBe(7);
@@ -113,6 +115,50 @@ describe('mock backend', () => {
     const mid = decodeLayout(await b.layout(req())).rects;
     expect(mid.some(r => r.id === UNSCANNED)).toBe(true);
     await b.scanCancel();
+  });
+
+  it('searches: the hits reach the layout until cleared', async () => {
+    const b = new MockBackend({}, { scanMs: 300 });
+    await scanned(b);
+    const res = (await b.search('.ISO', 'disk'))!;
+    expect(res.count).toBeGreaterThanOrEqual(2);
+    const l = decodeLayout(await b.layout({ ...req(), width: 4000, height: 3000 }));
+    expect(l.search).toBe(res.id);
+    // (small tiles come without a name)
+    const files = l.rects.filter(r => r.kind === Kind.File && isNodeId(r.id) && r.name);
+    const iso = files.filter(r => r.name.toLowerCase().endsWith('.iso'));
+    expect(iso.length).toBeGreaterThanOrEqual(2);
+    for (const r of files) expect([r.name, r.hit]).toEqual([r.name, iso.includes(r) ? 255 : 0]);
+    expect(iso.reduce((a, r) => a + r.size, 0)).toBeLessThanOrEqual(res.bytes);
+    expect(l.rects.find(r => r.id === FREE)!.hit).toBe(0);
+    // a folder holding one of them is partly lit, by bytes
+    const dl = l.rects.find(r => r.id === iso[0].parent)!;
+    expect(dl.hit).toBeGreaterThan(0);
+    expect(dl.hit).toBeLessThan(255);
+    // a folder matches by name, and everything in it is lit; only the folder counts
+    const steam = (await b.search('stardew', 'disk'))!;
+    expect(steam.count).toBeGreaterThanOrEqual(1);
+    await expect(b.search('>1XB', 'disk')).rejects.toThrow(t('core.badSize', { word: '>1XB' }));
+    await b.searchClear();
+    const off = decodeLayout(await b.layout(req()));
+    expect(off.search).toBe(0);
+    expect(off.rects.every(r => r.hit === 0)).toBe(true);
+  });
+
+  it('reads queries as the core does', () => {
+    expect(parseQuery('  ')).toBeNull();
+    expect(parseQuery('"my file" .MP4 *.mkv >=1.5GB <2g')).toEqual({
+      words: ['MY FILE'],
+      exts: ['.MP4', '.MKV'],
+      sizes: [
+        ['>=', 1.5 * 2 ** 30],
+        ['<', 2 ** 31],
+      ],
+    });
+    expect(parseQuery('. ..')!.words).toEqual(['.', '..']);
+    expect(() => parseQuery('>')).toThrow(BadSize);
+    expect(() => parseQuery('<5 apples')).not.toThrow();
+    expect(() => parseQuery('<5apples')).toThrow(BadSize);
   });
 
   it('recycles into $Recycle.Bin, restores, and purges', async () => {

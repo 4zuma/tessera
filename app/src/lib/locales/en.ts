@@ -91,6 +91,14 @@ export const en = {
   'cmd.showPane': 'Show details pane',
   'cmd.hidePane': 'Hide details pane',
 
+  /* search box (Ctrl+F) */
+  'search.placeholder': 'Search {drive}',
+  'search.label': 'Search files and folders',
+  'search.clear': 'Clear search',
+  /** count and total size of what the search found */
+  'search.found': '{items} · {size}',
+  'search.none': 'No matches',
+
   /* details pane */
   'pane.contains': 'Contains',
   'pane.modified': 'Modified',
@@ -196,6 +204,7 @@ export const en = {
   'core.personal': 'This is one of your personal folders. Windows and your apps use it.',
   'core.temp': 'Windows and your apps keep temporary files in this folder.',
   'core.noItem': 'This item no longer exists.',
+  'core.badSize': '“{word}” is not a size. Try >1GB or <500MB.',
   'mock.dataLabel': 'Data',
   'mock.systemFolder': 'System folder, protected',
   'mock.cloud': 'OneDrive online-only file: large, but takes almost no disk space',

@@ -62,20 +62,22 @@
 //!
 //! # Buffer
 //!
-//! Little-endian. A 32-byte header, `count` records of 52 bytes, then the
+//! Little-endian. A 36-byte header, `count` records of 52 bytes, then the
 //! UTF-8 name pool.
 //!
 //! ```text
-//! header (32 bytes)
+//! header (36 bytes)
 //!   0  u32  magic       0x4C525354 ("TSRL")
 //!   4  u16  version     1
-//!   6  u16  headerSize  32
+//!   6  u16  headerSize  36
 //!   8  u32  count       number of records
 //!  12  u32  recordSize  52
 //!  16  u32  namesLen    bytes in the name pool
 //!  20  u32  view        echo of the request
 //!  24  u32  rev         tree revision this layout was computed from
 //!  28  f32  bytesPerPx  bytes represented by one px² at this view
+//!  32  u32  search      id of the search whose hits are in the records
+//!                       ([`crate::search::Hits::id`]), 0 = none
 //!
 //! record (52 bytes)
 //!   0  u32  id          node id, or ids::FREE / ids::UNSCANNED, or
@@ -99,10 +101,15 @@
 //!                       open folders, pseudo tiles and anything without files
 //!  49  u8   flags       see [`flags`]
 //!  50  u8   header      header band height in px, 0 = none
-//!  51  u8   reserved    0
+//!  51  u8   hit         with a search: how much of it matches, 0 (none) to
+//!                       255 (all), see [`crate::search::share_of`]; for a
+//!                       group, over the items in it; 0 for pseudo tiles
+//!                       and without a search
 //! ```
 //!
 //! Records are in paint order: a folder always comes before its children.
+//! Readers take the header and record sizes from the header, so fields can
+//! be added at the end of either.
 //! Names are sent for files and folders at least `labelMinW` x `labelMinH`
 //! big and for every folder with a header; WTF-8 names that are not valid
 //! UTF-8 are converted lossily. `bytesPerPx` is the view's total size
@@ -114,13 +121,14 @@ use std::collections::hash_map::Entry;
 use std::collections::{BinaryHeap, HashMap};
 use std::hash::{BuildHasherDefault, Hasher};
 
+use crate::search::{Hits, share_of};
 use crate::tree::Node;
 use crate::{Error, NodeFlags, NodeId, Result, Tree, category, wtf8};
 
 /// `"TSRL"` read as a little-endian `u32`.
 pub const MAGIC: u32 = 0x4C52_5354;
 pub const VERSION: u16 = 1;
-pub const HEADER_SIZE: usize = 32;
+pub const HEADER_SIZE: usize = 36;
 pub const RECORD_SIZE: usize = 52;
 /// Safety cap on the number of records in one layout. Never reached with
 /// sane styles (a 4K canvas holds at most ~75,000 tiles of 110 px²).
@@ -336,6 +344,19 @@ impl LayoutEngine {
         extras: RootExtras,
         rev: u32,
     ) -> Vec<u8> {
+        self.layout_with(tree, req, extras, rev, None)
+    }
+
+    /// [`LayoutEngine::layout`] with the hits of a search in the records'
+    /// `hit` byte and its id in the header.
+    pub fn layout_with(
+        &mut self,
+        tree: &Tree,
+        req: &LayoutRequest,
+        extras: RootExtras,
+        rev: u32,
+        hits: Option<&Hits>,
+    ) -> Vec<u8> {
         self.generation = self.generation.wrapping_add(1);
         let protected = match self.protected.take() {
             Some((len, ids)) if len == tree.len() => ids,
@@ -350,6 +371,7 @@ impl LayoutEngine {
             generation: self.generation,
             protected: &protected,
             recycle_bin: recycle_bin(tree),
+            hits,
             s: std::mem::take(&mut self.scratch),
             touched: 0,
         };
@@ -478,6 +500,7 @@ enum ItemKind {
     Group {
         count: u32,
         cat: u8,
+        hit: u8,
     },
     Free,
     Unscanned,
@@ -503,6 +526,7 @@ struct Rec {
     cat: u8,
     flags: u8,
     header: u8,
+    hit: u8,
 }
 
 /// A folder tile waiting to be opened.
@@ -559,6 +583,7 @@ struct Run<'a> {
     generation: u32,
     protected: &'a [u32],
     recycle_bin: Option<NodeId>,
+    hits: Option<&'a Hits>,
     s: Scratch,
     touched: usize,
 }
@@ -741,7 +766,8 @@ impl Run<'_> {
         self.s.kids.clear();
         self.s.items.clear();
         let mut total = unscanned.saturating_add(free);
-        let (mut small_n, mut small_sum) = (0u32, 0u64);
+        let (mut small_n, mut small_sum, mut small_hit) = (0u32, 0u64, 0u64);
+        let hits = self.hits;
         let mut lone = None;
         let mut tally = [0u64; category::COUNT];
         let mut c = dir.first_child;
@@ -762,6 +788,7 @@ impl Run<'_> {
                     } else {
                         small_n += 1;
                         small_sum = small_sum.saturating_add(size);
+                        small_hit = small_hit.saturating_add(hit_part(hits, c, size));
                         lone = Some(Kid {
                             size,
                             rank: 0,
@@ -784,7 +811,7 @@ impl Run<'_> {
         if small_n == 1 {
             // A group of one would hide a name for nothing.
             self.s.kids.extend(lone);
-            (small_n, small_sum, tally) = (0, 0, [0; category::COUNT]);
+            (small_n, small_sum, small_hit, tally) = (0, 0, 0, [0; category::COUNT]);
         }
         let mut kids = std::mem::take(&mut self.s.kids);
         for k in kids.iter_mut() {
@@ -796,6 +823,7 @@ impl Run<'_> {
             for k in &kids[keep..] {
                 small_n += 1;
                 small_sum = small_sum.saturating_add(k.size);
+                small_hit = small_hit.saturating_add(hit_part(hits, k.node, k.size));
                 let cat = category::of(&tree.node(k.node));
                 if (cat as usize) < category::COUNT {
                     tally[cat as usize] += k.size;
@@ -823,6 +851,7 @@ impl Run<'_> {
                 kind: ItemKind::Group {
                     count: small_n,
                     cat: main_category(&tally),
+                    hit: share_of(small_hit, small_sum),
                 },
                 node: folder,
                 size: small_sum,
@@ -883,6 +912,7 @@ impl Run<'_> {
                 cat: category::NONE,
                 flags: 0,
                 header: 0,
+                hit: 0,
             };
             match it.kind {
                 ItemKind::Free => {
@@ -892,12 +922,13 @@ impl Run<'_> {
                     (rec.id, rec.target, rec.kind) =
                         (ids::UNSCANNED, ids::UNSCANNED, kind::UNSCANNED);
                 }
-                ItemKind::Group { count, cat } => {
+                ItemKind::Group { count, cat, hit } => {
                     rec.id = ids::GROUP_BIT | it.node.0;
-                    (rec.count, rec.cat, rec.kind) = (count, cat, kind::GROUP);
+                    (rec.count, rec.cat, rec.kind, rec.hit) = (count, cat, kind::GROUP, hit);
                 }
                 ItemKind::Node => {
                     let n = tree.node(it.node);
+                    rec.hit = self.hits.map_or(0, |h| h.share(it.node));
                     rec.flags = self.flags(it.node, &n);
                     if n.is_dir() {
                         let st = &self.st;
@@ -974,6 +1005,7 @@ impl Run<'_> {
         out.extend_from_slice(&req.view.0.to_le_bytes());
         out.extend_from_slice(&rev.to_le_bytes());
         out.extend_from_slice(&(bytes_per_px as f32).to_le_bytes());
+        out.extend_from_slice(&self.hits.map_or(0, |h| h.id).to_le_bytes());
         for r in recs {
             let named = matches!(r.kind, kind::FILE | kind::DIR | kind::DIR_LEAF)
                 && (r.header > 0 || (r.b.w >= self.st.label_w && r.b.h >= self.st.label_h));
@@ -994,11 +1026,21 @@ impl Run<'_> {
             out.extend_from_slice(&r.size.to_le_bytes());
             out.extend_from_slice(&off.to_le_bytes());
             out.extend_from_slice(&len.to_le_bytes());
-            out.extend_from_slice(&[r.depth, r.kind, r.cat, r.flags, r.header, 0]);
+            out.extend_from_slice(&[r.depth, r.kind, r.cat, r.flags, r.header, r.hit]);
         }
         out[16..20].copy_from_slice(&(names.len() as u32).to_le_bytes());
         out.extend_from_slice(&names);
         out
+    }
+}
+
+/// About how many of `id`'s `size` bytes match the search, from its share.
+#[inline]
+fn hit_part(hits: Option<&Hits>, id: NodeId, size: u64) -> u64 {
+    match hits.map_or(0, |h| h.share(id)) {
+        0 => 0,
+        255 => size,
+        s => (size as u128 * s as u128 / 254) as u64,
     }
 }
 
@@ -1166,6 +1208,8 @@ pub struct Decoded {
     pub view: u32,
     pub rev: u32,
     pub bytes_per_px: f32,
+    /// The search shown in `hit`, 0 = none.
+    pub search: u32,
     pub records: Vec<Record>,
 }
 
@@ -1188,6 +1232,7 @@ pub struct Record {
     pub cat: u8,
     pub flags: u8,
     pub header: u8,
+    pub hit: u8,
 }
 
 /// Parses and validates a layout buffer.
@@ -1245,12 +1290,14 @@ pub fn decode(buf: &[u8]) -> Result<Decoded> {
             cat: buf[o + 48],
             flags: buf[o + 49],
             header: buf[o + 50],
+            hit: buf[o + 51],
         });
     }
     Ok(Decoded {
         view: u32_at(20),
         rev: u32_at(24),
         bytes_per_px: f32_at(28),
+        search: u32_at(32),
         records,
     })
 }
@@ -1262,11 +1309,11 @@ pub fn header_bytes_per_px(buf: &[u8]) -> Option<f32> {
         .map(|b| f32::from_le_bytes(b.try_into().expect("4 bytes")))
 }
 
-/// True when two encoded layouts draw the same picture: the same rects in
-/// the same order, with the same ids, names, kinds, categories, flags,
-/// headers and item counts, the same size labels (see [`size_label`]), and
-/// no edge more than `tolerance` CSS px from where it was. The revision and
-/// `bytesPerPx` are not compared. Live updates use it to skip redraws that
+/// True when two encoded layouts draw the same picture: the same search,
+/// the same rects in the same order, with the same ids, names, kinds,
+/// categories, flags, headers, hits and item counts, the same size labels
+/// (see [`size_label`]), and no edge more than `tolerance` CSS px from
+/// where it was. The revision and `bytesPerPx` are not compared. Live updates use it to skip redraws that
 /// would not change a single visible pixel by more than `tolerance`.
 /// Buffers that do not decode are never the same.
 pub fn same_picture(a: &[u8], b: &[u8], tolerance: f32) -> bool {
@@ -1275,6 +1322,7 @@ pub fn same_picture(a: &[u8], b: &[u8], tolerance: f32) -> bool {
     };
     let near = |p: f32, q: f32| (p - q).abs() <= tolerance;
     a.view == b.view
+        && a.search == b.search
         && a.records.len() == b.records.len()
         && a.records.iter().zip(&b.records).all(|(r, s)| {
             r.id == s.id
@@ -1286,6 +1334,7 @@ pub fn same_picture(a: &[u8], b: &[u8], tolerance: f32) -> bool {
                 && r.cat == s.cat
                 && r.flags == s.flags
                 && r.header == s.header
+                && r.hit == s.hit
                 && r.name == s.name
                 // only named rects show their size
                 && (r.name.is_none() || size_label(r.size) == size_label(s.size))

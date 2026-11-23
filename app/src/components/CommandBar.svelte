@@ -3,8 +3,15 @@
   import { fmtBytes } from '../lib/format';
   import { t } from '../lib/i18n.svelte';
   import Icon from './Icon.svelte';
+  import SearchBox from './SearchBox.svelte';
 
-  let { paneOpen, canTogglePane, onTogglePane }: { paneOpen: boolean; canTogglePane: boolean; onTogglePane: () => void } = $props();
+  /** `search`: the search box is here, where Windows draws the title bar (Windows 10) */
+  let {
+    paneOpen,
+    canTogglePane,
+    onTogglePane,
+    search,
+  }: { paneOpen: boolean; canTogglePane: boolean; onTogglePane: () => void; search: boolean } = $props();
 
   let drivesOpen = $state(false);
 
@@ -63,6 +70,8 @@
   </nav>
 
   <span class="sp"></span>
+
+  {#if search}<div class="find"><SearchBox /></div>{/if}
 
   {#if app.scanning}
     <button class="btn" onclick={() => app.cancelScan()}><Icon name="stop" /><span class="lbl">{t('cmd.stop')}</span></button>
@@ -187,6 +196,11 @@
   .sp {
     flex: 1;
     min-width: 8px;
+  }
+  .find {
+    flex: 0 1 260px;
+    min-width: 140px;
+    margin-right: 4px;
   }
   /*
    * Segmented control, as Windows 11 draws it (Community Toolkit "Segmented"): a sunken

@@ -3,13 +3,15 @@
   import { app } from '../lib/app.svelte';
   import Icon from './Icon.svelte';
   import Logo from './Logo.svelte';
+  import SearchBox from './SearchBox.svelte';
   import { t } from '../lib/i18n.svelte';
 
   /**
    * The title bar. On Windows 11 the app draws it itself, as WinUI apps do (see
    * app/src-tauri/src/titlebar.rs): `app-region: drag` makes it a real caption for Windows
    * (drag, double-click, Aero Snap, the system menu), and the caption buttons are ours. In
-   * the browser preview it is a picture of a window with a few preview controls.
+   * the browser preview it is a picture of a window with a few preview controls. The search
+   * box sits in its middle once a drive is open, as in WinUI apps' title bars.
    */
   const native = $derived(!!app.platform?.native);
 
@@ -47,51 +49,74 @@
 <svelte:window onfocus={() => (active = true)} onblur={() => (active = false)} />
 
 <header class="tb" class:native class:inactive={!active} bind:this={bar}>
-  <Logo />
-  <span class="t">Tessera</span>
-  {#if !native}
-    <span class="chip caption" title={t('preview.chipTip')}>{t('preview.chip')}</span>
-  {/if}
-  <span class="sp"></span>
-  {#if !native}
-    {#if app.phase === 'map' && app.volume?.root === 'C:\\'}
-      <button class="sbtn caption" onclick={() => app.demoDownload()} disabled={app.scanning} title={t('preview.downloadTip')}>
-        <Icon name="download" size={14} />{t('preview.download')}
-      </button>
+  <div class="l">
+    <Logo />
+    <span class="t">Tessera</span>
+    {#if !native}
+      <span class="chip caption" title={t('preview.chipTip')}>{t('preview.chip')}</span>
     {/if}
-    <button class="sbtn caption" onclick={() => app.toggleHud()} aria-pressed={app.showHud} title={t('preview.perfTip')}>{t('preview.perf')}</button>
-    <div class="wc" aria-hidden="true"><span class="min"></span><span class="max"></span><span class="close"></span></div>
-  {:else}
-    <!-- Windows' own caption buttons are not in the tab order either: Alt+Space opens their menu -->
-    <div class="cap">
-      <button tabindex="-1" onclick={() => app.backend?.caption('min')} aria-label={t('caption.min')} title={t('caption.min')}>
-        <span class="g" aria-hidden="true">&#xE921;</span>
-      </button>
-      <button
-        tabindex="-1"
-        bind:this={maxBtn}
-        class:hover={app.caption.hover}
-        class:pressed={app.caption.pressed}
-        onclick={() => app.backend?.caption('max')}
-        aria-label={app.caption.maximized ? t('caption.restore') : t('caption.max')}
-      >
-        <span class="g" aria-hidden="true">{app.caption.maximized ? '\uE923' : '\uE922'}</span>
-      </button>
-      <button tabindex="-1" class="close" onclick={() => app.backend?.caption('close')} aria-label={t('close')} title={t('close')}>
-        <span class="g" aria-hidden="true">&#xE8BB;</span>
-      </button>
-    </div>
-  {/if}
+  </div>
+  <div class="mid">
+    {#if app.phase === 'map'}<SearchBox />{/if}
+  </div>
+  <div class="r">
+    {#if !native}
+      {#if app.phase === 'map' && app.volume?.root === 'C:\\'}
+        <button class="sbtn caption" onclick={() => app.demoDownload()} disabled={app.scanning} title={t('preview.downloadTip')}>
+          <Icon name="download" size={14} />{t('preview.download')}
+        </button>
+      {/if}
+      <button class="sbtn caption" onclick={() => app.toggleHud()} aria-pressed={app.showHud} title={t('preview.perfTip')}>{t('preview.perf')}</button>
+      <div class="wc" aria-hidden="true"><span class="min"></span><span class="max"></span><span class="close"></span></div>
+    {:else}
+      <!-- Windows' own caption buttons are not in the tab order either: Alt+Space opens their menu -->
+      <div class="cap">
+        <button tabindex="-1" onclick={() => app.backend?.caption('min')} aria-label={t('caption.min')} title={t('caption.min')}>
+          <span class="g" aria-hidden="true">&#xE921;</span>
+        </button>
+        <button
+          tabindex="-1"
+          bind:this={maxBtn}
+          class:hover={app.caption.hover}
+          class:pressed={app.caption.pressed}
+          onclick={() => app.backend?.caption('max')}
+          aria-label={app.caption.maximized ? t('caption.restore') : t('caption.max')}
+        >
+          <span class="g" aria-hidden="true">{app.caption.maximized ? '\uE923' : '\uE922'}</span>
+        </button>
+        <button tabindex="-1" class="close" onclick={() => app.backend?.caption('close')} aria-label={t('close')} title={t('close')}>
+          <span class="g" aria-hidden="true">&#xE8BB;</span>
+        </button>
+      </div>
+    {/if}
+  </div>
 </header>
 
 <style>
+  /* three columns: the middle one stays centred while both sides fit, and the caption buttons never shrink */
   .tb {
     flex: none;
     height: 40px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(120px, 400px) minmax(max-content, 1fr);
+    align-items: center;
+    column-gap: 12px;
+    padding-left: 14px;
+  }
+  .l,
+  .r {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding-left: 14px;
+    min-width: 0;
+    align-self: stretch;
+  }
+  .l {
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .r {
+    justify-content: flex-end;
   }
   /* Windows treats the bar as the window's caption; controls in it stay clickable */
   .tb.native {
@@ -117,9 +142,6 @@
     border-radius: 10px;
     background: var(--accent-soft);
     color: var(--text-2);
-  }
-  .sp {
-    flex: 1;
   }
   .sbtn {
     height: 28px;

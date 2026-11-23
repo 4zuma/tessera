@@ -295,20 +295,21 @@ fn buffer_conformance() {
     let u32_at = |o: usize| u32::from_le_bytes(buf[o..o + 4].try_into().unwrap());
     let f32_at = |o: usize| f32::from_le_bytes(buf[o..o + 4].try_into().unwrap());
     assert_eq!(u16_at(4), 1);
-    assert_eq!(u16_at(6), 32);
+    assert_eq!(u16_at(6), 36);
     let count = u32_at(8) as usize;
     assert_eq!(count, 3); // Games (with big.pak) and movie.mkv
     assert_eq!(u32_at(12), 52);
     let names_len = u32_at(16) as usize;
-    assert_eq!(buf.len(), 32 + 52 * count + names_len);
+    assert_eq!(buf.len(), 36 + 52 * count + names_len);
     assert_eq!(u32_at(20), 0);
     assert_eq!(u32_at(24), 42);
     let map_area = (800.0 - 12.0) * (600.0 - 12.0);
     assert!((f32_at(28) - (1000u64 << 20) as f32 / map_area).abs() < 1.0);
+    assert_eq!(u32_at(32), 0); // no search
 
     // Records, field by field.
-    let rec = |i: usize| 32 + 52 * i;
-    let names = &buf[32 + 52 * count..];
+    let rec = |i: usize| 36 + 52 * i;
+    let names = &buf[36 + 52 * count..];
     let name_of = |o: usize| {
         let (off, len) = (u32_at(o + 40) as usize, u16_at(o + 44) as usize);
         std::str::from_utf8(&names[off..off + len])
@@ -364,7 +365,7 @@ fn buffer_conformance() {
     assert_eq!(dec.rev, 42);
     check(&t, &req, &dec, 0);
     // Corrupt buffers are rejected.
-    assert!(decode(&buf[..31]).is_err());
+    assert!(decode(&buf[..35]).is_err());
     assert!(decode(&buf[..buf.len() - 1]).is_err());
     let mut bad = buf.clone();
     bad[0] = b'X';
@@ -372,6 +373,44 @@ fn buffer_conformance() {
     let mut bad = buf.clone();
     bad[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(decode(&bad).is_err());
+}
+
+#[test]
+fn search_hits_go_into_the_records() {
+    use crate::search::{Query, search, share_of};
+    let mut t = Tree::new(b"C:\\");
+    let d = t.add_child(NodeId::ROOT, b"Games", 0, 0, NodeFlags::DIR);
+    let big = t.add_child(d, b"big.iso", 600 << 20, 600 << 20, NodeFlags::NONE);
+    t.add_child(d, b"data.pak", 200 << 20, 200 << 20, NodeFlags::NONE);
+    // many small files: they end up in a group, one in four matching
+    let tiny = t.add_child(NodeId::ROOT, b"tiny", 0, 0, NodeFlags::DIR);
+    for i in 0..400u64 {
+        let name = if i % 4 == 0 {
+            format!("{i}.iso")
+        } else {
+            format!("{i}.txt")
+        };
+        t.add_child(tiny, name.as_bytes(), 64 << 10, 64 << 10, NodeFlags::NONE);
+    }
+    t.add_child(tiny, b"huge.bin", 300 << 20, 300 << 20, NodeFlags::NONE);
+    let q = Query::parse(".iso").unwrap().unwrap();
+    let hits = search(&t, &q, SizeMode::Disk, 9, &|| false).unwrap();
+    let req = LayoutRequest::new(NodeId::ROOT, 800.0, 600.0);
+    let mut e = LayoutEngine::new();
+    let dec = decode(&e.layout_with(&t, &req, RootExtras::default(), 1, Some(&hits))).unwrap();
+    assert_eq!(dec.search, 9);
+    let rec = |id: u32| dec.records.iter().find(|r| r.id == id).unwrap();
+    assert_eq!(rec(big.0).hit, 255);
+    assert_eq!(rec(d.0).hit, share_of(600 << 20, 800 << 20));
+    let g = rec(ids::GROUP_BIT | tiny.0);
+    assert_eq!(g.kind, kind::GROUP);
+    assert!((60..=66).contains(&g.hit), "about a quarter: {}", g.hit);
+    // the same picture with other hits is another picture
+    let plain = e.layout(&t, &req, RootExtras::default(), 1);
+    assert_eq!(decode(&plain).unwrap().search, 0);
+    assert!(decode(&plain).unwrap().records.iter().all(|r| r.hit == 0));
+    let with = e.layout_with(&t, &req, RootExtras::default(), 1, Some(&hits));
+    assert!(!same_picture(&plain, &with, 0.5));
 }
 
 #[test]

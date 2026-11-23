@@ -195,6 +195,9 @@ pub mod text {
         CANCELLED: "Cancelled.", "已取消。";
         SKIPPED: "Skipped.", "已跳过。";
         UNDO_GONE: "This can no longer be undone.", "这次操作已经不能撤销了。";
+
+        // search box
+        BAD_SIZE: "“{}” is not a size. Try >1GB or <500MB.", "“{}”不是大小，可以写成 >1GB 或 <500MB";
     }
 }
 
