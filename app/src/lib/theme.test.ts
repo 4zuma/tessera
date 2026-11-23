@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acrylicBlend } from './theme';
+import { acrylicBlend, ageBases, AGE_RAMP, mixLab } from './theme';
 
 type Rgb = [number, number, number];
 const lum = (c: Rgb) => 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2];
@@ -63,5 +63,26 @@ describe('acrylicBlend', () => {
       expect(r).toBeCloseTo(g, 6);
       expect(g).toBeCloseTo(b, 6);
     }
+  });
+});
+
+describe('age colours', () => {
+  it('use the ramp as it is for five bands and spread it for other counts', () => {
+    expect(ageBases(5)).toEqual([...AGE_RAMP]);
+    expect(ageBases(3)).toEqual([AGE_RAMP[0], AGE_RAMP[2], AGE_RAMP[4]]);
+    for (let n = 2; n <= 7; n++) {
+      const b = ageBases(n);
+      expect(b).toHaveLength(n);
+      expect(b[0]).toBe(AGE_RAMP[0]);
+      expect(b[n - 1]).toBe(AGE_RAMP[AGE_RAMP.length - 1]);
+      expect(new Set(b).size).toBe(n);
+      for (const c of b) expect(c).toMatch(/^#[0-9a-f]{6}$/i);
+    }
+  });
+
+  it('blend in OKLab without drifting', () => {
+    expect(mixLab('#0063b1', '#0063b1', 0.5)).toBe('#0063b1');
+    expect(mixLab('#d13438', '#0063b1', 0)).toBe('#d13438');
+    expect(mixLab('#d13438', '#0063b1', 1)).toBe('#0063b1');
   });
 });

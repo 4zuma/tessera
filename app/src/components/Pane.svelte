@@ -1,7 +1,8 @@
 <script lang="ts">
   import { app } from '../lib/app.svelte';
   import { Flag } from '../lib/backend/codec';
-  import { fmtBytes, fmtDate, fmtPct } from '../lib/format';
+  import { AGE_EDGE_CHOICES, AGE_EDGES, AGE_UNKNOWN, bandTotals } from '../lib/age';
+  import { bandName, fmtBytes, fmtDate, fmtPct, fmtSpan } from '../lib/format';
   import { catName, t, tn, tParts } from '../lib/i18n.svelte';
   import Icon from './Icon.svelte';
 
@@ -15,6 +16,20 @@
     return t('kind.groupShort');
   });
   const legendTotal = $derived(app.legend.reduce((a, c) => a + c.bytes, 0) || 1);
+
+  // by age: one row per band, newest first, and the bytes whose date is not known
+  const bands = $derived(bandTotals(app.ageHist, app.ageEdges).map((bytes, i) => ({ i, bytes })));
+  const unknownBytes = $derived(app.ageHist[AGE_UNKNOWN] ?? 0);
+  const bandsTotal = $derived(bands.reduce((a, b) => a + b.bytes, 0) + unknownBytes || 1);
+  const MAX_EDGES = 6;
+  let editing = $state(false);
+  const isDefault = $derived(app.ageEdges.length === AGE_EDGES.length && app.ageEdges.every((e, i) => e === AGE_EDGES[i]));
+  function toggleEdge(d: number) {
+    const on = app.ageEdges.includes(d);
+    if (on && app.ageEdges.length === 1) return;
+    if (!on && app.ageEdges.length >= MAX_EDGES) return;
+    app.setAgeEdges(on ? app.ageEdges.filter(e => e !== d) : [...app.ageEdges, d]);
+  }
 </script>
 
 <aside class="pane">
@@ -93,8 +108,60 @@
   </section>
 
   <section class="card legend">
-    <h2>{t('pane.byType')}</h2>
-    {#if app.legend.length}
+    <div class="seg" role="radiogroup" aria-label={t('pane.colorBy')}>
+      <button role="radio" aria-checked={app.colorBy === 'type'} class:on={app.colorBy === 'type'} onclick={() => app.setColorBy('type')} title={t('pane.typeTip')}>{t('pane.byType')}</button>
+      <button role="radio" aria-checked={app.colorBy === 'age'} class:on={app.colorBy === 'age'} onclick={() => app.setColorBy('age')} title={t('pane.ageTip')}>{t('pane.byAge')}</button>
+    </div>
+    {#if app.colorBy === 'age'}
+      {#if app.ageHist.length}
+        <div class="stack" aria-hidden="true">
+          {#each bands as b (b.i)}
+            {#if b.bytes > 0}
+              <i style:flex-grow={b.bytes / bandsTotal} style:background={app.coloring.fill[b.i]} class:dim={app.filter != null && app.filter !== b.i}></i>
+            {/if}
+          {/each}
+          {#if unknownBytes > 0}
+            <i style:flex-grow={unknownBytes / bandsTotal} class="unk" class:dim={app.filter != null}></i>
+          {/if}
+        </div>
+        <div class="rows">
+          {#each bands as b (b.i)}
+            {@const name = bandName(b.i, app.ageEdges)}
+            <button class="lg" class:on={app.filter === b.i} class:zero={!b.bytes} aria-pressed={app.filter === b.i} onclick={() => app.setFilter(b.i)} title={t('pane.highlight', { cat: name })}>
+              <i class="sw" style:background={app.coloring.fill[b.i]}></i>
+              <span class="ln">{name}</span>
+              <span class="lv caption tabular">{fmtBytes(b.bytes)}</span>
+            </button>
+          {/each}
+          {#if unknownBytes > 0}
+            <div class="lg static">
+              <i class="sw unk"></i>
+              <span class="ln">{bandName(-1, app.ageEdges)}</span>
+              <span class="lv caption tabular">{fmtBytes(unknownBytes)}</span>
+            </div>
+          {/if}
+        </div>
+      {:else}
+        <div class="empty caption">{t('pane.afterScan')}</div>
+      {/if}
+      {#if editing}
+        <div class="edges">
+          <div class="caption hint">{t('pane.bandsHint')}</div>
+          <div class="chips">
+            {#each AGE_EDGE_CHOICES as d (d)}
+              {@const on = app.ageEdges.includes(d)}
+              <button class="chip caption" class:on aria-pressed={on} disabled={on ? app.ageEdges.length === 1 : app.ageEdges.length >= MAX_EDGES} onclick={() => toggleEdge(d)}>{fmtSpan(d)}</button>
+            {/each}
+          </div>
+          <div class="ea">
+            <button class="btn" disabled={isDefault} onclick={() => app.setAgeEdges(AGE_EDGES)}>{t('pane.bandsReset')}</button>
+            <button class="btn accent" onclick={() => (editing = false)}>{t('pane.bandsDone')}</button>
+          </div>
+        </div>
+      {:else}
+        <button class="link caption" onclick={() => (editing = true)}><Icon name="edit" size={14} />{t('pane.editBands')}</button>
+      {/if}
+    {:else if app.legend.length}
       <div class="stack" aria-hidden="true">
         {#each app.legend as c (c.cat)}
           <i style:flex-grow={c.bytes / legendTotal} style:background="var(--cat-{c.cat})" class:dim={app.filter != null && app.filter !== c.cat}></i>
@@ -269,9 +336,12 @@
     flex: none;
     margin-top: 1px;
   }
-  h2 {
-    font: 600 14px/20px var(--font);
-    margin: 0 0 10px;
+  .legend .seg {
+    display: flex;
+    margin-bottom: 12px;
+  }
+  .legend .seg button {
+    flex: 1;
   }
   .stack {
     display: flex;
@@ -320,5 +390,77 @@
   }
   .lv {
     color: var(--text-2);
+  }
+  .lg.zero .ln,
+  .lg.zero .lv {
+    color: var(--text-3);
+  }
+  .lg.static {
+    cursor: default;
+  }
+  .lg.static:hover {
+    background: none;
+  }
+  /* the date is not known: no colour, as such tiles are drawn */
+  .unk {
+    background: var(--tm-leafdir);
+    box-shadow: inset 0 0 0 1px var(--tm-leafdir-stroke);
+  }
+  .link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 8px -6px 0;
+    padding: 4px 6px;
+    border: 0;
+    border-radius: var(--r-ctl);
+    background: none;
+    color: var(--accent);
+  }
+  .link:hover {
+    background: var(--subtle-hover);
+  }
+  .edges {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--divider);
+  }
+  .hint {
+    color: var(--text-2);
+    margin-bottom: 8px;
+  }
+  .chips {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px;
+  }
+  .chip {
+    height: 28px;
+    padding: 0 6px;
+    border: 1px solid var(--ctl-stroke);
+    border-radius: var(--r-ctl);
+    background: var(--ctl);
+    color: var(--text);
+    white-space: nowrap;
+  }
+  .chip:hover:not(:disabled) {
+    background: var(--ctl-hover);
+  }
+  .chip.on {
+    background: var(--accent);
+    border-color: transparent;
+    color: var(--on-accent);
+  }
+  .chip.on:hover:not(:disabled) {
+    background: var(--accent-hover);
+  }
+  .chip:disabled:not(.on) {
+    color: var(--text-dis);
+  }
+  .ea {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 10px;
   }
 </style>

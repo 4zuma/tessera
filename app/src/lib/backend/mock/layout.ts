@@ -7,13 +7,14 @@ import { CAT_COUNT } from '../categories';
 import type { LayoutStyle, SizeMode } from '../types';
 import type { Drive, MNode } from './drive';
 import { shareOf } from './search';
+import { AGE_UNKNOWN, ageByte } from '../../age';
 
 interface Item {
   s: number;
   rk: number;
   n?: MNode;
   special?: 'free' | 'unscanned';
-  group?: { count: number; cat: number; hit: number };
+  group?: { count: number; cat: number; hit: number; age: number };
 }
 
 export interface LayoutInput {
@@ -134,6 +135,26 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
   const { drive, style: o, sizeMode } = inp;
   const hits = inp.hits ?? null;
   const hitOf = (n: MNode) => (hits ? hits[n.id] ?? 0 : 0);
+  // age bytes: a file's own, a folder's the size-weighted mean over what it holds
+  const ages = new Map<number, number>();
+  const ageOf = (n: MNode): number => {
+    if (!n.kids) return ageByte(n.age);
+    let a = ages.get(n.id);
+    if (a !== undefined) return a;
+    let sum = 0;
+    let w = 0;
+    for (const k of visibleKids(drive, n, sizeMode)) {
+      const b = ageOf(k);
+      const s = sizeOf(k, sizeMode);
+      if (b !== AGE_UNKNOWN && s > 0) {
+        sum += b * s;
+        w += s;
+      }
+    }
+    a = w > 0 ? Math.round(sum / w) : AGE_UNKNOWN;
+    ages.set(n.id, a);
+    return a;
+  };
   const hitPart = (n: MNode, s: number) => {
     const h = hitOf(n);
     return h === 255 ? s : (s * h) / 254;
@@ -178,6 +199,8 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     let rest = 0;
     let restN = 0;
     let restHit = 0;
+    let restAge = 0;
+    let restAgeW = 0;
     const votes = new Map<number, number>();
     const vote = (m: Map<number, number>, c: Item) => {
       const ct = c.n!.kids ? CAT_NONE : c.n!.cat;
@@ -191,6 +214,11 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
         rest += c.s;
         restN++;
         restHit += hitPart(c.n!, c.s);
+        const a = ageOf(c.n!);
+        if (a !== AGE_UNKNOWN) {
+          restAge += a * c.s;
+          restAgeW += c.s;
+        }
         vote(votes, c);
       }
     }
@@ -202,11 +230,18 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       let gs = rest;
       let gn = restN;
       let gh = restHit;
+      let ga = restAge;
+      let gw = restAgeW;
       const gv = new Map(votes);
       for (let i = cut; i < nodes.length; i++) {
         gs += nodes[i].s;
         gn++;
         gh += hitPart(nodes[i].n!, nodes[i].s);
+        const a = ageOf(nodes[i].n!);
+        if (a !== AGE_UNKNOWN) {
+          ga += a * nodes[i].s;
+          gw += nodes[i].s;
+        }
         vote(gv, nodes[i]);
       }
       const mid = nodes.slice(0, cut);
@@ -217,7 +252,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
         let best = CAT_NONE;
         let bb = -1;
         for (const [ct, v] of gv) if (ct !== CAT_NONE && v > bb) { bb = v; best = ct; }
-        grp = { s: gs, rk: gs, group: { count: gn, cat: best, hit: shareOf(gh, gs) } };
+        grp = { s: gs, rk: gs, group: { count: gn, cat: best, hit: shareOf(gh, gs), age: gw > 0 ? Math.round(ga / gw) : AGE_UNKNOWN } };
       }
       if (grp && !noGroup) {
         // with minSide the group takes its place by size, not the strip left at the end
@@ -257,7 +292,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       const rw = rw0 - 2 * g;
       const rh = rh0 - 2 * g;
       if (rw < 1 || rh < 1 || (sized && thin(rw0, rh0))) continue;
-      const base = { x: rx, y: ry, w: rw, h: rh, depth, parent: pid, count: 0, header: 0, hit: c.n ? hitOf(c.n) : (c.group?.hit ?? 0) };
+      const base = { x: rx, y: ry, w: rw, h: rh, depth, parent: pid, count: 0, header: 0, hit: c.n ? hitOf(c.n) : (c.group?.hit ?? 0), age: c.n ? ageOf(c.n) : (c.group?.age ?? AGE_UNKNOWN) };
       if (c.group) {
         const id = groupId(parent.id);
         out.push({ ...base, id, target: parent.id, count: c.group.count, size: c.s, name: '', kind: Kind.Group, cat: c.group.cat, flags: 0 });

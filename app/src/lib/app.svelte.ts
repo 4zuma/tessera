@@ -6,7 +6,9 @@ import { SvelteSet } from 'svelte/reactivity';
 import { createBackend } from './backend';
 import { decodeLayout, Flag, FREE, groupFolder, isGroupId, isNodeId, Kind, NONE, UNSCANNED, type Layout, type Rect } from './backend/codec';
 import type { Backend, CaptionState, CatStat, Crumb, Details, PlatformInfo, ScanProgress, SearchResult, SizeMode, Volume } from './backend/types';
-import { fmtBytes, fmtSecs } from './format';
+import { AGE_EDGES, ageBand } from './age';
+import { makeColoring, type ColorBy, type Coloring } from './coloring';
+import { bandName, fmtBytes, fmtSecs } from './format';
 import { catName, fmtNum, joinList, setLang, t, tn } from './i18n.svelte';
 import type { IconName } from './icons';
 import { applyThemeCss, makeTheme, type Scheme, type Theme } from './theme';
@@ -134,6 +136,12 @@ export class App implements EngineHost {
   rev = $state(0);
   bytesPerPx = $state(0);
   legend = $state<CatStat[]>([]);
+  /** what the tiles are coloured by */
+  colorBy = $state<ColorBy>('type');
+  /** where the age bands split, in days, oldest last */
+  ageEdges = $state.raw<readonly number[]>(AGE_EDGES);
+  /** bytes per age byte in the view: the legend by age */
+  ageHist = $state.raw<number[]>([]);
   details = $state<Details | null>(null);
   selInfo = $state<SelInfo>({ count: 0, bytes: 0, lockReason: null });
   toast = $state<ToastData | null>(null);
@@ -142,6 +150,7 @@ export class App implements EngineHost {
   tip = $state<TipData | null>(null);
   scheme = $state<Scheme>('light');
   theme = $state.raw<Theme>(makeTheme('light', null));
+  coloring = $state.raw<Coloring>(makeColoring('type', this.theme, AGE_EDGES));
   stats = $state<EngineStats>({ rects: 0, fps: 0, frameMs: 0, busy: false, gpu: false });
   showHud = $state(false);
   error = $state<string | null>(null);
@@ -220,7 +229,26 @@ export class App implements EngineHost {
     this.scheme = s;
     this.theme = makeTheme(s, this.platform?.accent ?? null);
     applyThemeCss(this.theme);
+    this.coloring = makeColoring(this.colorBy, this.theme, this.ageEdges);
     this.engine?.painter.reset();
+    this.engine?.kick();
+  }
+
+  /** colour the tiles by file type or by age; the legend follows */
+  setColorBy(by: ColorBy) {
+    if (by === this.colorBy) return;
+    this.colorBy = by;
+    this.filter = null;
+    this.coloring = makeColoring(by, this.theme, this.ageEdges);
+    this.refreshLegend(true);
+    this.engine?.kick();
+  }
+
+  /** move the age bands' edges (days, any order) */
+  setAgeEdges(edges: readonly number[]) {
+    this.ageEdges = [...new Set(edges)].sort((a, b) => a - b);
+    if (this.colorBy === 'age') this.filter = null;
+    this.coloring = makeColoring(this.colorBy, this.theme, this.ageEdges);
     this.engine?.kick();
   }
 
@@ -372,6 +400,7 @@ export class App implements EngineHost {
     this.view = 0;
     this.phase = 'map';
     this.legend = [];
+    this.ageHist = [];
     this.hits = false;
     this.search = { ...this.search, busy: false, result: null };
     this.nameCache.clear();
@@ -453,13 +482,18 @@ export class App implements EngineHost {
     this.up = n.up;
   }
 
-  /** legend by type: immediately on view changes, at most once a second while things change */
+  /** the legend (by type or by age): immediately on view changes, at most once a second while things change */
   refreshLegend(now: boolean) {
     const run = async () => {
       this.legendTimer = null;
       this.lastLegend = performance.now();
       if (!this.backend || !this.volume) return;
       const v = this.view;
+      if (this.colorBy === 'age') {
+        const h = await this.backend.ageStats(v, this.sizeMode);
+        if (v === this.view) this.ageHist = h;
+        return;
+      }
       const st = await this.backend.catStats(v, this.sizeMode);
       if (v === this.view) this.legend = st;
     };
@@ -529,8 +563,9 @@ export class App implements EngineHost {
     }
     const parent = r.parent !== NONE ? this.rectOf(r.parent) : null;
     const viewSize = this.viewTotal || null;
-    const mostly = r.kind === Kind.DirLeaf ? catName(r.cat) : undefined;
-    const kind = mostly
+    const byAge = this.colorBy === 'age';
+    const mostly = r.kind === Kind.DirLeaf && !byAge ? catName(r.cat) : undefined;
+    const what = mostly
       ? t('kind.folderMostly', { cat: mostly })
       : r.kind === Kind.Dir || r.kind === Kind.DirLeaf
         ? t('folder')
@@ -541,6 +576,8 @@ export class App implements EngineHost {
             : r.kind === Kind.Unscanned
               ? t('scanning')
               : (catName(r.cat) ?? t('file'));
+    // coloured by age, the tip names the band too: the colours alone don't say it
+    const kind = byAge && r.kind !== Kind.Free && r.kind !== Kind.Unscanned ? `${what} · ${bandName(ageBand(r.age, this.ageEdges), this.ageEdges)}` : what;
     const name =
       r.kind === Kind.Group ? tn('smallItems', r.count) : r.kind === Kind.Free ? t('free') : r.kind === Kind.Unscanned ? t('unscanned') : r.name || this.nameCache.get(id) || '';
     this.tip = { x, y, id, name, size: r.size, kind, share: parent ? r.size / Math.max(1, parent.size) : r.kind === Kind.Free ? null : viewSize ? r.size / viewSize : null };
@@ -674,8 +711,9 @@ export class App implements EngineHost {
     this.showToast('info', m === 'disk' ? t('toast.diskMode') : t('toast.logicalMode'));
   }
 
-  setFilter(cat: number | null) {
-    this.filter = this.filter === cat ? null : cat;
+  /** dim everything but one legend entry (a category or an age band); again to undo */
+  setFilter(key: number | null) {
+    this.filter = this.filter === key ? null : key;
     this.engine?.kick();
   }
 

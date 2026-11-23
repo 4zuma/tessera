@@ -19,7 +19,6 @@
  * on a WebGL canvas under this one) and paints only text and textures here.
  */
 import { Flag, Kind } from '../backend/codec';
-import { CAT_COUNT } from '../backend/categories';
 import { fmtBytes } from '../format';
 import { t as tr, tn } from '../i18n.svelte';
 import { rgba } from '../theme';
@@ -130,18 +129,25 @@ export class FluentPainter implements Painter {
     ctx.textBaseline = 'alphabetic';
     ctx.globalAlpha = 1;
 
-    // a closed folder is washed with the category that fills it most, lighter than any
-    // file, and keeps its outline and neutral ink so it never reads as a file
+    // a closed folder is washed with the category that fills it most (or its age band),
+    // lighter than any file, and keeps its outline and neutral ink so it never reads as a file
+    const tone = S.coloring;
+    const n = tone.fill.length;
     const leafFill = (it: Item) => {
-      const c = it.r.cat;
-      if (it.r.kind === Kind.DirLeaf) return c < CAT_COUNT ? th.tint[c] : t['tm-leafdir'];
-      return c < CAT_COUNT ? th.fill[c] : t['tm-leafdir'];
+      const c = tone.key(it.r);
+      const ok = c >= 0 && c < n;
+      if (it.r.kind === Kind.DirLeaf) return ok ? tone.tint[c] : t['tm-leafdir'];
+      return ok ? tone.fill[c] : t['tm-leafdir'];
     };
     const leafInk = (it: Item) => {
-      const c = it.r.cat;
-      return c < CAT_COUNT && it.r.kind !== Kind.DirLeaf ? th.ink[c] : t['tm-leafdir-ink'];
+      const c = tone.key(it.r);
+      return c >= 0 && c < n && it.r.kind !== Kind.DirLeaf ? tone.ink[c] : t['tm-leafdir-ink'];
     };
-    const outlined = (it: Item) => it.r.kind === Kind.DirLeaf || it.r.cat >= CAT_COUNT;
+    const outlined = (it: Item) => {
+      if (it.r.kind === Kind.DirLeaf) return true;
+      const c = tone.key(it.r);
+      return c < 0 || c >= n;
+    };
     const box = (it: Item) => snapBox(it, dpr);
 
     /* ---------- pass 1: open folders (containers), shallow to deep ---------- */

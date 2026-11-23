@@ -3,6 +3,7 @@
  * lives here; the UI only gets layout buffers and small JSON records, exactly as
  * with the real core (see docs/ipc.md).
  */
+import { ageByte } from '../../age';
 import { browserChoice, t } from '../../i18n.svelte';
 import { encodeLayout, FREE, groupFolder, isGroupId, UNSCANNED } from '../codec';
 import type {
@@ -325,6 +326,19 @@ export class MockBackend implements Backend {
     const v = this.node(view);
     if (v) walk(v);
     return [...acc].filter(([, b]) => b > 0).map(([cat, bytes]) => ({ cat, bytes })).sort((a, b) => b.bytes - a.bytes);
+  }
+
+  async ageStats(view: number, mode: SizeMode): Promise<number[]> {
+    const d = this.d;
+    const hist = new Array<number>(256).fill(0);
+    const walk = (n: MNode) => {
+      if (!n.seen) return;
+      if (n.kids) for (const k of n.kids) walk(d.nodes[k]);
+      else hist[ageByte(n.age)] += mode === 'disk' ? n.disk : n.logical;
+    };
+    const v = this.node(view);
+    if (v) walk(v);
+    return hist;
   }
 
   async recycle(ids: number[]): Promise<DeleteResult> {

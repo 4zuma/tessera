@@ -175,24 +175,82 @@ export function mix(a: string, b: string, t: number): string {
   const B = hexToRgb(b);
   return '#' + A.map((v, i) => Math.round(v + (B[i] - v) * t).toString(16).padStart(2, '0')).join('');
 }
+
+const toLin = (v: number) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+const toSrgb = (v: number) => (v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055);
+
+function toLab(h: string): [number, number, number] {
+  const [r, g, b] = hexToRgb(h).map(v => toLin(v / 255));
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  return [0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s, 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s, 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s];
+}
+
+function fromLab([L, A, B]: [number, number, number]): string {
+  const l = (L + 0.3963377774 * A + 0.2158037573 * B) ** 3;
+  const m = (L - 0.1055613458 * A - 0.0638541728 * B) ** 3;
+  const s = (L - 0.0894841775 * A - 1.291485548 * B) ** 3;
+  const rgb = [4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s, -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s];
+  return '#' + rgb.map(v => Math.round(Math.max(0, Math.min(1, toSrgb(v))) * 255).toString(16).padStart(2, '0')).join('');
+}
+
+/** `a` blended toward `b` by `t` in OKLab */
+export function mixLab(a: string, b: string, t: number): string {
+  const A = toLab(a);
+  const B = toLab(b);
+  return fromLab([A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t, A[2] + (B[2] - A[2]) * t]);
+}
+
 export function rgba(h: string, a: number): string {
   const [r, g, b] = hexToRgb(h);
   return `rgba(${r},${g},${b},${a})`;
+}
+
+/** a tile fill, its label ink and the wash of a closed folder, per base colour */
+export interface Tones {
+  fill: string[];
+  ink: string[];
+  tint: string[];
+}
+
+/** the painter's tones of some base colours: mixed toward the surface, as the categories are */
+export function tones(scheme: Scheme, bases: readonly string[]): Tones {
+  const fill: string[] = [];
+  const ink: string[] = [];
+  const tint: string[] = [];
+  for (const base of bases) {
+    fill.push(scheme === 'dark' ? mix(base, '#202020', 0.42) : mix(base, '#ffffff', 0.52));
+    ink.push(scheme === 'dark' ? mix(base, '#ffffff', 0.82) : mix(base, '#000000', 0.62));
+    tint.push(scheme === 'dark' ? mix(base, '#202020', 0.74) : mix(base, '#ffffff', 0.8));
+  }
+  return { fill, ink, tint };
+}
+
+/**
+ * Colour by age: newest warm, oldest cold (red, orange, gold, teal, blue from the Windows
+ * palette). Five bands take these as they are; other counts are spread over the same ramp.
+ */
+export const AGE_RAMP: readonly string[] = ['#D13438', '#CA5010', '#C19C00', '#038387', '#0063B1'];
+
+/** `n` base colours along {@link AGE_RAMP}, newest first (blended in OKLab, so no grey in between) */
+export function ageBases(n: number): string[] {
+  const k = AGE_RAMP.length - 1;
+  const out: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const p = n === 1 ? 0 : (i * k) / (n - 1);
+    const j = Math.min(k - 1, Math.floor(p));
+    const f = p - j;
+    out.push(f < 1e-6 ? AGE_RAMP[j] : f > 1 - 1e-6 ? AGE_RAMP[j + 1] : mixLab(AGE_RAMP[j], AGE_RAMP[j + 1], f));
+  }
+  return out;
 }
 
 export function makeTheme(scheme: Scheme, accent: { light: string; dark: string } | null): Theme {
   const tok: Tokens = { ...(scheme === 'dark' ? DARK : LIGHT) };
   if (accent) tok.accent = scheme === 'dark' ? accent.dark : accent.light;
   tok['tm-reveal'] = scheme === 'dark' ? 'rgba(255,255,255,0.7)' : rgba(tok.accent, 0.55);
-  const fill: string[] = [];
-  const ink: string[] = [];
-  const tint: string[] = [];
-  for (let c = 0; c < CAT_COUNT; c++) {
-    const base = CAT_BASE[c];
-    fill.push(scheme === 'dark' ? mix(base, '#202020', 0.42) : mix(base, '#ffffff', 0.52));
-    ink.push(scheme === 'dark' ? mix(base, '#ffffff', 0.82) : mix(base, '#000000', 0.62));
-    tint.push(scheme === 'dark' ? mix(base, '#202020', 0.74) : mix(base, '#ffffff', 0.8));
-  }
+  const { fill, ink, tint } = tones(scheme, CAT_BASE.slice(0, CAT_COUNT));
   return { scheme, tok, fill, ink, tint, acrylic: acrylicBlend(scheme) };
 }
 
