@@ -19,6 +19,15 @@ jobs:
           foreach ($line in Get-Content captest/runs.txt) {
             $tag, $run = $line -split '\s+'
             if (-not $run) { continue }
+            if ($run.Length -ge 7 -and $run -notmatch '^[0-9]+$') {
+              # a commit: wait for its app run to appear
+              for ($i = 0; $i -lt 60; $i++) {
+                $id = gh run list -R ${{ github.repository }} -w app.yml -c $run -e pull_request --json databaseId,status -q '[.[] | .databaseId][0]'
+                if ($id) { break }
+                Start-Sleep -Seconds 10
+              }
+              $run = $id
+            }
             Write-Host "=== $tag (run $run) ==="
             gh run watch $run -R ${{ github.repository }} -i 20 --exit-status | Select-Object -Last 3
             gh run download $run -R ${{ github.repository }} -n tessera-app-windows-x64 -D "exe-$tag"
