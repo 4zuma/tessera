@@ -36,8 +36,12 @@ export const Flag = {
 
 /** bits of a record's `note` byte */
 export const Note = {
-  /** its area is not in proportion to its size: a level's group (docs/ipc.md rule 9) */
+  /** its area is not in proportion to its size: a level's group or lone left-over item (docs/ipc.md rule 9) */
   NotToScale: 1,
+  /** a group holds files */
+  Files: 2,
+  /** a group holds folders */
+  Folders: 4,
 } as const;
 
 export const CAT_NONE = 255;

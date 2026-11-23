@@ -191,14 +191,24 @@ fn check_level(tree: &Tree, req: &LayoutRequest, d: &Decoded, extras: u64, hide:
         // only a level's own group, or the one item it leaves over alone,
         // is drawn out of scale
         assert!(
-            r.note == 0
-                || (r.note == note::NOT_TO_SCALE
-                    && r.kind != kind::FREE
+            r.note & note::NOT_TO_SCALE == 0
+                || (r.kind != kind::FREE
                     && r.kind != kind::UNSCANNED
                     && r.parent == ids::NONE
                     && hide.is_some()),
             "{r:?}"
         );
+        // a group says whether it holds files, folders or both; nothing else does
+        let holds = r.note & (note::FILES | note::FOLDERS);
+        assert_eq!(r.kind == kind::GROUP, holds != 0, "{r:?}");
+        assert_eq!(
+            r.note & !(note::NOT_TO_SCALE | note::FILES | note::FOLDERS),
+            0,
+            "{r:?}"
+        );
+        if r.kind == kind::GROUP && r.count == 1 {
+            assert_ne!(holds, note::FILES | note::FOLDERS, "{r:?}");
+        }
         match r.kind {
             kind::FILE | kind::DIR | kind::DIR_LEAF => {
                 assert!(r.id < ids::GROUP_BIT);
@@ -1695,6 +1705,47 @@ fn levels_keep_their_items() {
     assert!(dec.records.is_empty());
 }
 
+/// A group's note says what it holds, so the UI can call it small files,
+/// small folders, or both.
+#[test]
+fn a_group_says_whether_it_holds_files_or_folders() {
+    let mut t = Tree::new(b"R:\\");
+    let mixed = t.add_child(NodeId::ROOT, b"mixed", 0, 0, NodeFlags::DIR);
+    let files = t.add_child(NodeId::ROOT, b"files", 0, 0, NodeFlags::DIR);
+    let dirs = t.add_child(NodeId::ROOT, b"dirs", 0, 0, NodeFlags::DIR);
+    for d in [mixed, files, dirs] {
+        t.add_child(d, b"big", 10_000_000, 10_000_000, NodeFlags::NONE);
+    }
+    // 60 items too small for tiles of their own, together big enough for a group
+    for i in 0..60u64 {
+        let name = format!("small{i}");
+        let size = 10_000 + i;
+        t.add_child(files, name.as_bytes(), size, size, NodeFlags::NONE);
+        if i % 2 == 0 {
+            t.add_child(mixed, name.as_bytes(), size, size, NodeFlags::NONE);
+        } else {
+            let f = t.add_child(mixed, name.as_bytes(), 0, 0, NodeFlags::DIR);
+            t.add_child(f, b"f", size, size, NodeFlags::NONE);
+        }
+        let f = t.add_child(dirs, name.as_bytes(), 0, 0, NodeFlags::DIR);
+        t.add_child(f, b"f", size, size, NodeFlags::NONE);
+    }
+    for (d, holds) in [
+        (mixed, note::FILES | note::FOLDERS),
+        (files, note::FILES),
+        (dirs, note::FOLDERS),
+    ] {
+        let req = LayoutRequest::new(d, 800.0, 600.0);
+        let dec = lay(&t, &req);
+        let g = dec
+            .records
+            .iter()
+            .find(|r| r.kind == kind::GROUP)
+            .expect("a group");
+        assert_eq!((g.count, g.note), (60, holds), "{g:?}");
+    }
+}
+
 /// A level never shows a group of one: an item left over alone gets a tile
 /// of its own, drawn big enough to point at and marked not to scale.
 #[test]
@@ -1797,7 +1848,7 @@ fn a_tiny_group_in_a_level_is_still_drawn() {
         .iter()
         .find(|r| r.kind == kind::GROUP)
         .expect("a group");
-    assert_eq!((g.count, g.note), (3, note::NOT_TO_SCALE));
+    assert_eq!((g.count, g.note), (3, note::NOT_TO_SCALE | note::FILES));
     // opening it shows the three
     let mut hide = big.clone();
     hide.sort_unstable();

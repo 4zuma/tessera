@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { fmtBytes, fmtDate, fmtSecs } from './format';
-import { catName, DICTS, lang, locale, matchTag, resolve, setLang, t, tn, tParts } from './i18n.svelte';
+import { catName, DICTS, groupName, lang, locale, matchTag, resolve, setLang, t, tn, tParts } from './i18n.svelte';
 import { en, type Msg } from './locales/en';
+import { Note } from './backend/codec';
 
 afterEach(() => setLang('en', 'en-US'));
 
@@ -58,6 +59,20 @@ describe('dictionaries', () => {
     setLang('zh-CN');
     expect(tn('files', 1)).toBe('1 个文件');
     expect(tn('selected', 3, { size: '1.2 GB' })).toBe('已选 3 项 · 1.2 GB');
+  });
+
+  it('names a group by what it holds', () => {
+    const both = Note.Files | Note.Folders;
+    expect(groupName(1, Note.Files)).toBe('1 small file');
+    expect(groupName(723, Note.Files)).toBe('723 small files');
+    expect(groupName(3, Note.Folders | Note.NotToScale)).toBe('3 small folders');
+    expect(groupName(40, both)).toBe('40 small items');
+    // a record that does not say: both
+    expect(groupName(40)).toBe('40 small items');
+    setLang('zh-CN');
+    expect(groupName(723, Note.Files)).toBe('723 个小文件');
+    expect(groupName(3, Note.Folders)).toBe('3 个小文件夹');
+    expect(groupName(40, both)).toBe('40 个小项目');
   });
 
   it('splits text around values for markup', () => {

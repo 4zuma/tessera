@@ -180,7 +180,10 @@ record (56 bytes)
                       weighted by their bytes; 0 for pseudo tiles
  53  u8   note        bit0 NOT_TO_SCALE: its area is not in proportion to its size (a
                       level's GROUP or lone left-over item, rule 9); the UI
-                      draws it dashed
+                      draws it dashed. A GROUP also says what it holds, so the
+                      UI can name it (small files, small folders, or both):
+                      bit1 FILES (some of its items are files), bit2 FOLDERS
+                      (some are folders); 0 on other tiles
  54  u8[2] reserved   0
 ```
 

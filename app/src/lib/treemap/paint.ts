@@ -20,7 +20,7 @@
  */
 import { Flag, Kind, Note } from '../backend/codec';
 import { fmtBytes } from '../format';
-import { t as tr, tn } from '../i18n.svelte';
+import { groupName, t as tr } from '../i18n.svelte';
 import { rgba } from '../theme';
 import type { Box, Item, Painter, PaintState } from './engine';
 import { NONE, type BoxBatch, type RGBA } from './gpu';
@@ -300,7 +300,7 @@ export class FluentPainter implements Painter {
       const r = it.r;
       if (r.kind === Kind.Dir || r.kind === Kind.Free || r.kind === Kind.Unscanned || it.va < 0.25) continue;
       if (it.w < LABEL_MIN_W || it.h < 20) continue;
-      const name = r.kind === Kind.Group ? tn('smallItems', r.count) : r.name;
+      const name = r.kind === Kind.Group ? groupName(r.count, r.note) : r.name;
       if (!name) continue;
       const b = box(it);
       ctx.globalAlpha = it.va * (r.flags & Flag.Cloud ? 0.8 : 1);
