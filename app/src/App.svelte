@@ -65,7 +65,7 @@
   {:else if app.phase === 'pick'}
     <DrivePicker />
   {:else}
-    <CommandBar {paneOpen} canTogglePane={width >= 820} onTogglePane={togglePane} />
+    <CommandBar {paneOpen} canTogglePane={width >= 820} onTogglePane={togglePane} search={!titleBar} />
     <div class="main">
       <Stage />
       {#if paneOpen}

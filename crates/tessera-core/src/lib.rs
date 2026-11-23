@@ -8,6 +8,7 @@
 //! * [`delete`]: deletion to the recycle bin (or permanently) via `IFileOperation`.
 //! * [`layout`]: squarified treemap layout and the binary rectangle format
 //!   sent to the front end.
+//! * [`search`]: which nodes match a search, as one byte per node.
 //! * [`totals`]: file and folder counts and bytes per category below a
 //!   folder, cached across live changes.
 //!
@@ -20,6 +21,7 @@ mod error;
 pub mod layout;
 pub mod names;
 pub mod scan;
+pub mod search;
 pub mod totals;
 pub mod tree;
 pub mod watch;

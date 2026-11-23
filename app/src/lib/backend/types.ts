@@ -132,6 +132,17 @@ export interface CaptionState {
   pressed: boolean;
 }
 
+/** what a search found (see docs/ipc.md › search) */
+export interface SearchResult {
+  /** echoed in the header of layouts that show these hits */
+  id: number;
+  /** matching files and folders, not counting what is inside a matching folder */
+  count: number;
+  /** their bytes, in the size mode searched */
+  bytes: number;
+  ms: number;
+}
+
 export interface TreeChanged {
   rev: number;
   bytesDelta: number;
@@ -163,6 +174,14 @@ export interface Backend {
   /** Windows' own context menu for `ids` (one folder) at client point x, y; resolves when it closes */
   shellMenu(ids: number[], x: number, y: number, extended: boolean): Promise<ShellAction>;
   relaunchElevated(): Promise<void>;
+  /**
+   * runs the search box's query; layouts carry its hits from then on. null when a newer
+   * search or a clear came in meanwhile, or the query is empty (which clears). Rejects with a
+   * user-facing message for a query it can't read (">1XB").
+   */
+  search(query: string, sizeMode: SizeMode): Promise<SearchResult | null>;
+  /** stops a running search and drops the hits */
+  searchClear(): Promise<void>;
   /** the custom title bar's buttons */
   caption(action: 'min' | 'max' | 'close'): Promise<void>;
   /** where the maximize button is (CSS px, from the window's right edge) */

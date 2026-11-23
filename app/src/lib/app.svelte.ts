@@ -5,7 +5,7 @@
 import { SvelteSet } from 'svelte/reactivity';
 import { createBackend } from './backend';
 import { decodeLayout, Flag, FREE, groupFolder, isGroupId, isNodeId, Kind, NONE, UNSCANNED, type Layout, type Rect } from './backend/codec';
-import type { Backend, CaptionState, CatStat, Crumb, Details, PlatformInfo, ScanProgress, SizeMode, Volume } from './backend/types';
+import type { Backend, CaptionState, CatStat, Crumb, Details, PlatformInfo, ScanProgress, SearchResult, SizeMode, Volume } from './backend/types';
 import { fmtBytes, fmtSecs } from './format';
 import { catName, fmtNum, joinList, setLang, t, tn } from './i18n.svelte';
 import type { IconName } from './icons';
@@ -71,6 +71,17 @@ export interface ScanState {
   errors: number;
 }
 
+/** the search box */
+export interface SearchState {
+  text: string;
+  /** a search the user started is running (refreshes while things change don't count) */
+  busy: boolean;
+  /** what the last search found, kept while a newer one runs */
+  result: SearchResult | null;
+  /** why the query can't be read */
+  error: string | null;
+}
+
 /** what the selection card shows */
 export interface SelInfo {
   count: number;
@@ -80,6 +91,10 @@ export interface SelInfo {
 
 const PRIORITY: Record<MotionKind, number> = { instant: 0, update: 1, live: 2, scan: 2, delete: 4, mode: 5, morph: 5, zoom: 6 };
 const SCAN_LAYOUT_MS = 250;
+/** a search runs this long after the last key press (Enter runs it at once) */
+const SEARCH_TYPING_MS = 150;
+/** while a scan or the watcher changes the tree, the search runs again at most this often */
+const SEARCH_REFRESH_MS = 1500;
 
 let toastSeq = 0;
 
@@ -110,6 +125,11 @@ export class App implements EngineHost {
   readonly sel = new SvelteSet<number>();
   hoverId = $state<number | null>(null);
   filter = $state<number | null>(null);
+  search = $state<SearchState>({ text: '', busy: false, result: null, error: null });
+  /** the map shows the search's hits: what didn't match is dimmed */
+  hits = $state(false);
+  /** Ctrl+F counts up; the search box takes the focus */
+  searchFocus = $state(0);
   scan = $state<ScanState | null>(null);
   rev = $state(0);
   bytesPerPx = $state(0);
@@ -145,6 +165,9 @@ export class App implements EngineHost {
   private legendTimer: ReturnType<typeof setTimeout> | null = null;
   private lastLegend = 0;
   private detailsSeq = 0;
+  private searchSeq = 0;
+  private searchTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastSearch = 0;
   private selSeq = 0;
   private scanId = 0;
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -329,6 +352,9 @@ export class App implements EngineHost {
     if (selChanged) void this.refreshSel();
     if (this.hoverId != null && !ids.has(this.hoverId)) this.hover(null);
     if (L.rev !== this.rev) this.rev = L.rev;
+    // a layout asked for before the box was cleared can still carry the old hits
+    const hits = L.search !== 0 && this.searchOn;
+    if (hits !== this.hits) this.hits = hits;
     void this.refreshDetails();
   }
 
@@ -346,6 +372,8 @@ export class App implements EngineHost {
     this.view = 0;
     this.phase = 'map';
     this.legend = [];
+    this.hits = false;
+    this.search = { ...this.search, busy: false, result: null };
     this.nameCache.clear();
     this.engine?.items.clear();
     this.scan = { running: true, files: 0, dirs: 0, scanned: 0, used: vol ? vol.capacity - vol.free : 0, elapsedMs: 0, errors: 0 };
@@ -381,6 +409,7 @@ export class App implements EngineHost {
       this.scanLayoutTimer = null;
       this.requestLayout('scan');
       this.refreshLegend(true);
+      this.refreshSearch(true);
       void this.refreshVolumes();
       return;
     }
@@ -396,6 +425,7 @@ export class App implements EngineHost {
       }, wait);
     }
     this.refreshLegend(false);
+    this.refreshSearch(false);
   }
 
   private onTreeChanged(rev: number, bytesDelta: number) {
@@ -403,6 +433,7 @@ export class App implements EngineHost {
     if (this.volume && bytesDelta) this.volume = { ...this.volume, free: this.volume.free - bytesDelta };
     this.requestLayout('live');
     this.refreshLegend(false);
+    this.refreshSearch(false);
   }
 
   private async refreshVolumes() {
@@ -639,12 +670,107 @@ export class App implements EngineHost {
     this.sizeMode = m;
     this.requestLayout('mode');
     this.refreshLegend(true);
+    this.refreshSearch(true);
     this.showToast('info', m === 'disk' ? t('toast.diskMode') : t('toast.logicalMode'));
   }
 
   setFilter(cat: number | null) {
     this.filter = this.filter === cat ? null : cat;
     this.engine?.kick();
+  }
+
+  /* ------------------------------------------------------------------ search */
+
+  /** a query is in the box and can be read */
+  get searchOn(): boolean {
+    return this.search.text.trim() !== '' && !this.search.error;
+  }
+
+  /** the box's text changed: search once typing pauses */
+  setSearch(text: string) {
+    this.search.text = text;
+    if (this.searchTimer) clearTimeout(this.searchTimer);
+    this.searchTimer = null;
+    if (!text.trim()) {
+      void this.dropSearch();
+      return;
+    }
+    this.searchTimer = setTimeout(() => {
+      this.searchTimer = null;
+      void this.runSearch(true);
+    }, SEARCH_TYPING_MS);
+  }
+
+  /** Enter: search now */
+  searchNow() {
+    if (this.searchTimer) clearTimeout(this.searchTimer);
+    this.searchTimer = null;
+    if (this.search.text.trim()) void this.runSearch(true);
+  }
+
+  /** empties the box; the whole map is bright again */
+  clearSearch() {
+    if (this.searchTimer) clearTimeout(this.searchTimer);
+    this.searchTimer = null;
+    this.search.text = '';
+    void this.dropSearch();
+  }
+
+  /** the tree or the size mode changed: the hits change with it (`now`, or at most every 1.5 s) */
+  private refreshSearch(now: boolean) {
+    if (!this.searchOn || this.searchTimer) return;
+    if (now) {
+      void this.runSearch(false);
+      return;
+    }
+    const wait = SEARCH_REFRESH_MS - (performance.now() - this.lastSearch);
+    if (wait <= 0) void this.runSearch(false);
+    else
+      this.searchTimer = setTimeout(() => {
+        this.searchTimer = null;
+        void this.runSearch(false);
+      }, wait);
+  }
+
+  private async runSearch(typed: boolean) {
+    const b = this.backend;
+    const text = this.search.text;
+    if (!b || !this.volume || !text.trim()) return;
+    const seq = ++this.searchSeq;
+    this.lastSearch = performance.now();
+    if (typed) this.search.busy = true;
+    let res: SearchResult | null;
+    try {
+      res = await b.search(text, this.sizeMode);
+    } catch (err) {
+      if (seq !== this.searchSeq) return;
+      this.search.busy = false;
+      this.search.result = null;
+      this.search.error = String(err instanceof Error ? err.message : err);
+      this.hits = false;
+      this.engine?.kick();
+      void b.searchClear();
+      return;
+    }
+    // a newer search or a clear came in meanwhile
+    if (seq !== this.searchSeq || !res) return;
+    this.search.busy = false;
+    this.search.result = res;
+    this.search.error = null;
+    this.requestLayout('update');
+  }
+
+  private async dropSearch() {
+    this.searchSeq++;
+    this.search.busy = false;
+    this.search.result = null;
+    this.search.error = null;
+    if (this.hits) {
+      this.hits = false;
+      this.engine?.kick();
+    }
+    await this.backend?.searchClear();
+    this.requestLayout('update');
   }
 
   /* ------------------------------------------------------------------ deleting */
@@ -675,6 +801,7 @@ export class App implements EngineHost {
       this.undoToken = res.undo;
       this.requestLayout('delete', { reflow: true });
       this.refreshLegend(true);
+      this.refreshSearch(true);
       const what = res.ok.length > 1 ? tn('items', res.ok.length) : names[ids.indexOf(res.ok[0])] || tn('items', 1);
       const actions: ToastAction[] = [];
       if (res.undo != null) actions.push({ label: t('toast.undo'), icon: 'undo', run: () => void this.undo() });
@@ -691,6 +818,7 @@ export class App implements EngineHost {
     const res = await this.backend.restore(tok);
     this.requestLayout('delete', { reflow: true });
     this.refreshLegend(true);
+    this.refreshSearch(true);
     for (const id of res.ok) this.sel.add(id);
     void this.refreshSel();
     this.showToast('info', t('toast.undone'));
@@ -721,6 +849,7 @@ export class App implements EngineHost {
     this.undoToken = null;
     this.requestLayout('delete', { reflow: true });
     this.refreshLegend(true);
+    this.refreshSearch(true);
     if (this.volume) this.volume = { ...this.volume, free: this.volume.free + res.bytes };
     if (res.ok.length) this.showToast('success', t('toast.freeNow', { size: fmtBytes(this.volume?.free ?? 0) }), [], t('toast.purged', { size: fmtBytes(res.bytes) }));
     if (res.failed.length) this.showToast('error', this.failedLines(res.failed).join('\n'), [], t('toast.notDeleted'));
@@ -744,6 +873,7 @@ export class App implements EngineHost {
     this.undoToken = null;
     this.requestLayout('delete', { reflow: true });
     this.refreshLegend(true);
+    this.refreshSearch(true);
     this.volume = { ...this.volume, free: this.volume.free + res.bytes };
     if (!res.failed.length) {
       this.showToast('success', t('toast.freeNow', { size: fmtBytes(this.volume.free) }), [], t('toast.binEmptied', { size: fmtBytes(res.bytes) }));
@@ -940,6 +1070,9 @@ export class App implements EngineHost {
   /* ------------------------------------------------------------------ keyboard */
 
   onKey(e: KeyboardEvent) {
+    const ctrlF = (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f';
+    // never the WebView's own find bar
+    if (ctrlF) e.preventDefault();
     if (this.phase !== 'map') return;
     const typing = e.target instanceof HTMLElement && e.target.matches('input, textarea, select');
     if (this.confirm) {
@@ -954,6 +1087,10 @@ export class App implements EngineHost {
         e.preventDefault();
         this.menu = null;
       }
+      return;
+    }
+    if (ctrlF) {
+      this.searchFocus++;
       return;
     }
     if (typing) return;

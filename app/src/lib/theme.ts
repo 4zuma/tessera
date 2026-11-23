@@ -20,6 +20,8 @@ const LIGHT = {
   'ctl-stroke': 'rgba(0,0,0,0.0578)',
   'ctl-stroke-2': 'rgba(0,0,0,0.1622)',
   'ctl-strong': 'rgba(0,0,0,0.4458)',
+  // ControlFillColorInputActive: a text box that has the focus
+  'ctl-input-active': '#ffffff',
   // ControlAltFillColorSecondary: the sunken track of a segmented control or toggle
   'ctl-alt': 'rgba(0,0,0,0.0241)',
   'subtle-hover': 'rgba(0,0,0,0.0373)',
@@ -74,6 +76,7 @@ const DARK: Tokens = {
   'ctl-stroke': 'rgba(255,255,255,0.0698)',
   'ctl-stroke-2': 'rgba(255,255,255,0.093)',
   'ctl-strong': 'rgba(255,255,255,0.5442)',
+  'ctl-input-active': 'rgba(30,30,30,0.7)',
   'ctl-alt': 'rgba(0,0,0,0.1)',
   'subtle-hover': 'rgba(255,255,255,0.0605)',
   'subtle-press': 'rgba(255,255,255,0.0419)',

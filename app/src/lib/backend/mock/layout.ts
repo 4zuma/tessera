@@ -6,13 +6,14 @@ import { CAT_NONE, FREE, Flag, Kind, NONE, UNSCANNED, groupId, type Rect } from 
 import { CAT_COUNT } from '../categories';
 import type { LayoutStyle, SizeMode } from '../types';
 import type { Drive, MNode } from './drive';
+import { shareOf } from './search';
 
 interface Item {
   s: number;
   rk: number;
   n?: MNode;
   special?: 'free' | 'unscanned';
-  group?: { count: number; cat: number };
+  group?: { count: number; cat: number; hit: number };
 }
 
 export interface LayoutInput {
@@ -25,6 +26,8 @@ export interface LayoutInput {
   /** pseudo tiles at the volume root */
   free: number | null;
   unscanned: number | null;
+  /** a search's share per node (see ./search), for the records' `hit` */
+  hits?: Uint8Array | null;
 }
 
 export const sizeOf = (n: MNode, mode: SizeMode) => (mode === 'disk' ? n.dT : n.dL);
@@ -129,6 +132,12 @@ function rank(c: Item): number {
 
 export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: number } {
   const { drive, style: o, sizeMode } = inp;
+  const hits = inp.hits ?? null;
+  const hitOf = (n: MNode) => (hits ? hits[n.id] ?? 0 : 0);
+  const hitPart = (n: MNode, s: number) => {
+    const h = hitOf(n);
+    return h === 255 ? s : (s * h) / 254;
+  };
   const N = drive.nodes;
   const view = N[inp.view];
   const out: Rect[] = [];
@@ -155,12 +164,14 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     const list: Item[] = [];
     let rest = 0;
     let restN = 0;
+    let restHit = 0;
     const votes = new Map<number, number>();
     for (const c of items) {
       if (c.special || (c.s * k >= o.minArea && list.length < o.maxPerDir)) list.push(c);
       else {
         rest += c.s;
         restN++;
+        restHit += hitPart(c.n!, c.s);
         const ct = c.n!.kids ? CAT_NONE : c.n!.cat;
         votes.set(ct, (votes.get(ct) || 0) + c.s);
       }
@@ -169,7 +180,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       let best = CAT_NONE;
       let bb = -1;
       for (const [ct, v] of votes) if (ct !== CAT_NONE && v > bb) { bb = v; best = ct; }
-      list.push({ s: rest, rk: 0, group: { count: restN, cat: best } });
+      list.push({ s: rest, rk: 0, group: { count: restN, cat: best, hit: shareOf(restHit, rest) } });
     }
     const rs: [Item, number, number, number, number][] = [];
     squarify(list, x, y, w, h, rs);
@@ -181,7 +192,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       const rw = rw0 - 2 * g;
       const rh = rh0 - 2 * g;
       if (rw < 1 || rh < 1) continue;
-      const base = { x: rx, y: ry, w: rw, h: rh, depth, parent: pid, count: 0, header: 0 };
+      const base = { x: rx, y: ry, w: rw, h: rh, depth, parent: pid, count: 0, header: 0, hit: c.n ? hitOf(c.n) : (c.group?.hit ?? 0) };
       if (c.group) {
         const id = groupId(parent.id);
         out.push({ ...base, id, target: parent.id, count: c.group.count, size: c.s, name: '', kind: Kind.Group, cat: c.group.cat, flags: 0 });

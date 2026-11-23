@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State, ipc::Response};
 use tessera_core::layout::{self, LayoutEngine, LayoutRequest, LayoutStyle, RootExtras, SizeMode};
 use tessera_core::scan::{self, ScanOptions, ScanProgress};
+use tessera_core::search::{self, Hits, Query, QueryError};
 use tessera_core::totals::{Totals, TotalsCache};
 use tessera_core::watch::{BatchReport, WatchOptions, Watcher};
 use tessera_core::{NodeFlags, NodeId, SharedTree, Tree, category, delete};
@@ -139,6 +140,11 @@ struct Session {
     shown: Mutex<Shown>,
     /// Changes came in while the window was minimized; tell it on restore.
     stale: AtomicBool,
+    /// What the search box found, drawn into every layout while it is set.
+    hits: Mutex<Option<Arc<Hits>>>,
+    /// Bumped by every search and every clear; a search still running
+    /// stops when it changes, and its id is the value it started with.
+    search_seq: AtomicU32,
 }
 
 /// The last layout sent to the window, and how much changed since it (or
@@ -176,6 +182,8 @@ impl Session {
             totals: Mutex::new(TotalsCache::new()),
             shown: Mutex::new(Shown::default()),
             stale: AtomicBool::new(false),
+            hits: Mutex::new(None),
+            search_seq: AtomicU32::new(0),
         }
     }
 
@@ -285,7 +293,14 @@ impl Session {
             return false;
         }
         let extras = self.extras(&t, &req);
-        let buf = lock(&core.engine).layout(&t, &req, extras, self.rev.load(Relaxed));
+        let hits = lock(&self.hits).clone();
+        let buf = lock(&core.engine).layout_with(
+            &t,
+            &req,
+            extras,
+            self.rev.load(Relaxed),
+            hits.as_deref(),
+        );
         drop(t);
         let mut g = lock(&self.shown);
         if g.req == Some(req) && layout::same_picture(&g.buf, &buf, REDRAW_TOLERANCE_PX) {
@@ -681,11 +696,85 @@ pub async fn layout(core: State<'_, Core>, req: LayoutReq) -> Result<Response, S
     req.view = live_view(&t, req.view);
     let extras = s.extras(&t, &req);
     let rev = s.rev.load(Relaxed);
-    let buf = lock(&core.engine).layout(&t, &req, extras, rev);
+    let hits = lock(&s.hits).clone();
+    let buf = lock(&core.engine).layout_with(&t, &req, extras, rev, hits.as_deref());
     let changes = t.changed_bytes();
     drop(t);
     s.record_shown(req, &buf, changes);
     Ok(Response::new(buf))
+}
+
+// ---------------------------------------------------------------------------
+// Search
+
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResult {
+    /// Echoed in the header of layouts that show these hits.
+    id: u32,
+    /// Matching files and folders (what is in a matching folder not counted).
+    count: u64,
+    /// Their bytes, in the size mode searched.
+    bytes: u64,
+    ms: u32,
+}
+
+/// Runs the search box's query over the tree, on a worker thread. From now
+/// on layouts carry its hits. `None` when a newer search or a clear came in
+/// meanwhile (the window ignores it). An empty query clears the search.
+#[tauri::command]
+pub async fn search(
+    core: State<'_, Core>,
+    query: String,
+    size_mode: Mode,
+) -> Result<Option<SearchResult>, String> {
+    let s = core.current()?;
+    let q = match Query::parse(&query) {
+        Ok(Some(q)) => q,
+        Ok(None) => {
+            clear_search(&s);
+            return Ok(None);
+        }
+        Err(QueryError::BadSize(w)) => return Err(text::BAD_SIZE.get().replace("{}", &w)),
+    };
+    let id = s.search_seq.fetch_add(1, Relaxed).wrapping_add(1);
+    tauri::async_runtime::spawn_blocking(move || run_search(&s, &q, size_mode.into(), id))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn run_search(s: &Session, q: &Query, mode: SizeMode, id: u32) -> Option<SearchResult> {
+    let started = Instant::now();
+    let hits = {
+        let t = s.tree();
+        search::search(&t, q, mode, id, &|| s.search_seq.load(Relaxed) != id)?
+    };
+    let res = SearchResult {
+        id,
+        count: hits.count,
+        bytes: hits.bytes,
+        ms: started.elapsed().as_millis().min(u32::MAX as u128) as u32,
+    };
+    let mut g = lock(&s.hits);
+    // a clear or a newer search may have come in after the last look
+    if s.search_seq.load(Relaxed) != id {
+        return None;
+    }
+    *g = Some(Arc::new(hits));
+    Some(res)
+}
+
+fn clear_search(s: &Session) {
+    s.search_seq.fetch_add(1, Relaxed);
+    *lock(&s.hits) = None;
+}
+
+/// Closes the search: stops one that runs and frees its hits.
+#[tauri::command]
+pub fn search_clear(core: State<'_, Core>) {
+    if let Ok(s) = core.current() {
+        clear_search(&s);
+    }
 }
 
 /// The folder to show for a requested view: itself, or its nearest live
@@ -1279,6 +1368,32 @@ mod tests {
         // Users holds only "me", so it is folded away (rule 4)
         assert_eq!(names, ["C:", "me", "Docs"]);
         assert_eq!(n.up, Some(id_of(&s, &[b"Users", b"me"]).0));
+    }
+
+    #[test]
+    fn search_hits_reach_the_layout_until_cleared() {
+        let s = sample();
+        let q = Query::parse(".mp4 .pdf").unwrap().unwrap();
+        let id = s.search_seq.fetch_add(1, Relaxed) + 1;
+        let r = run_search(&s, &q, SizeMode::Disk, id).unwrap();
+        assert_eq!((r.id, r.count, r.bytes), (id, 2, 4096 * 100 + 8192));
+        let req = LayoutRequest::new(NodeId::ROOT, 800.0, 600.0);
+        let draw = |s: &Session| {
+            let hits = lock(&s.hits).clone();
+            let t = s.tree();
+            let buf =
+                LayoutEngine::new().layout_with(&t, &req, s.extras(&t, &req), 1, hits.as_deref());
+            layout::decode(&buf).unwrap()
+        };
+        let d = draw(&s);
+        assert_eq!(d.search, id);
+        let mp4 = id_of(&s, &[b"Users", b"me", b"a.mp4"]);
+        assert!(d.records.iter().any(|r| r.id == mp4.0 && r.hit == 255));
+        // a newer search wins over one that finishes late
+        let stale = s.search_seq.load(Relaxed);
+        clear_search(&s);
+        assert!(run_search(&s, &q, SizeMode::Disk, stale).is_none());
+        assert_eq!(draw(&s).search, 0);
     }
 
     #[test]

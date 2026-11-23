@@ -15,6 +15,7 @@ import type {
   NavInfo,
   PlatformInfo,
   ScanStarted,
+  SearchResult,
   ShellAction,
   SizeMode,
   Unlisten,
@@ -65,6 +66,12 @@ export class TauriBackend implements Backend {
   }
   relaunchElevated() {
     return invoke<void>('relaunch_elevated');
+  }
+  search(query: string, sizeMode: SizeMode) {
+    return invoke<SearchResult | null>('search', { query, sizeMode });
+  }
+  searchClear() {
+    return invoke<void>('search_clear');
   }
   caption(action: 'min' | 'max' | 'close') {
     return invoke<void>('caption', { action });

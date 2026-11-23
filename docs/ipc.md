@@ -30,6 +30,8 @@ All sizes are bytes. All ids are `u32` node indices into the core's arena unless
 | `reveal` | `{ id: u32 }` | `()` – `explorer.exe /select,"<path>"` |
 | `shell_menu` | `{ ids: u32[], x: f64, y: f64, extended: bool }` | `"none" \| "invoked" \| "recycle" \| "purge"` – Windows' classic context menu for `ids` (all in one folder, else an error) at client point `x`, `y` (CSS px), with Explorer's Shift-only verbs if `extended`; resolves when the menu closes. "Delete" is not run by the shell: `"recycle"` (`"purge"` with Shift held) tells the UI to delete through `recycle` / `purge` itself |
 | `relaunch_elevated` | – | `()` – restarts with `runas`, keeps the window position |
+| `search` | `{ query: string, sizeMode }` | `{ id: u32, count: u64, bytes: u64, ms: u32 } \| null` – runs the search box's query (see [Search](#search)) on a worker thread; from then on every layout carries its hits, with `id` in the header. `count` and `bytes` are the matches (a matching folder counts once, not what is in it). `null` when the query is empty (which clears the search) or a newer `search` / `search_clear` came in meanwhile. Rejects with a user-facing message for a query it can't read (`>1XB`); the hits stay as they were |
+| `search_clear` | – | `()` – stops a running search and drops the hits |
 | `caption` | `{ action: "min" \| "max" \| "close" }` | `()` – the custom title bar's buttons (`"max"` maximizes or restores) |
 | `caption_button` | `{ right, top, width, height: f64 }` | `()` – where the custom title bar's maximize button is, in CSS px (`right` = distance from the window's right edge), so Windows 11 can open its snap layouts there |
 | `caption_state` | – | `CaptionState` |
@@ -120,19 +122,21 @@ last event.
 
 ## Layout buffer
 
-Little-endian. A 32-byte header, `count` records of 52 bytes, then the UTF-8 name pool.
+Little-endian. A 36-byte header, `count` records of 52 bytes, then the UTF-8 name pool.
+Readers take the header and record sizes from the header, so fields can be added at the end.
 
 ```
-header (32 bytes)
+header (36 bytes)
   0  u32  magic       0x4C525354 ("TSRL")
   4  u16  version     1
-  6  u16  headerSize  32
+  6  u16  headerSize  36
   8  u32  count       number of records
  12  u32  recordSize  52
  16  u32  namesLen    bytes in the name pool
  20  u32  view        echo of the request
  24  u32  rev         tree revision this layout was computed from
  28  f32  bytesPerPx  bytes represented by one px² at this view
+ 32  u32  search      id of the search whose hits are in `hit`, 0 = no search
 
 record (52 bytes)
   0  u32  id          node id, or a special id (below)
@@ -157,7 +161,9 @@ record (52 bytes)
  49  u8   flags       bit0 PROTECTED, bit1 NO_ACCESS, bit2 IN_USE, bit3 CLOUD,
                       bit4 HARDLINK, bit5 RECYCLE_BIN, bit6 REPARSE, bit7 SCANNING
  50  u8   header      header band height in px, 0 = none
- 51  u8   reserved
+ 51  u8   hit         what the search found in it, 0 when there is no search: 255 = all
+                      of it (a match, or inside a matching folder), 0 = nothing, else
+                      1..254 = that share of its bytes (folders and groups)
 ```
 
 Records are in paint order: a folder always comes before its children.
@@ -200,3 +206,30 @@ These are what make the map calm while it changes, and they were tuned in the pr
    caches it per folder and walks the folder again only when its size moved by over 1/8.
 7. At the volume root, two pseudo children are added: UNSCANNED (`used - scanned`, while
    scanning and above 64 MiB) ranked first, and FREE (the volume's free bytes) ranked last.
+8. With a search set, every record's `hit` says how much of it the search found. A GROUP
+   gets the share of the merged items' bytes that matched, so it stays findable when a
+   match is too small for its own tile.
+
+## Search
+
+The search box's query, parsed by `crates/tessera-core/src/search.rs` (the mock repeats it
+in `app/src/lib/backend/mock/search.ts`). Words are separated by spaces and all must hold:
+
+| Word | Matches |
+| --- | --- |
+| `report` | a file or folder whose name contains it, ignoring case as Windows does |
+| `"tax 2024"` | the same, with spaces in it |
+| `.iso`, `*.iso` | files ending in `.iso`; with several extension words, any of them |
+| `>1GB`, `>=1.5g`, `<500MB`, `<=4k` | a size bound in the searched size mode; binary units (`k` = 1024), `b k kb kib m mb mib g gb gib t tb tib`, any case, decimals allowed. A word that starts with `<` or `>` and is not a size rejects the query |
+
+A folder matches only through name words, and not when the query has an extension word
+(`.iso` finds files only). Everything inside a matching folder counts as found and is lit,
+but only the folder is counted. Deleted nodes and nodes that are not attached yet are
+skipped. A search over 3.3 M nodes takes about 70 ms on 4 cores: one parallel pass marks
+the matches (a node's name is folded once per distinct name), a second pass walks the tree
+for the folder shares, the count, and the bytes. The hits hold one byte per node.
+
+The UI searches 150 ms after the last key press (Enter: at once), and again when the size
+mode changes, after a delete or an undo, when a scan ends, and at most every 1.5 s while a
+scan or the watcher changes the tree. What the search did not find is dimmed; a folder or
+group that holds some matches is dimmed less the more of it matched.

@@ -912,6 +912,15 @@ impl Tree {
         self.names.get(n.name_off, n.name_len)
     }
 
+    /// Where the node's name is stored (offset and stored length in the
+    /// name pool). Nodes with the same key have the same name; while a scan
+    /// runs, identical names share one key.
+    #[inline]
+    pub(crate) fn name_key(&self, id: NodeId) -> (u32, u16) {
+        let n = self.slot(id);
+        (n.name_off, n.name_len)
+    }
+
     /// The node's own name for display.
     pub fn name_lossy(&self, id: NodeId) -> String {
         wtf8::to_string_lossy(&self.name(id))

@@ -77,6 +77,8 @@ pub fn run() {
             backend::empty_recycle_bin,
             backend::reveal,
             backend::shell_menu,
+            backend::search,
+            backend::search_clear,
             titlebar::caption,
             titlebar::caption_button,
             titlebar::caption_state,

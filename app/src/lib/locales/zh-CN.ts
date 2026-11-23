@@ -76,6 +76,14 @@ export const zhCN: Partial<Dict> = {
   'cmd.showPane': '显示详情栏',
   'cmd.hidePane': '隐藏详情栏',
 
+  /* 搜索框（Ctrl+F） */
+  'search.placeholder': '在 {drive} 中搜索',
+  'search.label': '搜索文件和文件夹',
+  'search.tip': 'Ctrl+F。名称须包含所有词。.mp4 或 *.mp4 按文件类型找（写多个时满足其一即可），>1GB 或 <500MB 按大小找。含空格的词用引号括起来。',
+  'search.clear': '清除搜索',
+  'search.found': '{items} · {size}',
+  'search.none': '没有找到',
+
   'pane.contains': '包含',
   'pane.modified': '修改时间',
   'pane.folderLocked': '这个文件夹不能删除',
@@ -172,6 +180,7 @@ export const zhCN: Partial<Dict> = {
   'core.personal': '这是你的个人文件夹，Windows 和应用要用到它。',
   'core.temp': 'Windows 和应用把临时文件放在这个文件夹里。',
   'core.noItem': '项目不存在',
+  'core.badSize': '“{word}”不是大小，可以写成 >1GB 或 <500MB',
   'mock.dataLabel': '数据',
   'mock.systemFolder': '系统目录，受保护',
   'mock.cloud': 'OneDrive 仅在线文件：实际大小很大，但几乎不占磁盘',
