@@ -20,6 +20,7 @@ jobs:
             $tag, $run = $line -split '\s+'
             if (-not $run) { continue }
             Write-Host "=== $tag (run $run) ==="
+            gh run watch $run -R ${{ github.repository }} -i 20 --exit-status | Select-Object -Last 3
             gh run download $run -R ${{ github.repository }} -n tessera-app-windows-x64 -D "exe-$tag"
             ./captest/captest.ps1 -Exe "exe-$tag/tessera-app.exe" -Tag $tag
           }
