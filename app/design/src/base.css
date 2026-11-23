@@ -26,3 +26,10 @@ body {
 .tessera-host[data-frame='desk'] {
   background: var(--solid-base);
 }
+
+/* The browser preview's own extras (the "Preview · sample data" chip, "Simulate download",
+   "Performance") are not part of the app on Windows: a design shows the window as users see it. */
+.tessera-host .tb:not(.native) .l > .chip,
+.tessera-host .tb:not(.native) .r > .sbtn {
+  display: none;
+}

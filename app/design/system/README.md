@@ -13,7 +13,7 @@ Tessera is a disk-space map for Windows: one window, a treemap of a drive, a det
 
 **Surfaces.** The window sits on Mica (`mica-a` → `mica-b` stands in for it in a browser; Windows 10 and "Transparency effects off" get `solid-base`). Regions of the window are `card` fills with a `card-stroke` border and `r-card` corners. Transient surfaces (context menu, flyouts, tooltip, toast) are acrylic: the `.acrylic` class blurs the backdrop by 30 px, blends it with `acrylic` and adds 2% noise; `acrylic-solid` is its fallback. Dialogs use `dlg-top` over `solid-base`, a `dlg-stroke` border, `shadow-dialog`, and `smoke` dims the window behind them.
 
-**Colour.** Neutral first. The only hue in the chrome is `accent` (the user's Windows accent; the tokens hold the default blue) for the one main action, the focus pill under a chosen segment, and selection. `critical` is only for permanent deletion (`btn danger`, the menu's "Delete permanently"). `caution` marks admin hints and locked items. Text is `text` on every surface, `text-2` for secondary facts (sizes, paths), `text-3` for hints, `text-dis` when disabled. Colour in the map comes from file categories: `cat-0`…`cat-11` fill tiles, `cat-N-ink` labels them.
+**Colour.** Neutral first. The only hue in the chrome is `accent` (the user's Windows accent; the tokens hold the default blue) for the one main action, the focus pill under a chosen segment, and selection. `critical` is only for permanent deletion (`btn danger`, the menu's "Delete permanently"). `caution` marks admin hints and locked items. Text is `text` on every surface, `text-2` for secondary facts (sizes, paths), `text-3` for hints, `text-dis` when disabled. Colour in the map comes from file categories: `cat-0`…`cat-11` fill tiles, `cat-N-ink` labels them. Coloured by age instead (the pane's switch), tiles run from `age-new` (red, changed this week) to `age-old` (blue, over three years): `age-0`…`age-4` with `age-N-ink`, blended in OKLCH so the middle stays vivid.
 
 **Type.** Segoe UI Variable (Text for UI, Display at 20 px and up), falling back to Segoe UI and Microsoft YaHei UI for Chinese. The ramp is Fluent's: `type-caption` 12/16, `type-body` 14/20, `type-body-strong` 14/20 semibold, `type-subtitle` 20/28 and `type-title` 28/36 semibold in Display. The treemap draws its labels at 12/16 (`type-tile-label`, `type-tile-label-strong` for folder titles). Segoe UI Variable is Windows' own font and ships with Windows only: on other systems previews fall back to the next face in the stack.
 
@@ -34,14 +34,14 @@ The map is the app; everything else serves it. Rules the painter and the layout 
 - Area is size. A tile never changes geometry on hover or selection.
 - A folder opens (gets a title band and shows its children) only when it is wide enough for a title (`minHeaderW`), big enough to hold a few labelled tiles (`minArea`), and over 0.25% of the map. Otherwise it stays closed: a `tm-leafdir` tile tinted by what fills it most.
 - A chain of single-child folders folds into one tile titled `a › b › c`.
-- Siblings too small to see merge into one "N small items" tile; clicking it zooms in.
+- Siblings too small to see merge into one "N small items" tile; clicking it zooms in. No tile is thinner than `tm-min-side` either way, and no folder tile narrower than `tm-min-width`.
 - Tiles too small for a label get none; the tooltip names them.
 - Merged small items are dotted (`tm-dots`); locked items (system files, no access, in use) are hatched with `tm-hatch`, and a locked open folder shows a lock in its title band.
 - Free space is a faint `accent` wash with a dashed `accent` border; space not scanned yet is striped with `tm-stripe` behind a dashed `ctl-strong` border, and the stripes move while the scan runs.
 
 ## Iconography
 
-27 line icons in the spirit of Fluent System Icons: a 24-unit grid, 1.5 stroke, round caps and joins, `currentColor`, drawn at 16 px (12 px in breadcrumbs). Use `Icon` with a name from its list; never emoji, never a filled icon. Caption buttons (minimise, maximise, close) use Segoe Fluent Icons, as Windows does. The logo is the app icon's 16 px artwork (`Logo`, Logos group); its colours are fixed and do not follow the accent.
+28 line icons in the spirit of Fluent System Icons: a 24-unit grid, 1.5 stroke, round caps and joins, `currentColor`, drawn at 16 px (12 px in breadcrumbs). Use `Icon` with a name from its list; never emoji, never a filled icon. Caption buttons (minimise, maximise, close) use Segoe Fluent Icons, as Windows does. The logo is the app icon's 16 px artwork (`Logo`, Logos group); its colours are fixed and do not follow the accent.
 
 ## Layout
 

@@ -19,6 +19,8 @@ export interface PageProps {
   scenario?: Scenario;
   scheme?: 'light' | 'dark';
   lang?: 'en' | 'zh-CN';
+  /** what the tiles are coloured by (the pane's "By type" / "By age") */
+  colorBy?: 'type' | 'age';
   /** search box text for the "search" scenario */
   query?: string;
   /** treemap layout (src/lib/treemap/motion.ts › fluentLayout), CSS px */
@@ -27,6 +29,8 @@ export interface PageProps {
   header?: number;
   minHeaderW?: number;
   minArea?: number;
+  minSide?: number;
+  minWidth?: number;
   labelMinW?: number;
   labelMinH?: number;
   /** tile and open-folder corner radii (src/lib/treemap/paint.ts › paintStyle) */
@@ -34,7 +38,7 @@ export interface PageProps {
   folderRadius?: number;
 }
 
-const LAYOUT_KEYS = ['pad', 'gap', 'header', 'minHeaderW', 'minArea', 'labelMinW', 'labelMinH'] as const;
+const LAYOUT_KEYS = ['pad', 'gap', 'header', 'minHeaderW', 'minArea', 'minSide', 'minWidth', 'labelMinW', 'labelMinH'] as const;
 const LOCKS = Flag.InUse | Flag.NoAccess | Flag.Protected | Flag.RecycleBin;
 const DEFAULT_QUERY = '*.vhdx';
 
@@ -96,6 +100,8 @@ export async function apply(p: PageProps) {
   if (p.scheme && p.scheme !== applied.scheme) document.documentElement.setAttribute('data-theme', p.scheme);
   if (p.lang && p.lang !== applied.lang) setLang(p.lang, p.lang);
   applyTreemapStyle(p, true);
+  const by = p.colorBy;
+  if (by && by !== applied.colorBy) void boot().then(() => app.setColorBy(by));
   const prev = applied;
   applied = { ...applied, ...p };
   const s = p.scenario;

@@ -60,7 +60,8 @@ try {
   const theme = await server.ssrLoadModule('/src/lib/theme.ts');
   const motion = await server.ssrLoadModule('/src/lib/treemap/motion.ts');
   const en = await server.ssrLoadModule('/src/lib/locales/en.ts').catch(() => null);
-  tokens = makeTokens(theme, motion.fluentLayout, readPaintStyle(), en);
+  const age = await server.ssrLoadModule('/src/lib/age.ts');
+  tokens = makeTokens(theme, motion.fluentLayout, readPaintStyle(), en, age);
 } finally {
   await server.close();
 }
@@ -132,7 +133,7 @@ function readUiCss() {
   return vars;
 }
 
-function makeTokens(theme, layout, paintStyle, en) {
+function makeTokens(theme, layout, paintStyle, en, age) {
   const light = cssVars(theme, 'light');
   const dark = cssVars(theme, 'dark');
   const dict = en?.default ?? en?.en ?? {};
@@ -202,6 +203,18 @@ function makeTokens(theme, layout, paintStyle, en) {
     colors.push({ name: `cat-${i}`, value: { light: t.fill[i], dark: d.fill[i] }, usage: `Treemap tile fill: ${catName(i)}.` });
     colors.push({ name: `cat-${i}-ink`, value: { light: t.ink[i], dark: d.ink[i] }, usage: `Treemap label on a ${catName(i)} tile.` });
   }
+  // colour by age: the ramp's two ends, and the tiles of the default bands (newest first)
+  const AGE_BANDS = ['changed within a week', 'a week to a month old', 'a month to a year old', 'one to three years old', 'over three years old'];
+  const ageBases = theme.ageBases(age.AGE_EDGES.length + 1);
+  if (ageBases.length !== AGE_BANDS.length) throw new Error('AGE_EDGES changed: update AGE_BANDS in build.mjs');
+  colors.push({ name: 'age-new', value: theme.AGE_RAMP[0].toLowerCase(), usage: 'Colour by age: the newest end of the ramp (Windows red).' });
+  colors.push({ name: 'age-old', value: theme.AGE_RAMP[theme.AGE_RAMP.length - 1].toLowerCase(), usage: 'Colour by age: the oldest end of the ramp (Windows blue).' });
+  const ageLight = theme.tones('light', ageBases);
+  const ageDark = theme.tones('dark', ageBases);
+  AGE_BANDS.forEach((band, i) => {
+    colors.push({ name: `age-${i}`, value: { light: ageLight.fill[i], dark: ageDark.fill[i] }, usage: `Treemap tile fill by age: ${band}.` });
+    colors.push({ name: `age-${i}-ink`, value: { light: ageLight.ink[i], dark: ageDark.ink[i] }, usage: `Treemap label on a tile ${band}.` });
+  });
   for (const [name, value, use] of readLogoColours()) colors.push({ name, value, usage: use });
   shadows.forEach(s => (s.usage = s.name === 'shadow' ? 'Flyouts, menus, tooltips, toasts.' : 'Content dialog.'));
   const ui = readUiCss();
@@ -214,7 +227,7 @@ function makeTokens(theme, layout, paintStyle, en) {
       package: 'app',
       generatedBy: 'app/design/build.mjs',
       paths: {
-        tokens: ['app/src/lib/theme.ts', 'app/src/ui.css', 'app/src/lib/treemap/motion.ts', 'app/src/lib/treemap/paint.ts'],
+        tokens: ['app/src/lib/theme.ts', 'app/src/ui.css', 'app/src/lib/treemap/motion.ts', 'app/src/lib/treemap/paint.ts', 'app/src/lib/age.ts'],
         assets: ['docs/brand/tessera.svg', 'docs/brand/tessera-16.svg'],
         docs: ['app/design/system'],
       },
@@ -265,6 +278,8 @@ function makeTokens(theme, layout, paintStyle, en) {
         { name: 'tm-pad', value: `${layout.pad}px`, usage: 'Treemap: inset of children inside an open folder.' },
         { name: 'tm-gap', value: `${layout.gap}px`, usage: 'Treemap: gap between sibling tiles.' },
         { name: 'tm-header', value: `${layout.header}px`, usage: 'Treemap: open folder title band height.' },
+        { name: 'tm-min-side', value: `${layout.minSide}px`, usage: 'Treemap: no tile thinner than this either way; smaller ones join the "N small items" tile.' },
+        { name: 'tm-min-width', value: `${layout.minWidth}px`, usage: 'Treemap: no folder tile narrower than this (a folder is known by its name).' },
         { name: 'tm-label-min-w', value: `${layout.labelMinW}px`, usage: 'Treemap: narrower tiles get no label (tooltip only).' },
         { name: 'tm-label-min-h', value: `${layout.labelMinH}px`, usage: 'Treemap: shorter tiles get no label.' },
       ],

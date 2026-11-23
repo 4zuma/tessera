@@ -28,6 +28,8 @@ export interface PageProps {
   scheme?: 'light' | 'dark';
   /** UI language; the app follows Windows: English or Simplified Chinese */
   lang?: 'en' | 'zh-CN';
+  /** what the tiles are coloured by, as the pane's "By type" / "By age" switch (app: type) */
+  colorBy?: 'type' | 'age';
   /** the search box text for scenario "search" (default "*.vhdx") */
   query?: string;
   /** treemap: inset of children inside an open folder, px (app: 3) */
@@ -40,6 +42,10 @@ export interface PageProps {
   minHeaderW?: number;
   /** treemap: side of the smallest square a folder must exceed to open, px (app: 110) */
   minArea?: number;
+  /** treemap: thinnest tile either way; thinner ones join the "N small items" tile, px (app: 24) */
+  minSide?: number;
+  /** treemap: narrowest folder tile; narrower ones join the "N small items" tile, px (app: 44) */
+  minWidth?: number;
   /** treemap: narrowest tile with a label, px (app: 44) */
   labelMinW?: number;
   /** treemap: lowest tile with a label, px (app: 20) */
@@ -75,7 +81,7 @@ export type TooltipProps = PageProps;
 
 export type IconName =
   | 'drive' | 'folder' | 'file' | 'refresh' | 'stop' | 'up' | 'back' | 'trash' | 'purge' | 'sweep' | 'copy' | 'reveal' | 'search' | 'zoom'
-  | 'lock' | 'undo' | 'chev' | 'chevDown' | 'check' | 'cloud' | 'warn' | 'info' | 'shield' | 'pane' | 'dismiss' | 'more' | 'download';
+  | 'lock' | 'undo' | 'chev' | 'chevDown' | 'check' | 'cloud' | 'warn' | 'info' | 'shield' | 'pane' | 'dismiss' | 'more' | 'download' | 'edit';
 
 export interface IconProps {
   name: IconName;
