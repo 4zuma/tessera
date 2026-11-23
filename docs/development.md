@@ -110,6 +110,15 @@ script moves on one frame at a time, so the result does not depend on the machin
 the sample data or the layout changes, the script stops with a message when its double-click no
 longer lands on Program Files (x86); update `ZOOM_AT` in the script.
 
+## Claude Design (design system and canvas)
+
+The app's components and tokens are also published as a Claude Design system ("Tessera
+Fluent") with a prototype canvas ("Tessera 原型") where the UI is tried before it is coded:
+`npm run design` in `app/` builds it from the app's own code. A change to what the app draws
+(anything under `app/src` or `app/design`) is re-synced to both by whoever made it, once the
+branch is pushed: [`app/design/README.md`](../app/design/README.md) › Re-sync has the steps,
+and `npm run design:sync` checks that a re-sync does not drop someone else's published work.
+
 ## Continuous integration
 
 Each push and pull request runs only the checks its files can affect

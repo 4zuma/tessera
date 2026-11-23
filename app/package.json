@@ -10,7 +10,8 @@
     "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "test": "vitest run",
     "tauri": "tauri",
-    "design": "node design/build.mjs"
+    "design": "node design/build.mjs",
+    "design:sync": "node design/sync.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "2.12.4"

@@ -26,6 +26,11 @@ body {
 .tessera-host[data-frame='desk'] {
   background: var(--solid-base);
 }
+/* backdrop="solid": the window without Mica, in the solid base colour Windows shows instead
+   (Transparency effects off, battery saver; app.css, html[data-backdrop="none"]). */
+.tessera-host[data-backdrop='solid'] > .window {
+  background: var(--solid-base) !important;
+}
 
 /* The browser preview's own extras (the "Preview · sample data" chip, "Simulate download",
    "Performance") are not part of the app on Windows: a design shows the window as users see it. */
