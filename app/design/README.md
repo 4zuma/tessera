@@ -64,6 +64,7 @@ script: the artifact is private to its owner. The system's link is kept in the p
    set `lastChange.by` to the owner's name.
 4. Publish everything else under `project/` in one call (`root` = `design/out`,
    `file_path` = the index, `files` = every other path except the two SVGs).
+   `components/index.d.ts` needs `"contentType": "text/plain"` (`.ts` is not a served type).
 
 **Re-sync** after the app changed (rebuild first):
 
@@ -73,6 +74,19 @@ script: the artifact is private to its owner. The system's link is kept in the p
    `tokens.css`, and any README or preview you touched) with `root` = `design/out`.
 3. Last, publish the index you read in step 1 with only `lastChange` changed
    (`at` now, `via` "GitHub · 4zuma/tessera@<sha>", a `note`), keeping `"editing": "code"`.
-4. The canvas "Tessera 原型" carries its own copy of the system under `project/ds/tessera/`
-   (`tokens.json`, `tokens.css`, `components/bundle.js`, `bundle.css`): copy the new files there
-   too, or its artboards keep the old components.
+4. The canvas "Tessera 原型" (a Design artifact) carries its own copy of the system under
+   `project/ds/tessera/` (`tokens.json`, `tokens.css`, `components/bundle.js`, `bundle.css`),
+   copied server side with `files` entries like
+   `"project/ds/tessera/tokens.json": {"artifact": "<system url>", "path": "project/tokens.json"}`,
+   plus its `designSystems` record in `project/canvas.json` (the new `version`, `copiedAt`).
+   Copy again after every re-sync, or its artboards keep the old components.
+
+## The canvas
+
+"Tessera 原型" holds one artboard per state, each a `Tessera.Window` or `Tessera.Treemap`
+mounted with `<x-import component-from-global-scope="Tessera.Window" scenario="menu" …>` after
+loading `ds/tessera/tokens.css`, `components/bundle.css` and `components/bundle.js`. Its
+Tweaks are the page props above (`scenario`, `scheme`, `lang`, `colorBy` and the treemap
+sizes); markup props are kebab-case (`folder-radius`, `label-min-w`). Each artboard is its own
+page, so each runs its own app. Text, layout and colours in the artboards can be edited by hand
+on the canvas; what a component draws changes only in the app's code.
