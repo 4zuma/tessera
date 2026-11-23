@@ -70,6 +70,8 @@ export interface PageProps {
   tone?: number;
   /** band look: at the seams where the side ring meets the colour band, the colour runs up the ring, fading out over this many px; 0 = a hard edge (0) */
   fade?: number;
+  /** band look: "on": a closed folder's size always sits in its white area, and one too small for it has no white area (grey down to its colour band) ("off") */
+  compact?: 'on' | 'off';
   /** the host element's style: where the component sits in its slot */
   style?: Record<string, string | number>;
 }

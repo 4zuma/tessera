@@ -58,9 +58,13 @@ export const paintStyle = {
   tone: 0,
   /** band look: at the seams where the side ring meets the colour band, the colour runs up the ring, fading out over this many px (0 = a hard edge) */
   fade: 0,
+  /** band look: a closed folder whose size does not fit in its white area has none: grey down to its colour band */
+  compact: false,
 };
 /** band look: the header band's height, px */
 export const BAND = 21;
+/** band look: the white area height a closed folder's size line needs, px */
+const SIZE_LINE = 18;
 /** band look: the least white area that still reads as one, px */
 const BAND_MIN_WHITE = 6;
 /** band look: how much further each tone step mixes the file colour into the ground */
@@ -499,24 +503,32 @@ export class FluentPainter implements Painter {
     ctx.fillStyle = t['tm-folder'];
     ctx.fill(outline);
     const hasBand = b.h > BAND + 2 && b.w > 8;
+    // compact: a closed folder's white area holds its size, so one too small for the size has
+    // no white area: the band's grey runs down to the colour band
+    let drop = false;
+    if (closed && paintStyle.compact && hasBand) {
+      ctx.font = F_REG;
+      drop = !(wh >= SIZE_LINE && textFit.measure(ctx, fmtBytes(r.size)) <= b.w - 16);
+    }
     if (hasBand) {
       // the band: the folder above the white area's middle that is not the white area (with
       // the ring, all of it that is not). The rectangle runs 2 px past the clip so the clip's
       // soft edge never crosses the white area: no faint line through its middle.
       ctx.save();
       ctx.clip(outline);
-      const yMid = ring ? b.y + b.h + 2 : wh > 0 ? yW + wh / 2 : b.y + b.h;
+      const yMid = ring || drop ? b.y + b.h + 2 : wh > 0 ? yW + wh / 2 : b.y + b.h;
       ctx.beginPath();
       ctx.rect(b.x, b.y, b.w, yMid - b.y);
       ctx.clip();
       const p = new Path2D();
       p.rect(b.x, b.y, b.w, yMid + 2 - b.y);
-      p.addPath(white);
+      if (!drop) p.addPath(white);
       ctx.fillStyle = t['tm-folder-head'];
       ctx.fill(p, 'evenodd');
       ctx.restore();
     }
-    if (closed && colour && wh > 0) this.footBand(ctx, b, colour, white, ring ? Math.max(yW + wh / 2, yWb - wr) : yW + wh / 2, yW);
+    if (closed && colour && drop) this.footBand(ctx, b, colour, new Path2D(), yWb, yW, 0);
+    else if (closed && colour && wh > 0) this.footBand(ctx, b, colour, white, ring ? Math.max(yW + wh / 2, yWb - wr) : yW + wh / 2, yW, paintStyle.fade);
     ctx.lineWidth = 1;
     ctx.strokeStyle = this.folderStroke(dark, r.depth);
     ctx.stroke(outline);
@@ -526,7 +538,7 @@ export class FluentPainter implements Painter {
       ctx.fill(white);
     }
     if (!hasBand || (!closed && !r.header)) return;
-    this.headerBand(ctx, it, b, S, closed ? wh : 0, yW);
+    this.headerBand(ctx, it, b, S, !closed ? 'band' : !paintStyle.compact ? 'auto' : drop ? 'band' : 'white', closed ? wh : 0, yW);
   }
 
   /**
@@ -535,13 +547,13 @@ export class FluentPainter implements Painter {
    * paintStyle.fade the colour also runs up the ring beside the white area from that seam,
    * fading out; the white area itself is never tinted.
    */
-  private footBand(ctx: CanvasRenderingContext2D, b: Box, colour: string, white: Path2D, yCut: number, yW: number) {
+  private footBand(ctx: CanvasRenderingContext2D, b: Box, colour: string, white: Path2D, yCut: number, yW: number, fade: number) {
     const R = paintStyle.folderRadius;
     const inner = new Path2D();
     inner.roundRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2, Math.max(0, Math.min(R - 0.5, (b.w - 2) / 2, (b.h - 2) / 2)));
     ctx.save();
     ctx.clip(inner);
-    const G = Math.min(paintStyle.fade, yCut - yW);
+    const G = Math.min(fade, yCut - yW);
     if (G > 0) {
       // only beside the white area: the ring's strip from yCut - G to the seam. The gradient is
       // cached by length, so it is drawn translated, and the path with it.
@@ -569,8 +581,12 @@ export class FluentPainter implements Painter {
     ctx.restore();
   }
 
-  /** band look: a folder's name (and size) on the band; a closed folder's size goes into its white area when the band has no room */
-  private headerBand(ctx: CanvasRenderingContext2D, it: Item, b: Box, S: PaintState, roomBelow: number, yW: number) {
+  /**
+   * band look: a folder's name, and its size where `at` says: 'band' on the band when it fits
+   * there (else none), 'white' in the white area (compact: it is known to fit), 'auto' on the
+   * band when it fits there, else in the white area when that has room (cut short if need be)
+   */
+  private headerBand(ctx: CanvasRenderingContext2D, it: Item, b: Box, S: PaintState, at: 'band' | 'white' | 'auto', roomBelow: number, yW: number) {
     const r = it.r;
     const t = S.theme.tok;
     if (b.w < 30 || !r.name) return;
@@ -583,7 +599,7 @@ export class FluentPainter implements Painter {
     ctx.font = F_REG;
     const sz = fmtBytes(r.size);
     const sw = textFit.measure(ctx, sz);
-    const showSize = b.w > sw + 96;
+    const showSize = at !== 'white' && b.w > sw + 96;
     ctx.font = F_SEMI;
     const nm = textFit.fit(ctx, r.name, b.x + b.w - x - 8 - (showSize ? sw + 10 : 0));
     if (nm) {
@@ -594,8 +610,8 @@ export class FluentPainter implements Painter {
     if (showSize) {
       ctx.fillStyle = t['text-3'];
       ctx.fillText(sz, b.x + b.w - sw - 8, base);
-    } else if (roomBelow >= 18) {
-      const s = textFit.fit(ctx, sz, b.w - 16);
+    } else if (at === 'white' || (at === 'auto' && roomBelow >= SIZE_LINE)) {
+      const s = at === 'white' ? sz : textFit.fit(ctx, sz, b.w - 16);
       if (s) {
         ctx.fillStyle = t['text-2'];
         ctx.fillText(s, b.x + 8, yW + 14);

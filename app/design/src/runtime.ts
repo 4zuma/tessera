@@ -52,6 +52,8 @@ export interface PageProps {
   tone?: number;
   /** band look: the colour runs up the side ring from its seam with the colour band, fading out over this many px (0 = none) */
   fade?: number;
+  /** band look: a closed folder too small to show its size in the white area has no white area ('on' / 'off') */
+  compact?: 'on' | 'off';
 }
 
 const LAYOUT_KEYS = ['pad', 'gap', 'header', 'minHeaderW', 'minArea', 'minSide', 'minWidth', 'labelMinW', 'labelMinH'] as const;
@@ -167,6 +169,10 @@ function applyTreemapStyle(p: PageProps, live: boolean) {
   }
   if ((p.ring === 'on' || p.ring === 'off') && paintStyle.ring !== (p.ring === 'on')) {
     paintStyle.ring = p.ring === 'on';
+    paint = true;
+  }
+  if ((p.compact === 'on' || p.compact === 'off') && paintStyle.compact !== (p.compact === 'on')) {
+    paintStyle.compact = p.compact === 'on';
     paint = true;
   }
   // the layout the band look needs, or the shipped one back when it is switched off
