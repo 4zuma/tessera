@@ -171,16 +171,20 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     const head: Item[] = [];
     const nodes: Item[] = [];
     const tail: Item[] = [];
-    // A tile narrower or shorter than minSide is hard to see as a tile at all (rule 2). Items
-    // too small to ever be that wide go to the group at once; after a layout, the first tile
-    // that came out too thin, and every smaller one, join the group and the folder is laid out
-    // again. A group (or a lone left-over item), or a free / unscanned tile, that is itself too
-    // thin is not drawn: the others take its room. A tile still too thin after the last pass
-    // is left out and its room stays empty.
+    // A tile narrower or shorter than minSide is hard to see as a tile at all, and a folder
+    // narrower than minWidth has no room for its name (rule 2). Items too small to ever be
+    // that big go to the group at once; after a layout, the first tile that came out below
+    // minSide, every smaller one and every folder before it that is only narrower than
+    // minWidth join the group and the folder is laid out again. A group (or a lone left-over
+    // item), or a free / unscanned tile, that is itself too thin is not drawn: the others
+    // take its room. A tile still too thin after the last pass is left out and its room stays
+    // empty.
     const side = o.minSide > 0 ? o.minSide + o.gap : 0;
     const wide = o.minWidth > 0 ? o.minWidth + o.gap : 0;
     const sized = side > 0 || wide > 0;
-    const thin = (cw: number, ch: number) => Math.min(cw, ch) < side || cw < wide;
+    const isDir = (c: Item) => !!c.n?.kids;
+    // 0 fits, 1 a folder only too narrow, 2 below minSide
+    const fit = (cw: number, ch: number, dir: boolean) => (Math.min(cw, ch) < side ? 2 : dir && cw < wide ? 1 : 0);
     let rest = 0;
     let restN = 0;
     let restHit = 0;
@@ -193,7 +197,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     for (const c of items) {
       if (c.special === 'unscanned') head.push(c);
       else if (c.special) tail.push(c);
-      else if (c.s * k >= Math.max(o.minArea, side * Math.max(side, wide)) && nodes.length < o.maxPerDir) nodes.push(c);
+      else if (c.s * k >= Math.max(o.minArea, side * (isDir(c) ? Math.max(side, wide) : side)) && nodes.length < o.maxPerDir) nodes.push(c);
       else {
         rest += c.s;
         restN++;
@@ -237,21 +241,30 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       squarify(list, x, y, w, h, rs);
       if (!sized) break;
       let first = -1;
+      const narrow = new Set<Item>();
       let grpThin = false;
       let dropped = false;
       for (const [c, , , cw, ch] of rs) {
-        if (!thin(cw, ch)) continue;
+        const f = fit(cw, ch, isDir(c));
+        if (!f) continue;
         if (c === grp) grpThin = true;
         else if (c.special) {
           gone.add(c);
           dropped = true;
         } else {
           const i = nodes.indexOf(c);
-          if (i >= 0 && i < cut && (first < 0 || i < first)) first = i;
+          if (i < 0 || i >= cut) continue;
+          if (f === 1) narrow.add(c);
+          else if (first < 0 || i < first) first = i;
         }
       }
-      if (first >= 0) {
-        cut = first;
+      if (first >= 0 || narrow.size) {
+        // the narrow folders move behind the ones kept, in the same order
+        const end = first >= 0 ? first : cut;
+        const head = nodes.slice(0, end);
+        const kept = head.filter(c => !narrow.has(c));
+        nodes.splice(0, end, ...kept, ...head.filter(c => narrow.has(c)));
+        cut = kept.length;
         noGroup = false;
       } else if (grpThin && !noGroup) noGroup = true;
       else if (!dropped) break;
@@ -263,7 +276,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       const ry = ry0 + g;
       const rw = rw0 - 2 * g;
       const rh = rh0 - 2 * g;
-      if (rw < 1 || rh < 1 || (sized && thin(rw0, rh0))) continue;
+      if (rw < 1 || rh < 1 || (sized && fit(rw0, rh0, isDir(c)))) continue;
       const base = { x: rx, y: ry, w: rw, h: rh, depth, parent: pid, count: 0, header: 0, hit: c.n ? hitOf(c.n) : (c.group?.hit ?? 0) };
       if (c.group) {
         const id = groupId(parent.id);

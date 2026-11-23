@@ -23,14 +23,17 @@
 //!
 //!    With `minSide` (CSS px, not counting the gap) every tile drawn is at
 //!    least that wide and tall, since a thin sliver hardly reads as a tile,
-//!    and with `minWidth` at least that wide, since names are written
-//!    across and a tall narrow tile shows only a letter or two of one:
-//!    * siblings whose area would be below `(minSide + gap) x (max(minSide,
-//!      minWidth) + gap)` go to the group at once, and the group takes its
-//!      place among the others by its size instead of coming last;
+//!    and with `minWidth` every folder tile is at least that wide, since a
+//!    folder is known by its name, which is written across (a file is known
+//!    by its colour and can be as small as `minSide` either way):
+//!    * siblings whose area would be below `(minSide + gap)²`, or for a
+//!      folder `(minSide + gap) x (max(minSide, minWidth) + gap)`, go to
+//!      the group at once, and the group takes its place among the others
+//!      by its size instead of coming last;
 //!    * after squarifying, the first sibling (in rank order) that came out
-//!      too thin and every one after it join the group, and the folder is
-//!      laid out again;
+//!      shorter or narrower than `minSide` and every one after it join the
+//!      group, and so does every folder before it that is only narrower
+//!      than `minWidth`; the folder is laid out again;
 //!    * a group (or a single left-over sibling), an UNSCANNED or a FREE
 //!      tile that is still too thin is left out, and the others take its
 //!      room;
@@ -232,8 +235,8 @@ pub struct LayoutStyle {
     /// No tile is narrower or shorter than this (CSS px, the gap not
     /// counted): thinner ones join the group (rule 2). 0 turns it off.
     pub min_side: f32,
-    /// No tile is narrower than this (CSS px, the gap not counted), so a
-    /// tile has room for a few letters of its name (rule 2). 0 turns it
+    /// No folder tile is narrower than this (CSS px, the gap not counted),
+    /// so it has room for a few letters of its name (rule 2). 0 turns it
     /// off.
     pub min_width: f32,
     /// A folder opens only if its area is above `min_area * recurse`.
@@ -259,7 +262,7 @@ pub const RECURSE: f32 = 60.0;
 /// scale, so every tile can be pointed at.
 pub const MIN_SIDE: f32 = 24.0;
 /// Default `min_width`: the width a tile needs to show its name (the
-/// default `label_min_w`), so every file and folder tile is named.
+/// default `label_min_w`), so every folder tile is named.
 pub const MIN_WIDTH: f32 = 44.0;
 /// Times a folder is laid out again at most to get rid of thin tiles.
 const MIN_SIDE_PASSES: usize = 12;
@@ -467,7 +470,8 @@ struct Style {
     /// `min_side` plus the gap: the least width and height of a cell
     /// before it is inset; 0 when that limit is off.
     min_cell: f64,
-    /// `min_width` plus the gap: the least width of a cell; 0 when off.
+    /// `min_width` plus the gap: the least width of a folder's cell; 0 when
+    /// off.
     min_cell_w: f64,
     /// `min_area * recurse`.
     open_min: f64,
@@ -518,10 +522,44 @@ impl Style {
         self.min_cell > 0.0 || self.min_cell_w > 0.0
     }
 
-    /// A cell (before the inset) is below `minSide` or `minWidth`.
-    fn too_small(&self, c: &BoxF) -> bool {
-        c.w.min(c.h) < self.min_cell || c.w < self.min_cell_w
+    /// Whether a cell (before the inset) is big enough for a tile: at
+    /// least `minSide` either way, and `minWidth` wide for a folder.
+    fn fit(&self, c: &BoxF, folder: bool) -> Fit {
+        if c.w.min(c.h) < self.min_cell {
+            Fit::Small
+        } else if folder && c.w < self.min_cell_w {
+            Fit::Narrow
+        } else {
+            Fit::Ok
+        }
     }
+
+    /// The least area a sibling can have before it goes to the group at
+    /// once: `min_area`, and room for a cell of `minSide` (by `minWidth`
+    /// for a folder).
+    fn least_area(&self, folder: bool) -> f64 {
+        let w = if folder {
+            self.min_cell.max(self.min_cell_w)
+        } else {
+            self.min_cell
+        };
+        self.min_area.max(self.min_cell * w)
+    }
+}
+
+/// Whether an item is a folder's tile, for rule 2's `minWidth`.
+fn is_folder(tree: &Tree, it: &Item) -> bool {
+    matches!(it.kind, ItemKind::Node) && tree.node(it.node).is_dir()
+}
+
+/// How a cell meets rule 2's `minSide` / `minWidth`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Fit {
+    Ok,
+    /// A folder at least `minSide` either way but narrower than `minWidth`.
+    Narrow,
+    /// Shorter or narrower than `minSide`.
+    Small,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -855,12 +893,9 @@ impl Run<'_> {
         // children), so one pass over the siblings sorts them out; the
         // areas use the sum actually seen.
         let expect = mode.of(&dir).saturating_add(unscanned).saturating_add(free);
-        // The least area a tile can have: `minSide` high, `minWidth` wide.
-        let st = &self.st;
-        let min_area = st
-            .min_area
-            .max(st.min_cell * st.min_cell.max(st.min_cell_w));
-        let threshold = (min_area * expect as f64 / area).ceil() as u64;
+        // The least area a tile can have (rule 2), as a size.
+        let at_least = |folder| (self.st.least_area(folder) * expect as f64 / area).ceil() as u64;
+        let (file_min, folder_min) = (at_least(false), at_least(true));
         self.s.kids.clear();
         self.s.items.clear();
         let mut total = unscanned.saturating_add(free);
@@ -877,7 +912,7 @@ impl Run<'_> {
                 let size = mode.of(&n);
                 if size > 0 && !n.is_deleted() {
                     total = total.saturating_add(size);
-                    if size >= threshold {
+                    if size >= if n.is_dir() { folder_min } else { file_min } {
                         self.s.kids.push(Kid {
                             size,
                             rank: 0,
@@ -985,6 +1020,7 @@ impl Run<'_> {
         } else {
             self.squarify_items(b);
         }
+        let tree = self.tree;
         let st = &self.st;
         let s = &mut self.s;
         s.cells.clear();
@@ -996,7 +1032,8 @@ impl Run<'_> {
                 w: c.w - 2.0 * g,
                 h: c.h - 2.0 * g,
             };
-            if r.w >= 1.0 && r.h >= 1.0 && !(min_size && st.too_small(c)) {
+            if r.w >= 1.0 && r.h >= 1.0 && !(min_size && st.fit(c, is_folder(tree, it)) != Fit::Ok)
+            {
                 s.cells.push((*it, r));
             }
         }
@@ -1022,17 +1059,22 @@ impl Run<'_> {
     /// no sibling is too small, moving those into the group and leaving out
     /// a group or pseudo tile that is too small itself.
     fn fit_min_size(&mut self, b: BoxF) {
+        let tree = self.tree;
         let mut cut = self.s.kids.len();
         let mut no_group = false;
         let (mut no_unscanned, mut no_free) = (false, false);
+        // siblings (indexes into `kids`) that are folders only too narrow
+        let mut narrow: Vec<usize> = Vec::new();
         for _ in 0..MIN_SIDE_PASSES {
             let (head, group) = self.min_size_items(cut, no_group, no_unscanned, no_free);
             self.squarify_items(b);
             let mut first = None;
+            narrow.clear();
             let mut group_thin = false;
             let mut dropped = false;
             for (i, (it, c)) in self.s.items.iter().zip(&self.s.boxes).enumerate() {
-                if !self.st.too_small(c) {
+                let fit = self.st.fit(c, is_folder(tree, it));
+                if fit == Fit::Ok {
                     continue;
                 }
                 if group == Some(i) {
@@ -1044,12 +1086,32 @@ impl Run<'_> {
                     ItemKind::Free => (no_free, dropped) = (true, true),
                     _ => {
                         let k = i - head - usize::from(group.is_some_and(|g| i > g));
-                        first = Some(first.map_or(k, |f: usize| f.min(k)));
+                        if fit == Fit::Narrow {
+                            narrow.push(k);
+                        } else {
+                            first = Some(first.map_or(k, |f: usize| f.min(k)));
+                        }
                     }
                 }
             }
-            if let Some(k) = first {
-                (cut, no_group) = (k, false);
+            if first.is_some() || !narrow.is_empty() {
+                // The first sibling too small and every one after it join
+                // the group, and so do the narrow folders before it: those
+                // move to the end of the ones kept, in the same order.
+                let end = first.unwrap_or(cut);
+                narrow.retain(|&k| k < end);
+                let kids = &mut self.s.kids[..end];
+                let mut keep = 0;
+                for i in 0..end {
+                    if narrow.binary_search(&i).is_err() {
+                        kids.swap(keep, i);
+                        keep += 1;
+                    }
+                }
+                // the kept ones stay in order; the narrow ones end up
+                // behind them shuffled, so put those back in rank order
+                kids[keep..].sort_unstable_by(by_rank);
+                (cut, no_group) = (keep, false);
             } else if group_thin && !no_group {
                 no_group = true;
             } else if !dropped {

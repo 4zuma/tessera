@@ -53,7 +53,7 @@ interface LayoutRequest {
     minHeaderW: f32;    // a folder narrower than this gets no header (60)
     minArea: f32;       // px²; smaller siblings are merged into one group (110)
     minSide: f32;       // no tile narrower or shorter than this, gap not counted (24); 0 = off
-    minWidth: f32;      // no tile narrower than this, gap not counted (44); 0 = off
+    minWidth: f32;      // no folder tile narrower than this, gap not counted (44); 0 = off
     recurse: f32;       // a folder opens only if area > minArea * recurse (60, so 6,600 px²)
     openShare: f32;     // ... and only if area > openShare * the map's area (0.0025); 0 = off
     maxDepth: u8;       // (14)
@@ -196,15 +196,17 @@ These are what make the map calm while it changes, and they were tuned in the pr
    small sibling is shown as itself, not as a group of one.
    With `minSide`, every tile is at least that wide and tall, since a thin sliver hardly
    reads as a tile (24 px is a little more than Windows' 13 × 20 px arrow pointer); with
-   `minWidth`, at least that wide, since names are written across and a tall narrow tile
-   shows only a letter or two (44 px is `labelMinW`, so every tile gets its name). Siblings whose
-   area would be below `(minSide + gap) × (max(minSide, minWidth) + gap)` go to the group at
-   once, and the group takes its place among the others by its size instead of coming
-   last. After squarifying, the first sibling (in rank order) that came out too small and
-   every one after it join the group, and the folder is laid out again. A group (or a single
-   left-over sibling), UNSCANNED or FREE tile that is still too small is left out and the
-   others take its room. This repeats at most 12 times; a tile still too small then is not
-   drawn and its room stays empty.
+   `minWidth`, every folder tile is at least that wide, since a folder is known by its name,
+   which is written across (44 px is `labelMinW`, so every folder gets its name). A file is
+   known by its colour, so its tile can be as small as `minSide` either way. Siblings whose
+   area would be below `(minSide + gap)²`, or for a folder `(minSide + gap) × (max(minSide,
+   minWidth) + gap)`, go to the group at once, and the group takes its place among the
+   others by its size instead of coming last. After squarifying, the first sibling (in rank
+   order) that came out below `minSide` and every one after it join the group, and so does
+   every folder before it that is only narrower than `minWidth`; the folder is laid out
+   again. A group (or a single left-over sibling), UNSCANNED or FREE tile that is still too
+   small is left out and the others take its room. This repeats at most 12 times; a tile
+   still too small then is not drawn and its room stays empty.
 3. Squarified treemap (Bruls et al. 2000) into the parent's inner box. Every rect is inset
    by `gap / 2`; rects smaller than 1 px in either direction are dropped.
 4. **Folded chains**: a folder whose only visible child is a folder is merged with it into

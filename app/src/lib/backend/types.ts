@@ -42,7 +42,7 @@ export interface LayoutStyle {
   minArea: number;
   /** no tile narrower or shorter than this (CSS px, gap not counted); 0 = off */
   minSide: number;
-  /** no tile narrower than this (CSS px, gap not counted), so a name fits; 0 = off */
+  /** no folder tile narrower than this (CSS px, gap not counted), so its name fits; 0 = off */
   minWidth: number;
   recurse: number;
   openShare: number;
