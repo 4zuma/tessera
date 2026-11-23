@@ -6,7 +6,7 @@ import { MockBackend } from './mock';
 import { BadSize, parseQuery } from './mock/search';
 import type { LayoutRequest, ScanProgress } from './types';
 
-const STYLE = { outer: 6, pad: 3, gap: 2, header: 21, minHeaderW: 60, minArea: 110, recurse: 60, openShare: 0.0025, maxDepth: 14, maxPerDir: 400, labelMinW: 44, labelMinH: 20 };
+const STYLE = { outer: 6, pad: 3, gap: 2, header: 21, minHeaderW: 60, minArea: 110, minSide: 0, minWidth: 0, recurse: 60, openShare: 0.0025, maxDepth: 14, maxPerDir: 400, labelMinW: 44, labelMinH: 20 };
 const req = (view = 0): LayoutRequest => ({ view, width: 1200, height: 800, sizeMode: 'disk', style: STYLE });
 
 async function scanned(b: MockBackend, root = 'C:\\') {
@@ -115,6 +115,27 @@ describe('mock backend', () => {
     const mid = decodeLayout(await b.layout(req())).rects;
     expect(mid.some(r => r.id === UNSCANNED)).toBe(true);
     await b.scanCancel();
+  });
+
+  it('keeps every tile at least minSide either way, and every folder minWidth wide', async () => {
+    const b = new MockBackend({}, { scanMs: 300 });
+    await scanned(b);
+    const style = { ...STYLE, minSide: 24, minWidth: 44 };
+    for (const [width, height] of [[900, 640], [1280, 820], [1700, 1050]]) {
+      const off = decodeLayout(await b.layout({ ...req(), width, height })).rects;
+      const on = decodeLayout(await b.layout({ ...req(), width, height, style })).rects;
+      expect(off.some(r => Math.min(r.w, r.h) < 24)).toBe(true);
+      const dir = (r: Rect) => r.kind === Kind.Dir || r.kind === Kind.DirLeaf;
+      const thin = on.filter(r => r.w < (dir(r) ? 44 : 24) - 1e-3 || r.h < 24 - 1e-3);
+      expect(thin).toEqual([]);
+      expect(on.length).toBeLessThan(off.length);
+      // every folder tile is wide enough for its name; files may be as small as 24 x 24
+      expect(on.filter(r => r.kind === Kind.DirLeaf && !r.name)).toEqual([]);
+      // groups, often of folders now, are tinted by what fills them (the sample's files all have a type)
+      const groups = on.filter(r => r.kind === Kind.Group);
+      expect(groups.length).toBeGreaterThan(0);
+      expect(groups.filter(r => r.cat === 255)).toEqual([]);
+    }
   });
 
   it('searches: the hits reach the layout until cleared', async () => {
