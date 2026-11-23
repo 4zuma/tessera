@@ -133,6 +133,12 @@ function rank(c: Item): number {
 
 export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: number } {
   const { drive, style: o, sizeMode } = inp;
+  const cats = new Map<number, number>();
+  const folderCat = (n: MNode): number => {
+    let c = cats.get(n.id);
+    if (c === undefined) cats.set(n.id, (c = mainCat(drive, n, sizeMode)));
+    return c;
+  };
   const hits = inp.hits ?? null;
   const hitOf = (n: MNode) => (hits ? hits[n.id] ?? 0 : 0);
   // age bytes: a file's own, a folder's the size-weighted mean over what it holds
@@ -202,8 +208,9 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     let restAge = 0;
     let restAgeW = 0;
     const votes = new Map<number, number>();
+    // a folder in the group votes with all its bytes for what fills it most (rule 6)
     const vote = (m: Map<number, number>, c: Item) => {
-      const ct = c.n!.kids ? CAT_NONE : c.n!.cat;
+      const ct = c.n!.kids ? folderCat(c.n!) : c.n!.cat;
       m.set(ct, (m.get(ct) || 0) + c.s);
     };
     for (const c of items) {
@@ -331,7 +338,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
           place(deep, kidsOf.map(m => ({ n: m, s: sizeOf(m, sizeMode), rk: 0 })), ix, iy, iw, ih, depth + 1, n.id);
         }
       }
-      if (r.kind === Kind.DirLeaf) r.cat = mainCat(drive, n, sizeMode);
+      if (r.kind === Kind.DirLeaf) r.cat = folderCat(n);
       if (r.header || named(rw, rh)) r.name = name;
     }
   }

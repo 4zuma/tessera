@@ -867,6 +867,17 @@ impl Run<'_> {
         }
     }
 
+    /// The category a group member counts its bytes for: a file's own, a
+    /// folder's main category (rule 6), so a group of folders is tinted by
+    /// what fills them too.
+    fn member_cat(&mut self, id: NodeId, n: &Node, size: u64) -> u8 {
+        if n.is_dir() {
+            self.tint(id, size).0
+        } else {
+            category::of(n)
+        }
+    }
+
     /// The category with the most bytes below a closed folder of `size`
     /// (rule 6) and the size-weighted age of its files, from the cache while
     /// the size stays within 1/8 of the size they were found at.
@@ -966,7 +977,7 @@ impl Run<'_> {
                             rank: 0,
                             node: c,
                         });
-                        let cat = category::of(&n);
+                        let cat = self.member_cat(c, &n, size);
                         if (cat as usize) < category::COUNT {
                             tally[cat as usize] += size;
                         }
@@ -1000,7 +1011,7 @@ impl Run<'_> {
                 small_sum = small_sum.saturating_add(k.size);
                 small_hit = small_hit.saturating_add(hit_part(hits, k.node, k.size));
                 let n = tree.node(k.node);
-                let cat = category::of(&n);
+                let cat = self.member_cat(k.node, &n, k.size);
                 if (cat as usize) < category::COUNT {
                     tally[cat as usize] += k.size;
                 }
@@ -1154,23 +1165,25 @@ impl Run<'_> {
         let tree = self.tree;
         let hits = self.hits;
         let mut ages = self.s.rest.age;
+        let mut tally = self.s.rest.tally;
         for i in cut..self.s.kids.len() {
             let k = self.s.kids[i];
-            let a = self.age_of(k.node, &tree.node(k.node), k.size);
-            ages.add(a, k.size);
+            let n = tree.node(k.node);
+            ages.add(self.age_of(k.node, &n, k.size), k.size);
+            let cat = self.member_cat(k.node, &n, k.size);
+            if (cat as usize) < category::COUNT {
+                tally[cat as usize] += k.size;
+            }
         }
         let s = &mut self.s;
         let r = &s.rest;
         let mut rest = *r;
         rest.age = ages;
+        rest.tally = tally;
         for k in &s.kids[cut..] {
             rest.n += 1;
             rest.sum = rest.sum.saturating_add(k.size);
             rest.hit = rest.hit.saturating_add(hit_part(hits, k.node, k.size));
-            let cat = category::of(&tree.node(k.node));
-            if (cat as usize) < category::COUNT {
-                rest.tally[cat as usize] += k.size;
-            }
         }
         let group = if no_group || rest.n == 0 {
             None
