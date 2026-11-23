@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Kind, type Layout, type Rect } from '../backend/codec';
-import type { Theme } from '../theme';
+import { makeColoring } from '../coloring';
+import { makeTheme } from '../theme';
 import { nearlySame, TreemapEngine, type EngineHost, type Painter } from './engine';
 import { fluentMotion } from './motion';
 
@@ -14,14 +15,15 @@ afterAll(() => {
 });
 
 function rect(id: number, x: number, y: number, w: number, h: number): Rect {
-  return { id, parent: 0, target: 0, count: 0, x, y, w, h, size: 1000, name: '', depth: 1, kind: Kind.File, cat: 0, flags: 0, header: 0 };
+  return { id, parent: 0, target: 0, count: 0, x, y, w, h, size: 1000, name: '', depth: 1, kind: Kind.File, cat: 0, flags: 0, header: 0, hit: 0, age: 0 };
 }
 
-const layout = (rects: Rect[]): Layout => ({ view: 0, rev: 1, bytesPerPx: 1, rects });
+const layout = (rects: Rect[]): Layout => ({ view: 0, rev: 1, bytesPerPx: 1, search: 0, rects });
 
 function engine() {
   const canvas = { getContext: () => ({}) } as unknown as HTMLCanvasElement;
-  const host: EngineHost = { sel: new Set<number>(), hoverId: null, filter: null, scanning: false, reduced: false, theme: {} as Theme };
+  const theme = makeTheme('light', null);
+  const host: EngineHost = { sel: new Set<number>(), hoverId: null, filter: null, coloring: makeColoring('type', theme, []), hits: false, scanning: false, reduced: false, theme };
   const painter = { scene() {}, overlay() {}, inOverlay: () => false, light: 0, reset() {} } as Painter;
   return new TreemapEngine(canvas, host, painter, fluentMotion, 6);
 }

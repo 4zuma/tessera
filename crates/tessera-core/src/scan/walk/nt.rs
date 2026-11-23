@@ -137,6 +137,8 @@ pub(super) struct Entry<'a> {
     /// Reparse tag if `FILE_ATTRIBUTE_REPARSE_POINT` is set and the file
     /// system reports it (in `EaSize`), else 0.
     pub reparse_tag: u32,
+    /// `LastWriteTime`, a FILETIME (0 if unknown).
+    pub last_write: u64,
 }
 
 /// How to open a directory.
@@ -255,6 +257,7 @@ struct Layout {
     class: FILE_INFORMATION_CLASS,
     end_of_file: usize,
     allocation_size: usize,
+    last_write: usize,
     attributes: usize,
     name_length: usize,
     ea_size: usize,
@@ -266,6 +269,7 @@ const ID_FULL: Layout = Layout {
     class: FileIdFullDirectoryInformation,
     end_of_file: offset_of!(FILE_ID_FULL_DIR_INFORMATION, EndOfFile),
     allocation_size: offset_of!(FILE_ID_FULL_DIR_INFORMATION, AllocationSize),
+    last_write: offset_of!(FILE_ID_FULL_DIR_INFORMATION, LastWriteTime),
     attributes: offset_of!(FILE_ID_FULL_DIR_INFORMATION, FileAttributes),
     name_length: offset_of!(FILE_ID_FULL_DIR_INFORMATION, FileNameLength),
     ea_size: offset_of!(FILE_ID_FULL_DIR_INFORMATION, EaSize),
@@ -277,6 +281,7 @@ const FULL: Layout = Layout {
     class: FileFullDirectoryInformation,
     end_of_file: offset_of!(FILE_FULL_DIR_INFORMATION, EndOfFile),
     allocation_size: offset_of!(FILE_FULL_DIR_INFORMATION, AllocationSize),
+    last_write: offset_of!(FILE_FULL_DIR_INFORMATION, LastWriteTime),
     attributes: offset_of!(FILE_FULL_DIR_INFORMATION, FileAttributes),
     name_length: offset_of!(FILE_FULL_DIR_INFORMATION, FileNameLength),
     ea_size: offset_of!(FILE_FULL_DIR_INFORMATION, EaSize),
@@ -401,6 +406,7 @@ fn parse(rec: &Records<'_>, layout: &Layout, sink: &mut dyn FnMut(&Entry<'_>)) {
                 .and_then(|o| rec.u64_at(off + o))
                 .unwrap_or(0),
             reparse_tag,
+            last_write: rec.u64_at(off + layout.last_write).unwrap_or(0),
         });
         if next == 0 || next % 2 != 0 {
             return;
@@ -461,6 +467,8 @@ pub(super) fn list_find(
             } else {
                 0
             },
+            last_write: (data.ftLastWriteTime.dwHighDateTime as u64) << 32
+                | data.ftLastWriteTime.dwLowDateTime as u64,
         });
         if cancelled() {
             break Ok(());

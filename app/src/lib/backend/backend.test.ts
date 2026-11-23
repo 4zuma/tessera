@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { decodeLayout, encodeLayout, FREE, GROUP_BIT, Kind, NONE, RECORD_SIZE, HEADER_SIZE, UNSCANNED, type Rect } from './codec';
+import { contentOf, decodeLayout, encodeLayout, FREE, GROUP_BIT, isNodeId, Kind, NONE, RECORD_SIZE, HEADER_SIZE, UNSCANNED, type Rect } from './codec';
 import { categoryOf, Cat } from './categories';
 import { t } from '../i18n.svelte';
 import { MockBackend } from './mock';
+import { AGE_BINS, AGE_EDGE_CHOICES, AGE_UNKNOWN, ageBand, ageBin, ageByte, bandTotals } from '../age';
+import { ageTable, BadSize, parseQuery } from './mock/search';
 import type { LayoutRequest, ScanProgress } from './types';
 
-const STYLE = { outer: 6, pad: 3, gap: 2, header: 21, minHeaderW: 60, minArea: 110, recurse: 60, openShare: 0.0025, maxDepth: 14, maxPerDir: 400, labelMinW: 44, labelMinH: 20 };
+const STYLE = { outer: 6, pad: 3, gap: 2, header: 21, minHeaderW: 60, minArea: 110, minSide: 0, minWidth: 0, recurse: 60, openShare: 0.0025, maxDepth: 14, maxPerDir: 400, labelMinW: 44, labelMinH: 20 };
 const req = (view = 0): LayoutRequest => ({ view, width: 1200, height: 800, sizeMode: 'disk', style: STYLE });
 
 async function scanned(b: MockBackend, root = 'C:\\') {
@@ -17,16 +19,27 @@ async function scanned(b: MockBackend, root = 'C:\\') {
 describe('codec', () => {
   it('round-trips records, big sizes and UTF-8 names', () => {
     const rects: Rect[] = [
-      { id: 7, parent: NONE, target: 9, count: 0, x: 1.5, y: 2, w: 300, h: 200, size: Math.round(499.8 * 2 ** 30), name: '屏幕截图 › archive', depth: 1, kind: Kind.Dir, cat: 255, flags: 1, header: 21 },
-      { id: GROUP_BIT + 7, parent: 7, target: 7, count: 42, x: 4, y: 30, w: 10, h: 10, size: 12345, name: '', depth: 2, kind: Kind.Group, cat: 4, flags: 0, header: 0 },
-      { id: FREE, parent: NONE, target: FREE, count: 0, x: 0, y: 0, w: 5, h: 5, size: 2 ** 40 + 3, name: '', depth: 1, kind: Kind.Free, cat: 255, flags: 0, header: 0 },
+      { id: 7, parent: NONE, target: 9, count: 0, x: 1.5, y: 2, w: 300, h: 200, size: Math.round(499.8 * 2 ** 30), name: '屏幕截图 › archive', depth: 1, kind: Kind.Dir, cat: 255, flags: 1, header: 21, hit: 0, age: 0 },
+      { id: GROUP_BIT + 7, parent: 7, target: 7, count: 42, x: 4, y: 30, w: 10, h: 10, size: 12345, name: '', depth: 2, kind: Kind.Group, cat: 4, flags: 0, header: 0, hit: 127, age: 200 },
+      { id: FREE, parent: NONE, target: FREE, count: 0, x: 0, y: 0, w: 5, h: 5, size: 2 ** 40 + 3, name: '', depth: 1, kind: Kind.Free, cat: 255, flags: 0, header: 0, hit: 255, age: 1 },
     ];
-    const buf = encodeLayout({ view: 3, rev: 99, bytesPerPx: 1024, rects });
+    const buf = encodeLayout({ view: 3, rev: 99, bytesPerPx: 1024, search: 5, rects });
     expect(buf.byteLength).toBe(HEADER_SIZE + 3 * RECORD_SIZE + new TextEncoder().encode(rects[0].name).length);
     const l = decodeLayout(buf);
     expect(l.view).toBe(3);
     expect(l.rev).toBe(99);
+    expect(l.search).toBe(5);
     expect(l.rects).toEqual(rects);
+  });
+
+  it('points a tile at the folder whose contents it shows', () => {
+    const r = (kind: Kind, id: number, target: number): Rect => ({ id, parent: NONE, target, count: 0, x: 0, y: 0, w: 9, h: 9, size: 1, name: '', depth: 1, kind, cat: 255, flags: 0, header: 0, hit: 0, age: 0 });
+    expect(contentOf(r(Kind.Dir, 7, 9))).toBe(9); // a › b › c: c
+    expect(contentOf(r(Kind.DirLeaf, 7, 9))).toBe(9);
+    expect(contentOf(r(Kind.Dir, 7, 7))).toBe(7);
+    expect(contentOf(r(Kind.File, 5, 5))).toBe(5);
+    expect(contentOf(r(Kind.Group, GROUP_BIT + 7, 7))).toBe(GROUP_BIT + 7);
+    expect(contentOf(r(Kind.Free, FREE, FREE))).toBe(FREE);
   });
 
   it('rejects foreign buffers', () => {
@@ -91,6 +104,11 @@ describe('mock backend', () => {
     const chain = all.find(r => r.name.startsWith('archive › pc › content'));
     expect(chain).toBeTruthy();
     expect(chain!.target).not.toBe(chain!.id);
+    // the tile's path is where its files are: copy path and Explorer go to the deepest folder
+    const top = (await b.details(chain!.id, 0, 'disk'))!.path;
+    const inner = (await b.details(contentOf(chain!), 0, 'disk'))!.path;
+    expect(top.endsWith('\\archive')).toBe(true);
+    expect(inner).toBe(`${top}\\${chain!.name.split(' › ').slice(1).join('\\')}`);
 
     const first = new Promise<void>(res => b.on('scan-progress', p => !p.done && p.scanned > 0 && res()));
     await b.scanStart('C:\\');
@@ -98,6 +116,114 @@ describe('mock backend', () => {
     const mid = decodeLayout(await b.layout(req())).rects;
     expect(mid.some(r => r.id === UNSCANNED)).toBe(true);
     await b.scanCancel();
+  });
+
+  it('keeps every tile at least minSide either way, and every folder minWidth wide', async () => {
+    const b = new MockBackend({}, { scanMs: 300 });
+    await scanned(b);
+    const style = { ...STYLE, minSide: 24, minWidth: 44 };
+    for (const [width, height] of [[900, 640], [1280, 820], [1700, 1050]]) {
+      const off = decodeLayout(await b.layout({ ...req(), width, height })).rects;
+      const on = decodeLayout(await b.layout({ ...req(), width, height, style })).rects;
+      expect(off.some(r => Math.min(r.w, r.h) < 24)).toBe(true);
+      const dir = (r: Rect) => r.kind === Kind.Dir || r.kind === Kind.DirLeaf;
+      const thin = on.filter(r => r.w < (dir(r) ? 44 : 24) - 1e-3 || r.h < 24 - 1e-3);
+      expect(thin).toEqual([]);
+      expect(on.length).toBeLessThan(off.length);
+      // every folder tile is wide enough for its name; files may be as small as 24 x 24
+      expect(on.filter(r => r.kind === Kind.DirLeaf && !r.name)).toEqual([]);
+      // groups, often of folders now, are tinted by what fills them (the sample's files all have a type)
+      const groups = on.filter(r => r.kind === Kind.Group);
+      expect(groups.length).toBeGreaterThan(0);
+      expect(groups.filter(r => r.cat === 255)).toEqual([]);
+    }
+  });
+
+  it('searches: the hits reach the layout until cleared', async () => {
+    const b = new MockBackend({}, { scanMs: 300 });
+    await scanned(b);
+    const res = (await b.search('.ISO', 'disk'))!;
+    expect(res.count).toBeGreaterThanOrEqual(2);
+    const l = decodeLayout(await b.layout({ ...req(), width: 4000, height: 3000 }));
+    expect(l.search).toBe(res.id);
+    // (small tiles come without a name)
+    const files = l.rects.filter(r => r.kind === Kind.File && isNodeId(r.id) && r.name);
+    const iso = files.filter(r => r.name.toLowerCase().endsWith('.iso'));
+    expect(iso.length).toBeGreaterThanOrEqual(2);
+    for (const r of files) expect([r.name, r.hit]).toEqual([r.name, iso.includes(r) ? 255 : 0]);
+    expect(iso.reduce((a, r) => a + r.size, 0)).toBeLessThanOrEqual(res.bytes);
+    expect(l.rects.find(r => r.id === FREE)!.hit).toBe(0);
+    // a folder holding one of them is partly lit, by bytes
+    const dl = l.rects.find(r => r.id === iso[0].parent)!;
+    expect(dl.hit).toBeGreaterThan(0);
+    expect(dl.hit).toBeLessThan(255);
+    // a folder matches by name, and everything in it is lit; only the folder counts
+    const steam = (await b.search('stardew', 'disk'))!;
+    expect(steam.count).toBeGreaterThanOrEqual(1);
+    await expect(b.search('>1XB', 'disk')).rejects.toThrow(t('core.badSize', { word: '>1XB' }));
+    await b.searchClear();
+    const off = decodeLayout(await b.layout(req()));
+    expect(off.search).toBe(0);
+    expect(off.rects.every(r => r.hit === 0)).toBe(true);
+  });
+
+  it('reads queries as the core does', () => {
+    expect(parseQuery('  ')).toBeNull();
+    expect(parseQuery('"my file" .MP4 *.mkv >=1.5GB <2g')).toEqual({
+      words: ['MY FILE'],
+      exts: ['.MP4', '.MKV'],
+      sizes: [
+        ['>=', 1.5 * 2 ** 30],
+        ['<', 2 ** 31],
+      ],
+      ages: [],
+    });
+    expect(parseQuery('>1y <=6mo >2W <3天 >1年')!.ages).toEqual([
+      ['>', 365],
+      ['<=', 180],
+      ['>', 14],
+      ['<', 3],
+      ['>', 365],
+    ]);
+    expect(() => parseQuery('>1h')).toThrow(BadSize);
+    expect(parseQuery('. ..')!.words).toEqual(['.', '..']);
+    expect(() => parseQuery('>')).toThrow(BadSize);
+    expect(() => parseQuery('<5 apples')).not.toThrow();
+    expect(() => parseQuery('<5apples')).toThrow(BadSize);
+  });
+
+  it('finds files by age, in the bands the legend shows', async () => {
+    const t1 = ageTable([['>', 365]]);
+    for (let b = 0; b < 256; b++) expect(t1[b]).toBe(ageBand(b, [365]) === 1);
+    const t2 = ageTable([['<', 7]]);
+    expect(t2[1]).toBe(true);
+    expect(t2[AGE_UNKNOWN]).toBe(false);
+    expect(t2[ageByte(30)]).toBe(false);
+    const b = new MockBackend({}, { scanMs: 300 });
+    await scanned(b);
+    const old = (await b.search('>1y', 'disk'))!;
+    const recent = (await b.search('<1y', 'disk'))!;
+    const all = (await b.search('>=0d', 'disk'))!;
+    expect(old.count).toBeGreaterThan(0);
+    expect(recent.count).toBeGreaterThan(0);
+    // files only, so the two halves add up (no folder is counted for its own sake)
+    expect(old.count + recent.count).toBe(all.count);
+    expect(old.bytes + recent.bytes).toBe(all.bytes);
+    const hist = await b.ageStats(0, 'disk');
+    expect(hist).toHaveLength(AGE_BINS);
+    expect(bandTotals(hist, [365])[1]).toBe(old.bytes);
+    expect(bandTotals(hist, [365])[0]).toBe(recent.bytes);
+  });
+
+  it('bins ages so that any choice of edges sums them as the tiles are coloured', () => {
+    const edges = [3, 30, 1095];
+    for (let b = 1; b < 256; b++) {
+      const bins = new Array<number>(AGE_BINS).fill(0);
+      bins[ageBin(b)] = 1;
+      expect(bandTotals(bins, edges)[ageBand(b, edges)]).toBe(1);
+    }
+    expect(ageBin(AGE_UNKNOWN)).toBe(0);
+    expect(ageBin(255)).toBe(AGE_EDGE_CHOICES.length + 1);
   });
 
   it('recycles into $Recycle.Bin, restores, and purges', async () => {

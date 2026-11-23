@@ -1,7 +1,7 @@
 //! Collects parsed records and builds the [`Tree`] from them (portable).
 //!
 //! Memory during the scan, per MFT record slot: 8 B on-disk size + 8 B
-//! logical size + 4 B sequence/flags, plus 16 B per name and the name bytes
+//! logical size + 4 B sequence/flags + 1 B age, plus 16 B per name and the name bytes
 //! themselves, which go straight into the final tree's [`NamePool`] so they
 //! are never copied again. The tree is then built breadth first: every
 //! directory's children are pushed together, so siblings are contiguous
@@ -53,6 +53,10 @@ pub(crate) struct Accum {
     logical: Vec<u64>,
     /// Sequence number (low 16 bits) and parser flags (high 16 bits).
     meta: Vec<u32>,
+    /// [`crate::age`] byte per record, as seen at `now`.
+    age: Vec<u8>,
+    /// The FILETIME the ages count back from.
+    now: u64,
     entries: Vec<Entry>,
     extras: HashMap<u32, Extra>,
     corrupt: u64,
@@ -83,6 +87,8 @@ impl Accum {
             size: vec![0; records],
             logical: vec![0; records],
             meta: vec![0; records],
+            age: vec![0; records],
+            now: crate::age::now_filetime(),
             // Headroom for hard links (WinSxS has many); capacity that is
             // never touched is never resident.
             entries: Vec::with_capacity(expected_names + expected_names / 4 + 16),
@@ -120,6 +126,9 @@ impl Accum {
             self.meta[i] = m | (u32::from(r.flags) << 16);
             self.size[i] = self.size[i].wrapping_add(r.size);
             self.logical[i] = self.logical[i].wrapping_add(r.logical);
+            if r.modified != 0 {
+                self.age[i] = crate::age::byte_of_filetime(r.modified, self.now);
+            }
             bytes = bytes.wrapping_add(r.size);
         }
         for (k, nf) in b.names.iter().enumerate() {
@@ -197,6 +206,8 @@ impl Tree {
             size,
             logical,
             meta,
+            age,
+            now,
             mut entries,
             extras,
             corrupt,
@@ -208,6 +219,7 @@ impl Tree {
         entries.par_sort_unstable_by_key(|e| (e.parent, e.rec, e.name_off));
 
         let mut tree = Tree::with_names(names, root, cluster, NodeId(RECORD_ROOT));
+        tree.set_age_now(now);
         let mut frn = vec![u32::MAX; records];
         if (RECORD_ROOT as usize) < records {
             frn[RECORD_ROOT as usize] = 0;
@@ -293,6 +305,7 @@ impl Tree {
                     NodeId(id as u32 + 1),
                     (e.name_off, e.len_code & 0x0FFF),
                     flags.with_name_cat((e.len_code >> 12) as u8),
+                    if is_dir { crate::age::UNKNOWN } else { age[c] },
                 );
             }
             let last = tree.nodes.len();
@@ -305,6 +318,7 @@ impl Tree {
         drop(entries);
         drop(size);
         drop(logical);
+        drop(age);
         drop(extras);
 
         // Parents precede children, so one reverse pass sums every directory.
@@ -398,7 +412,7 @@ mod tests {
             (
                 25,
                 RecordBuilder::new(1024, 25, 1)
-                    .attr(si(0))
+                    .attr(si_at(0, crate::age::now_filetime() - 30 * 864_000_000_000))
                     .attr(file_name(20, 1, "tiny.txt", 3))
                     .attr(data_resident(None, 42))
                     .build(),
@@ -421,6 +435,11 @@ mod tests {
         assert_eq!(b.frn.get(22), Some(a));
         assert_eq!(b.frn.get(5), Some(NodeId::ROOT));
         assert_eq!(b.frn.get(30), None);
+        // The last write time of $STANDARD_INFORMATION becomes the age.
+        let tiny = t.lookup_relative(b"Users\\tiny.txt").unwrap();
+        assert_eq!(t.age(tiny), crate::age::byte_of_days(30.0));
+        assert_eq!(t.age(a), crate::age::UNKNOWN, "no time in the record");
+        assert_eq!(t.age(users), crate::age::UNKNOWN, "folders have none");
         // Parents precede children.
         for id in 1..t.len() {
             assert!(t.node(NodeId(id as u32)).parent.0 < id as u32);

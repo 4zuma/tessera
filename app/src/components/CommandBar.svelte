@@ -3,8 +3,15 @@
   import { fmtBytes } from '../lib/format';
   import { t } from '../lib/i18n.svelte';
   import Icon from './Icon.svelte';
+  import SearchBox from './SearchBox.svelte';
 
-  let { paneOpen, canTogglePane, onTogglePane }: { paneOpen: boolean; canTogglePane: boolean; onTogglePane: () => void } = $props();
+  /** `search`: the search box is here, where Windows draws the title bar (Windows 10) */
+  let {
+    paneOpen,
+    canTogglePane,
+    onTogglePane,
+    search,
+  }: { paneOpen: boolean; canTogglePane: boolean; onTogglePane: () => void; search: boolean } = $props();
 
   let drivesOpen = $state(false);
 
@@ -68,6 +75,8 @@
   </nav>
 
   <span class="sp"></span>
+
+  {#if search}<div class="find"><SearchBox /></div>{/if}
 
   {#if app.scanning}
     <button class="btn" onclick={() => app.cancelScan()}><Icon name="stop" /><span class="lbl">{t('cmd.stop')}</span></button>
@@ -196,67 +205,14 @@
     flex: 1;
     min-width: 8px;
   }
-  /*
-   * Segmented control, as Windows 11 draws it (Community Toolkit "Segmented"): a sunken
-   * track, the chosen segment raised like a button with a short accent pill under its label.
-   * The raised segment covers the track's border, so no edge is drawn twice, and both labels
-   * keep the primary text colour: the surface says which one is on, not the ink.
-   */
+  .find {
+    flex: 0 1 260px;
+    min-width: 140px;
+    margin-right: 4px;
+  }
+  /* the segmented control (app.css): with the bar's 4 px gap, 8 px to the neighbours on both sides */
   .seg {
-    display: inline-flex;
-    flex: none;
-    height: 32px;
-    /* with the bar's 4 px gap: 8 px to the neighbours on both sides */
     margin: 0 4px;
-    border: 1px solid var(--ctl-stroke);
-    border-radius: var(--r-ctl);
-    background: var(--ctl-alt);
-  }
-  .seg button {
-    position: relative;
-    margin: -1px;
-    padding: 0 12px;
-    border: 1px solid transparent;
-    border-radius: var(--r-ctl);
-    background: transparent;
-    color: var(--text);
-    white-space: nowrap;
-    transition: background var(--t-fast) linear, border-color var(--t-fast) linear;
-  }
-  .seg button:hover:not(.on) {
-    background: var(--subtle-hover);
-  }
-  .seg button:active:not(.on) {
-    background: var(--subtle-press);
-    color: var(--text-2);
-  }
-  .seg button.on {
-    z-index: 1;
-    background: var(--ctl);
-    border-color: var(--ctl-stroke);
-    border-bottom-color: var(--ctl-stroke-2);
-  }
-  /* the pill grows from 4 to 16 px when a segment is chosen, and shrinks while it is pressed */
-  .seg button::after {
-    content: '';
-    position: absolute;
-    left: 50%;
-    bottom: 1px;
-    width: 16px;
-    height: 3px;
-    margin-left: -8px;
-    border-radius: 1.5px;
-    background: var(--accent);
-    opacity: 0;
-    transform: scaleX(0.25);
-    transition: transform var(--t-fast) var(--ease-decel), opacity var(--t-fast) linear;
-  }
-  .seg button.on::after {
-    opacity: 1;
-    transform: none;
-  }
-  .seg button.on:active::after {
-    transform: scaleX(0.5);
   }
   .sbtn[aria-pressed='true'] {
     color: var(--accent);

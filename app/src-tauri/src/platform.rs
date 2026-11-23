@@ -18,6 +18,9 @@ pub struct Info {
     pub elevated: bool,
     /// "mica" when the window got the Mica backdrop, "none" otherwise
     pub backdrop: &'static str,
+    /// "custom" when the page draws the title bar (Windows 11, see [`crate::titlebar`]),
+    /// "native" when Windows does
+    pub title_bar: &'static str,
     pub accent: Option<Accent>,
     pub version: String,
     /// the scan core serves the commands; false (non-Windows dev builds) means
@@ -30,10 +33,15 @@ pub struct Info {
 }
 
 impl Info {
-    pub fn detect(backdrop: &'static str, version: String) -> Self {
+    pub fn detect(window: &Window, version: String) -> Self {
         Info {
             elevated: imp::is_elevated(),
-            backdrop,
+            backdrop: window.backdrop,
+            title_bar: if window.custom_title_bar {
+                "custom"
+            } else {
+                "native"
+            },
             accent: imp::accent(),
             version,
             core: cfg!(windows),
@@ -43,8 +51,16 @@ impl Info {
     }
 }
 
+/// How the main window was built.
+pub struct Window {
+    /// "mica" or "none"
+    pub backdrop: &'static str,
+    /// the page draws the title bar (see [`crate::titlebar`])
+    pub custom_title_bar: bool,
+}
+
 /// Builds the main window from its entry in tauri.conf.json (which has `"create": false`)
-/// and gives it its backdrop. Returns the window and the backdrop it got ("mica" or "none").
+/// and gives it its backdrop. Returns the window and how it was built.
 ///
 /// Mica needs Windows 11 (build 22000+). There the WebView's background is transparent and
 /// the window has no redirection bitmap (no surface of its own: the WebView draws all of
@@ -56,9 +72,12 @@ impl Info {
 /// the strip a resize uncovers), so the window is opaque and painted with what WinUI
 /// itself shows when Mica is unavailable: the theme's solid base colour. The page paints
 /// the same colour (`--solid-base`).
+///
+/// With Mica the window also leaves out Windows' title bar: the page draws its own, as WinUI
+/// apps do on Windows 11 ([`crate::titlebar`]). Windows 10 keeps the native one.
 pub fn build_main_window(
     app: &tauri::App,
-) -> Result<(tauri::WebviewWindow, &'static str), Box<dyn std::error::Error>> {
+) -> Result<(tauri::WebviewWindow, Window), Box<dyn std::error::Error>> {
     use tauri::window::{Effect, EffectsBuilder};
     let config = app
         .config()
@@ -68,12 +87,16 @@ pub fn build_main_window(
         .find(|w| w.label == "main")
         .ok_or("main window missing")?;
     let mica = imp::supports_mica();
+    let custom = mica && crate::titlebar::wanted();
     let mut builder = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?;
     if mica {
         builder = builder
             .no_redirection_bitmap(true)
             // alpha 0 is what makes the WebView's background transparent
-            .background_color(tauri::window::Color(0, 0, 0, 0));
+            .background_color(tauri::window::Color(0, 0, 0, 0))
+            // without the title bar Tauri keeps the frame's shadow and rounded corners
+            .decorations(!custom)
+            .shadow(true);
     }
     let window = builder.build()?;
     if !mica {
@@ -82,13 +105,24 @@ pub fn build_main_window(
         let theme = window.theme().unwrap_or(tauri::Theme::Light);
         let _ = window.set_background_color(Some(solid_base(theme)));
         follow_theme(&window);
-        return Ok((window, "none"));
+        let built = Window {
+            backdrop: "none",
+            custom_title_bar: false,
+        };
+        return Ok((window, built));
     }
     let backdrop = match window.set_effects(EffectsBuilder::new().effect(Effect::Mica).build()) {
         Ok(()) => "mica",
         Err(_) => "none",
     };
-    Ok((window, backdrop))
+    if custom {
+        crate::titlebar::attach(&window);
+    }
+    let built = Window {
+        backdrop,
+        custom_title_bar: custom,
+    };
+    Ok((window, built))
 }
 
 /// WinUI's SolidBackgroundFillColorBase, the colour Mica falls back to. Same values as

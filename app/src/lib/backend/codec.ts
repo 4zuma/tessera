@@ -5,8 +5,8 @@
 
 export const MAGIC = 0x4c525354; // "TSRL"
 export const VERSION = 1;
-export const HEADER_SIZE = 32;
-export const RECORD_SIZE = 52;
+export const HEADER_SIZE = 36;
+export const RECORD_SIZE = 56;
 
 export const NONE = 0xffffffff;
 export const FREE = 0xfffffffe;
@@ -54,12 +54,18 @@ export interface Rect {
   cat: number;
   flags: number;
   header: number;
+  /** with a search: how much of it matches, 0 (none) to 255 (all); 0 without one */
+  hit: number;
+  /** how long ago it was modified, as an age byte (see ../age.ts); folders and groups: by size */
+  age: number;
 }
 
 export interface Layout {
   view: number;
   rev: number;
   bytesPerPx: number;
+  /** id of the search whose hits are in `hit`, 0 = none */
+  search: number;
   rects: Rect[];
 }
 
@@ -69,6 +75,11 @@ export const isSpecialId = (id: number) => id === FREE || id === UNSCANNED || id
 export const isNodeId = (id: number) => id < GROUP_BIT;
 export const groupFolder = (id: number) => id - GROUP_BIT;
 export const groupId = (folder: number) => GROUP_BIT + folder;
+/**
+ * The folder whose contents a tile shows: for a folded chain `a › b › c` the deepest
+ * folder `c`, where the files start; for any other tile its own id.
+ */
+export const contentOf = (r: Rect) => (r.kind === Kind.Dir || r.kind === Kind.DirLeaf ? r.target : r.id);
 
 const utf8 = new TextDecoder('utf-8');
 const utf8enc = new TextEncoder();
@@ -89,6 +100,8 @@ export function decodeLayout(buf: ArrayBuffer): Layout {
   const view = dv.getUint32(20, true);
   const rev = dv.getUint32(24, true);
   const bytesPerPx = dv.getFloat32(28, true);
+  if (headerSize < HEADER_SIZE) throw new LayoutFormatError(`header size ${headerSize} < ${HEADER_SIZE}`);
+  const search = dv.getUint32(32, true);
   if (recordSize < RECORD_SIZE) throw new LayoutFormatError(`record size ${recordSize} < ${RECORD_SIZE}`);
   const namesAt = headerSize + count * recordSize;
   if (namesAt + namesLen > buf.byteLength) throw new LayoutFormatError('layout buffer truncated');
@@ -115,9 +128,11 @@ export function decodeLayout(buf: ArrayBuffer): Layout {
       cat: dv.getUint8(o + 48),
       flags: dv.getUint8(o + 49),
       header: dv.getUint8(o + 50),
+      hit: dv.getUint8(o + 51),
+      age: dv.getUint8(o + 52),
     };
   }
-  return { view, rev, bytesPerPx, rects };
+  return { view, rev, bytesPerPx, search, rects };
 }
 
 /** Writes the same format the Rust core produces (used by the mock and by tests). */
@@ -146,6 +161,7 @@ export function encodeLayout(l: Layout): ArrayBuffer {
   dv.setUint32(20, l.view >>> 0, true);
   dv.setUint32(24, l.rev >>> 0, true);
   dv.setFloat32(28, l.bytesPerPx, true);
+  dv.setUint32(32, l.search >>> 0, true);
   let o = HEADER_SIZE;
   l.rects.forEach((r, i) => {
     dv.setUint32(o, r.id >>> 0, true);
@@ -166,6 +182,8 @@ export function encodeLayout(l: Layout): ArrayBuffer {
     dv.setUint8(o + 48, r.cat);
     dv.setUint8(o + 49, r.flags);
     dv.setUint8(o + 50, Math.min(255, Math.round(r.header)));
+    dv.setUint8(o + 51, Math.max(0, Math.min(255, Math.round(r.hit))));
+    dv.setUint8(o + 52, Math.max(0, Math.min(255, Math.round(r.age ?? 0))));
     o += RECORD_SIZE;
   });
   const pool = new Uint8Array(buf, o, namesLen);

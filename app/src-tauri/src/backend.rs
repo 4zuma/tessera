@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State, ipc::Response};
 use tessera_core::layout::{self, LayoutEngine, LayoutRequest, LayoutStyle, RootExtras, SizeMode};
 use tessera_core::scan::{self, ScanOptions, ScanProgress};
+use tessera_core::search::{self, Hits, Query, QueryError};
 use tessera_core::totals::{Totals, TotalsCache};
 use tessera_core::watch::{BatchReport, WatchOptions, Watcher};
 use tessera_core::{NodeFlags, NodeId, SharedTree, Tree, category, delete};
@@ -139,6 +140,11 @@ struct Session {
     shown: Mutex<Shown>,
     /// Changes came in while the window was minimized; tell it on restore.
     stale: AtomicBool,
+    /// What the search box found, drawn into every layout while it is set.
+    hits: Mutex<Option<Arc<Hits>>>,
+    /// Bumped by every search and every clear; a search still running
+    /// stops when it changes, and its id is the value it started with.
+    search_seq: AtomicU32,
 }
 
 /// The last layout sent to the window, and how much changed since it (or
@@ -151,6 +157,8 @@ struct Shown {
     /// [`Tree::changed_bytes`] and the free space at that point.
     changes: u64,
     free: u64,
+    /// [`Tree::redated_seq`] at that point.
+    redated: u64,
 }
 
 impl Session {
@@ -176,6 +184,8 @@ impl Session {
             totals: Mutex::new(TotalsCache::new()),
             shown: Mutex::new(Shown::default()),
             stale: AtomicBool::new(false),
+            hits: Mutex::new(None),
+            search_seq: AtomicU32::new(0),
         }
     }
 
@@ -235,7 +245,7 @@ impl Session {
     }
 
     /// Remembers the layout just sent to the window.
-    fn record_shown(&self, req: LayoutRequest, buf: &[u8], changes: u64) {
+    fn record_shown(&self, req: LayoutRequest, buf: &[u8], changes: u64, redated: u64) {
         let mut g = lock(&self.shown);
         g.req = Some(req);
         g.buf.clear();
@@ -243,6 +253,7 @@ impl Session {
         g.bytes_per_px = layout::header_bytes_per_px(buf).map_or(0.0, f64::from);
         g.changes = changes;
         g.free = self.free.load(Relaxed);
+        g.redated = redated;
         self.stale.store(false, Relaxed);
     }
 
@@ -252,14 +263,17 @@ impl Session {
     /// one on screen. Changes Windows makes all the time on a system drive
     /// (logs, caches) mostly stop at the first step and cost no redraw.
     /// Renames change no bytes, so a batch that renamed or moved something
-    /// in a folder drawn open goes straight to the comparison.
+    /// in a folder drawn open goes straight to the comparison; so does one
+    /// that re-dated a file (a write to an old file, about once per file a
+    /// session), whose age band may show.
     fn needs_redraw(&self, core: &Core, rep: &BatchReport) -> bool {
         let t = self.tree();
         let now = t.changed_bytes();
-        let (req, since, free, bytes_per_px) = {
+        let redated = t.redated_seq();
+        let (req, since, free, bytes_per_px, dated) = {
             let g = lock(&self.shown);
             match g.req {
-                Some(req) => (req, g.changes, g.free, g.bytes_per_px),
+                Some(req) => (req, g.changes, g.free, g.bytes_per_px, g.redated),
                 None => return true,
             }
         };
@@ -281,11 +295,19 @@ impl Session {
             && bytes_per_px.is_finite()
             && bytes < bytes_per_px * REDRAW_PX2
             && !(rep.moved > 0 && self.renamed_in_sight(view, &rep.dirs))
+            && redated == dated
         {
             return false;
         }
         let extras = self.extras(&t, &req);
-        let buf = lock(&core.engine).layout(&t, &req, extras, self.rev.load(Relaxed));
+        let hits = lock(&self.hits).clone();
+        let buf = lock(&core.engine).layout_with(
+            &t,
+            &req,
+            extras,
+            self.rev.load(Relaxed),
+            hits.as_deref(),
+        );
         drop(t);
         let mut g = lock(&self.shown);
         if g.req == Some(req) && layout::same_picture(&g.buf, &buf, REDRAW_TOLERANCE_PX) {
@@ -293,6 +315,7 @@ impl Session {
             // picture on screen, so small changes cannot creep past unseen
             g.changes = now;
             g.free = self.free.load(Relaxed);
+            g.redated = redated;
             return false;
         }
         true
@@ -300,6 +323,16 @@ impl Session {
 
     /// True when one of `dirs` (folders whose entries changed) is the view or
     /// a folder whose entries are drawn, so a rename there may show.
+    /// A search is shown and the batch changed something it found or would
+    /// find now. Its count and bytes must follow even when the map does not
+    /// change enough to draw again.
+    fn search_touched(&self, rep: &BatchReport) -> bool {
+        let Some(h) = lock(&self.hits).clone() else {
+            return false;
+        };
+        h.touched_by(&self.tree(), &rep.dirs)
+    }
+
     fn renamed_in_sight(&self, view: NodeId, dirs: &[NodeId]) -> bool {
         if dirs.contains(&view) {
             return true;
@@ -410,6 +443,8 @@ struct StyleReq {
     header: f32,
     min_header_w: f32,
     min_area: f32,
+    min_side: f32,
+    min_width: f32,
     recurse: f32,
     open_share: f32,
     max_depth: u8,
@@ -433,6 +468,8 @@ impl From<&LayoutReq> for LayoutRequest {
                 header: s.header,
                 min_header_w: s.min_header_w,
                 min_area: s.min_area,
+                min_side: s.min_side,
+                min_width: s.min_width,
                 recurse: s.recurse,
                 open_share: s.open_share,
                 max_depth: s.max_depth,
@@ -647,7 +684,7 @@ fn on_batch(app: &AppHandle, s: &Weak<Session>, rep: &BatchReport) {
         }
         return;
     }
-    if s.needs_redraw(&core, rep) {
+    if s.search_touched(rep) || s.needs_redraw(&core, rep) {
         s.send_changed(app);
     }
 }
@@ -681,11 +718,85 @@ pub async fn layout(core: State<'_, Core>, req: LayoutReq) -> Result<Response, S
     req.view = live_view(&t, req.view);
     let extras = s.extras(&t, &req);
     let rev = s.rev.load(Relaxed);
-    let buf = lock(&core.engine).layout(&t, &req, extras, rev);
-    let changes = t.changed_bytes();
+    let hits = lock(&s.hits).clone();
+    let buf = lock(&core.engine).layout_with(&t, &req, extras, rev, hits.as_deref());
+    let (changes, redated) = (t.changed_bytes(), t.redated_seq());
     drop(t);
-    s.record_shown(req, &buf, changes);
+    s.record_shown(req, &buf, changes, redated);
     Ok(Response::new(buf))
+}
+
+// ---------------------------------------------------------------------------
+// Search
+
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResult {
+    /// Echoed in the header of layouts that show these hits.
+    id: u32,
+    /// Matching files and folders (what is in a matching folder not counted).
+    count: u64,
+    /// Their bytes, in the size mode searched.
+    bytes: u64,
+    ms: u32,
+}
+
+/// Runs the search box's query over the tree, on a worker thread. From now
+/// on layouts carry its hits. `None` when a newer search or a clear came in
+/// meanwhile (the window ignores it). An empty query clears the search.
+#[tauri::command]
+pub async fn search(
+    core: State<'_, Core>,
+    query: String,
+    size_mode: Mode,
+) -> Result<Option<SearchResult>, String> {
+    let s = core.current()?;
+    let q = match Query::parse(&query) {
+        Ok(Some(q)) => q,
+        Ok(None) => {
+            clear_search(&s);
+            return Ok(None);
+        }
+        Err(QueryError::BadSize(w)) => return Err(text::BAD_SIZE.get().replace("{}", &w)),
+    };
+    let id = s.search_seq.fetch_add(1, Relaxed).wrapping_add(1);
+    tauri::async_runtime::spawn_blocking(move || run_search(&s, &q, size_mode.into(), id))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn run_search(s: &Session, q: &Query, mode: SizeMode, id: u32) -> Option<SearchResult> {
+    let started = Instant::now();
+    let hits = {
+        let t = s.tree();
+        search::search(&t, q, mode, id, &|| s.search_seq.load(Relaxed) != id)?
+    };
+    let res = SearchResult {
+        id,
+        count: hits.count,
+        bytes: hits.bytes,
+        ms: started.elapsed().as_millis().min(u32::MAX as u128) as u32,
+    };
+    let mut g = lock(&s.hits);
+    // a clear or a newer search may have come in after the last look
+    if s.search_seq.load(Relaxed) != id {
+        return None;
+    }
+    *g = Some(Arc::new(hits));
+    Some(res)
+}
+
+fn clear_search(s: &Session) {
+    s.search_seq.fetch_add(1, Relaxed);
+    *lock(&s.hits) = None;
+}
+
+/// Closes the search: stops one that runs and frees its hits.
+#[tauri::command]
+pub fn search_clear(core: State<'_, Core>) {
+    if let Ok(s) = core.current() {
+        clear_search(&s);
+    }
 }
 
 /// The folder to show for a requested view: itself, or its nearest live
@@ -946,6 +1057,26 @@ fn cat_stats_of(s: &Session, view: NodeId, mode: SizeMode) -> Vec<CatStat> {
     out
 }
 
+#[tauri::command]
+pub async fn age_stats(
+    core: State<'_, Core>,
+    view: u32,
+    size_mode: Mode,
+) -> Result<Vec<u64>, String> {
+    let s = core.current()?;
+    Ok(age_stats_of(&s, NodeId(view), size_mode.into()))
+}
+
+/// Bytes below `view` per legend bin of [`tessera_core::age::bin`] (bin 0:
+/// files whose time is not known); empty when `view` is not a folder.
+fn age_stats_of(s: &Session, view: NodeId, mode: SizeMode) -> Vec<u64> {
+    let t = s.tree();
+    if view.index() >= t.len() || t.is_deleted(view) || !t.node(view).is_dir() {
+        return Vec::new();
+    }
+    totals(s, &t, view).age_bytes(mode).to_vec()
+}
+
 // ---------------------------------------------------------------------------
 // Deleting
 
@@ -1177,7 +1308,7 @@ mod tests {
     #[test]
     fn layout_request_parses_the_contract() {
         let r: LayoutReq = serde_json::from_str(
-            r#"{"view":0,"width":800,"height":600,"sizeMode":"logical","style":{"outer":6,"pad":3,"gap":2,"header":21,"minHeaderW":60,"minArea":110,"recurse":60,"openShare":0.0025,"maxDepth":14,"maxPerDir":400,"labelMinW":44,"labelMinH":20}}"#,
+            r#"{"view":0,"width":800,"height":600,"sizeMode":"logical","style":{"outer":6,"pad":3,"gap":2,"header":21,"minHeaderW":60,"minArea":110,"minSide":24,"minWidth":44,"recurse":60,"openShare":0.0025,"maxDepth":14,"maxPerDir":400,"labelMinW":44,"labelMinH":20}}"#,
         )
         .unwrap();
         let q = LayoutRequest::from(&r);
@@ -1271,6 +1402,24 @@ mod tests {
     }
 
     #[test]
+    fn ages_below_a_view() {
+        use tessera_core::age;
+        let s = sample();
+        let me = id_of(&s, &[b"Users", b"me"]);
+        let a = id_of(&s, &[b"Users", b"me", b"a.mp4"]);
+        let year_ago = age::now_filetime() - 400 * 864_000_000_000;
+        assert!(s.tree.write().unwrap().set_modified(a, year_ago));
+        let bins = age_stats_of(&s, me, SizeMode::Logical);
+        assert_eq!(bins.len(), age::BINS);
+        let old = age::bin(age::byte_of_days(400.0));
+        assert_eq!(bins[old], 400_000);
+        assert_eq!(bins[0], 900 + 8000, "b.ts and c.pdf have no time");
+        assert_eq!(bins.iter().sum::<u64>(), 400_000 + 900 + 8000);
+        assert!(age_stats_of(&s, a, SizeMode::Disk).is_empty());
+        assert!(age_stats_of(&s, NodeId(9999), SizeMode::Disk).is_empty());
+    }
+
+    #[test]
     fn crumbs_name_the_drive() {
         let s = sample();
         let docs = id_of(&s, &[b"Users", b"me", b"Docs"]);
@@ -1279,6 +1428,39 @@ mod tests {
         // Users holds only "me", so it is folded away (rule 4)
         assert_eq!(names, ["C:", "me", "Docs"]);
         assert_eq!(n.up, Some(id_of(&s, &[b"Users", b"me"]).0));
+    }
+
+    #[test]
+    fn search_hits_reach_the_layout_until_cleared() {
+        let s = sample();
+        let q = Query::parse(".mp4 .pdf").unwrap().unwrap();
+        let id = s.search_seq.fetch_add(1, Relaxed) + 1;
+        let r = run_search(&s, &q, SizeMode::Disk, id).unwrap();
+        assert_eq!((r.id, r.count, r.bytes), (id, 2, 4096 * 100 + 8192));
+        let draw = |s: &Session, view: NodeId| {
+            let req = LayoutRequest::new(view, 800.0, 600.0);
+            let hits = lock(&s.hits).clone();
+            let t = s.tree();
+            let buf =
+                LayoutEngine::new().layout_with(&t, &req, s.extras(&t, &req), 1, hits.as_deref());
+            layout::decode(&buf).unwrap()
+        };
+        // (at the root, free space leaves Users too small to open)
+        let me = id_of(&s, &[b"Users", b"me"]);
+        let d = draw(&s, me);
+        assert_eq!(d.search, id);
+        let mp4 = id_of(&s, &[b"Users", b"me", b"a.mp4"]);
+        assert!(d.records.iter().any(|r| r.id == mp4.0 && r.hit == 255));
+        // a closed folder is lit by the share of its bytes that matched
+        let users = id_of(&s, &[b"Users"]);
+        let top = draw(&s, NodeId::ROOT);
+        let u = top.records.iter().find(|r| r.id == users.0).unwrap();
+        assert!(u.hit > 200 && u.hit < 255, "{u:?}");
+        // a newer search wins over one that finishes late
+        let stale = s.search_seq.load(Relaxed);
+        clear_search(&s);
+        assert!(run_search(&s, &q, SizeMode::Disk, stale).is_none());
+        assert_eq!(draw(&s, me).search, 0);
     }
 
     #[test]

@@ -4,9 +4,11 @@
  */
 import { SvelteSet } from 'svelte/reactivity';
 import { createBackend } from './backend';
-import { decodeLayout, Flag, FREE, groupFolder, isGroupId, isNodeId, Kind, NONE, UNSCANNED, type Layout, type Rect } from './backend/codec';
-import type { Backend, CatStat, Crumb, Details, PlatformInfo, ScanProgress, SizeMode, Volume } from './backend/types';
-import { fmtBytes, fmtSecs } from './format';
+import { contentOf, decodeLayout, Flag, FREE, groupFolder, isGroupId, isNodeId, Kind, NONE, UNSCANNED, type Layout, type Rect } from './backend/codec';
+import type { Backend, CaptionState, CatStat, Crumb, Details, PlatformInfo, ScanProgress, SearchResult, SizeMode, Volume } from './backend/types';
+import { AGE_EDGES, ageBand } from './age';
+import { makeColoring, type ColorBy, type Coloring } from './coloring';
+import { bandName, fmtBytes, fmtSecs } from './format';
 import { catName, fmtNum, joinList, setLang, t, tn } from './i18n.svelte';
 import type { IconName } from './icons';
 import { applyThemeCss, makeTheme, type Scheme, type Theme } from './theme';
@@ -72,6 +74,17 @@ export interface ScanState {
   errors: number;
 }
 
+/** the search box */
+export interface SearchState {
+  text: string;
+  /** a search the user started is running (refreshes while things change don't count) */
+  busy: boolean;
+  /** what the last search found, kept while a newer one runs */
+  result: SearchResult | null;
+  /** why the query can't be read */
+  error: string | null;
+}
+
 /** what the selection card shows */
 export interface SelInfo {
   count: number;
@@ -81,6 +94,10 @@ export interface SelInfo {
 
 const PRIORITY: Record<MotionKind, number> = { instant: 0, update: 1, live: 2, scan: 2, delete: 4, mode: 5, morph: 5, zoom: 6 };
 const SCAN_LAYOUT_MS = 250;
+/** a search runs this long after the last key press (Enter runs it at once) */
+const SEARCH_TYPING_MS = 150;
+/** while a scan or the watcher changes the tree, the search runs again at most this often */
+const SEARCH_REFRESH_MS = 1500;
 
 let toastSeq = 0;
 
@@ -113,10 +130,21 @@ export class App implements EngineHost {
   readonly sel = new SvelteSet<number>();
   hoverId = $state<number | null>(null);
   filter = $state<number | null>(null);
+  search = $state<SearchState>({ text: '', busy: false, result: null, error: null });
+  /** the map shows the search's hits: what didn't match is dimmed */
+  hits = $state(false);
+  /** Ctrl+F counts up; the search box takes the focus */
+  searchFocus = $state(0);
   scan = $state<ScanState | null>(null);
   rev = $state(0);
   bytesPerPx = $state(0);
   legend = $state<CatStat[]>([]);
+  /** what the tiles are coloured by */
+  colorBy = $state<ColorBy>('type');
+  /** where the age bands split, in days, oldest last */
+  ageEdges = $state.raw<readonly number[]>(AGE_EDGES);
+  /** bytes per age byte in the view: the legend by age */
+  ageHist = $state.raw<number[]>([]);
   details = $state<Details | null>(null);
   selInfo = $state<SelInfo>({ count: 0, bytes: 0, lockReason: null });
   toast = $state<ToastData | null>(null);
@@ -125,9 +153,12 @@ export class App implements EngineHost {
   tip = $state<TipData | null>(null);
   scheme = $state<Scheme>('light');
   theme = $state.raw<Theme>(makeTheme('light', null));
+  coloring = $state.raw<Coloring>(makeColoring('type', this.theme, AGE_EDGES));
   stats = $state<EngineStats>({ rects: 0, fps: 0, frameMs: 0, busy: false, gpu: false });
   showHud = $state(false);
   error = $state<string | null>(null);
+  /** the custom title bar's caption buttons (Windows 11) */
+  caption = $state<CaptionState>({ maximized: false, hover: false, pressed: false });
   reduced = false;
   undoToken = $state<number | null>(null);
   /** Windows' menu is open (or about to be): input on the map waits for it */
@@ -146,6 +177,9 @@ export class App implements EngineHost {
   private legendTimer: ReturnType<typeof setTimeout> | null = null;
   private lastLegend = 0;
   private detailsSeq = 0;
+  private searchSeq = 0;
+  private searchTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastSearch = 0;
   private selSeq = 0;
   private scanId = 0;
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -184,6 +218,10 @@ export class App implements EngineHost {
     new MutationObserver(() => this.setScheme(resolve())).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
     await b.on('scan-progress', p => this.onProgress(p));
     await b.on('tree-changed', e => this.onTreeChanged(e.rev, e.bytesDelta));
+    if (b.platform.titleBar === 'custom') {
+      await b.on('caption', s => (this.caption = s));
+      this.caption = await b.captionState();
+    }
     await this.loadSettings();
     this.volumes = await b.listVolumes();
     this.phase = 'pick';
@@ -244,7 +282,26 @@ export class App implements EngineHost {
     this.scheme = s;
     this.theme = makeTheme(s, this.platform?.accent ?? null);
     applyThemeCss(this.theme);
+    this.coloring = makeColoring(this.colorBy, this.theme, this.ageEdges);
     this.engine?.painter.reset();
+    this.engine?.kick();
+  }
+
+  /** colour the tiles by file type or by age; the legend follows */
+  setColorBy(by: ColorBy) {
+    if (by === this.colorBy) return;
+    this.colorBy = by;
+    this.filter = null;
+    this.coloring = makeColoring(by, this.theme, this.ageEdges);
+    this.refreshLegend(true);
+    this.engine?.kick();
+  }
+
+  /** move the age bands' edges (days, any order) */
+  setAgeEdges(edges: readonly number[]) {
+    this.ageEdges = [...new Set(edges)].sort((a, b) => a - b);
+    if (this.colorBy === 'age') this.filter = null;
+    this.coloring = makeColoring(this.colorBy, this.theme, this.ageEdges);
     this.engine?.kick();
   }
 
@@ -316,6 +373,16 @@ export class App implements EngineHost {
     return this.engine?.items.get(id)?.r ?? null;
   }
 
+  /**
+   * The folder a tile's path means: the deepest folder of a folded chain `a › b › c`, so
+   * copying, showing in Explorer and the details card all land where the files are.
+   * Deleting and Windows' own menu still take the whole tile (`a`).
+   */
+  private contentId(id: number): number {
+    const r = this.rectOf(id);
+    return r && isNodeId(id) ? contentOf(r) : id;
+  }
+
   /* ------------------------------------------------------------------ layout */
 
   /** at most one layout request in flight; later requests merge, the stronger motion wins */
@@ -376,6 +443,9 @@ export class App implements EngineHost {
     if (selChanged) void this.refreshSel();
     if (this.hoverId != null && !ids.has(this.hoverId)) this.hover(null);
     if (L.rev !== this.rev) this.rev = L.rev;
+    // a layout asked for before the box was cleared can still carry the old hits
+    const hits = L.search !== 0 && this.searchOn;
+    if (hits !== this.hits) this.hits = hits;
     void this.refreshDetails();
   }
 
@@ -393,6 +463,9 @@ export class App implements EngineHost {
     this.view = 0;
     this.phase = 'map';
     this.legend = [];
+    this.ageHist = [];
+    this.hits = false;
+    this.search = { ...this.search, busy: false, result: null };
     this.nameCache.clear();
     this.engine?.items.clear();
     this.scan = { running: true, files: 0, dirs: 0, scanned: 0, used: vol ? vol.capacity - vol.free : 0, elapsedMs: 0, errors: 0 };
@@ -428,6 +501,7 @@ export class App implements EngineHost {
       this.scanLayoutTimer = null;
       this.requestLayout('scan');
       this.refreshLegend(true);
+      this.refreshSearch(true);
       void this.refreshVolumes();
       return;
     }
@@ -443,6 +517,7 @@ export class App implements EngineHost {
       }, wait);
     }
     this.refreshLegend(false);
+    this.refreshSearch(false);
   }
 
   private onTreeChanged(rev: number, bytesDelta: number) {
@@ -450,6 +525,7 @@ export class App implements EngineHost {
     if (this.volume && bytesDelta) this.volume = { ...this.volume, free: this.volume.free - bytesDelta };
     this.requestLayout('live');
     this.refreshLegend(false);
+    this.refreshSearch(false);
   }
 
   private async refreshVolumes() {
@@ -469,13 +545,18 @@ export class App implements EngineHost {
     this.up = n.up;
   }
 
-  /** legend by type: immediately on view changes, at most once a second while things change */
+  /** the legend (by type or by age): immediately on view changes, at most once a second while things change */
   refreshLegend(now: boolean) {
     const run = async () => {
       this.legendTimer = null;
       this.lastLegend = performance.now();
       if (!this.backend || !this.volume) return;
       const v = this.view;
+      if (this.colorBy === 'age') {
+        const h = await this.backend.ageStats(v, this.sizeMode);
+        if (v === this.view) this.ageHist = h;
+        return;
+      }
       const st = await this.backend.catStats(v, this.sizeMode);
       if (v === this.view) this.legend = st;
     };
@@ -498,10 +579,22 @@ export class App implements EngineHost {
   async refreshDetails() {
     if (!this.backend || !this.volume) return;
     const id = this.focusId;
+    const inner = this.contentId(id);
     const seq = ++this.detailsSeq;
-    const d = await this.backend.details(id, this.view, this.sizeMode);
+    const [d, di] = await Promise.all([
+      this.backend.details(id, this.view, this.sizeMode),
+      inner !== id ? this.backend.details(inner, this.view, this.sizeMode) : null,
+    ]);
     if (seq !== this.detailsSeq) return;
     if (d && isGroupId(id)) d.size = this.rectOf(id)?.size ?? 0;
+    if (d && di) {
+      // a folded chain: name it as the tile does, and show what is inside its deepest
+      // folder; size, share and the lock stay the whole tile's, since delete takes it all
+      d.name = this.rectOf(id)?.name || d.name;
+      d.path = di.path;
+      d.files = di.files;
+      d.dirs = di.dirs;
+    }
     this.details = d;
   }
 
@@ -545,8 +638,9 @@ export class App implements EngineHost {
     }
     const parent = r.parent !== NONE ? this.rectOf(r.parent) : null;
     const viewSize = this.viewTotal || null;
-    const mostly = r.kind === Kind.DirLeaf ? catName(r.cat) : undefined;
-    const kind = mostly
+    const byAge = this.colorBy === 'age';
+    const mostly = r.kind === Kind.DirLeaf && !byAge ? catName(r.cat) : undefined;
+    const what = mostly
       ? t('kind.folderMostly', { cat: mostly })
       : r.kind === Kind.Dir || r.kind === Kind.DirLeaf
         ? t('folder')
@@ -557,6 +651,8 @@ export class App implements EngineHost {
             : r.kind === Kind.Unscanned
               ? t('scanning')
               : (catName(r.cat) ?? t('file'));
+    // coloured by age, the tip names the band too: the colours alone don't say it
+    const kind = byAge && r.kind !== Kind.Free && r.kind !== Kind.Unscanned ? `${what} · ${bandName(ageBand(r.age, this.ageEdges), this.ageEdges)}` : what;
     const name =
       r.kind === Kind.Group ? tn('smallItems', r.count) : r.kind === Kind.Free ? t('free') : r.kind === Kind.Unscanned ? t('unscanned') : r.name || this.nameCache.get(id) || '';
     this.tip = { x, y, id, name, size: r.size, kind, share: parent ? r.size / Math.max(1, parent.size) : r.kind === Kind.Free ? null : viewSize ? r.size / viewSize : null };
@@ -687,12 +783,108 @@ export class App implements EngineHost {
     this.remember('sizeMode', m);
     this.requestLayout('mode');
     this.refreshLegend(true);
+    this.refreshSearch(true);
     this.showToast('info', m === 'disk' ? t('toast.diskMode') : t('toast.logicalMode'));
   }
 
-  setFilter(cat: number | null) {
-    this.filter = this.filter === cat ? null : cat;
+  /** dim everything but one legend entry (a category or an age band); again to undo */
+  setFilter(key: number | null) {
+    this.filter = this.filter === key ? null : key;
     this.engine?.kick();
+  }
+
+  /* ------------------------------------------------------------------ search */
+
+  /** a query is in the box and can be read */
+  get searchOn(): boolean {
+    return this.search.text.trim() !== '' && !this.search.error;
+  }
+
+  /** the box's text changed: search once typing pauses */
+  setSearch(text: string) {
+    this.search.text = text;
+    if (this.searchTimer) clearTimeout(this.searchTimer);
+    this.searchTimer = null;
+    if (!text.trim()) {
+      void this.dropSearch();
+      return;
+    }
+    this.searchTimer = setTimeout(() => {
+      this.searchTimer = null;
+      void this.runSearch(true);
+    }, SEARCH_TYPING_MS);
+  }
+
+  /** Enter: search now */
+  searchNow() {
+    if (this.searchTimer) clearTimeout(this.searchTimer);
+    this.searchTimer = null;
+    if (this.search.text.trim()) void this.runSearch(true);
+  }
+
+  /** empties the box; the whole map is bright again */
+  clearSearch() {
+    if (this.searchTimer) clearTimeout(this.searchTimer);
+    this.searchTimer = null;
+    this.search.text = '';
+    void this.dropSearch();
+  }
+
+  /** the tree or the size mode changed: the hits change with it (`now`, or at most every 1.5 s) */
+  private refreshSearch(now: boolean) {
+    if (!this.searchOn || this.searchTimer) return;
+    if (now) {
+      void this.runSearch(false);
+      return;
+    }
+    const wait = SEARCH_REFRESH_MS - (performance.now() - this.lastSearch);
+    if (wait <= 0) void this.runSearch(false);
+    else
+      this.searchTimer = setTimeout(() => {
+        this.searchTimer = null;
+        void this.runSearch(false);
+      }, wait);
+  }
+
+  private async runSearch(typed: boolean) {
+    const b = this.backend;
+    const text = this.search.text;
+    if (!b || !this.volume || !text.trim()) return;
+    const seq = ++this.searchSeq;
+    this.lastSearch = performance.now();
+    if (typed) this.search.busy = true;
+    let res: SearchResult | null;
+    try {
+      res = await b.search(text, this.sizeMode);
+    } catch (err) {
+      if (seq !== this.searchSeq) return;
+      this.search.busy = false;
+      this.search.result = null;
+      this.search.error = String(err instanceof Error ? err.message : err);
+      this.hits = false;
+      this.engine?.kick();
+      void b.searchClear();
+      return;
+    }
+    // a newer search or a clear came in meanwhile
+    if (seq !== this.searchSeq || !res) return;
+    this.search.busy = false;
+    this.search.result = res;
+    this.search.error = null;
+    this.requestLayout('update');
+  }
+
+  private async dropSearch() {
+    this.searchSeq++;
+    this.search.busy = false;
+    this.search.result = null;
+    this.search.error = null;
+    if (this.hits) {
+      this.hits = false;
+      this.engine?.kick();
+    }
+    await this.backend?.searchClear();
+    this.requestLayout('update');
   }
 
   /* ------------------------------------------------------------------ deleting */
@@ -723,6 +915,7 @@ export class App implements EngineHost {
       this.undoToken = res.undo;
       this.requestLayout('delete', { reflow: true });
       this.refreshLegend(true);
+      this.refreshSearch(true);
       const what = res.ok.length > 1 ? tn('items', res.ok.length) : names[ids.indexOf(res.ok[0])] || tn('items', 1);
       const actions: ToastAction[] = [];
       if (res.undo != null) actions.push({ label: t('toast.undo'), icon: 'undo', run: () => void this.undo() });
@@ -739,6 +932,7 @@ export class App implements EngineHost {
     const res = await this.backend.restore(tok);
     this.requestLayout('delete', { reflow: true });
     this.refreshLegend(true);
+    this.refreshSearch(true);
     for (const id of res.ok) this.sel.add(id);
     void this.refreshSel();
     this.showToast('info', t('toast.undone'));
@@ -769,6 +963,7 @@ export class App implements EngineHost {
     this.undoToken = null;
     this.requestLayout('delete', { reflow: true });
     this.refreshLegend(true);
+    this.refreshSearch(true);
     if (this.volume) this.volume = { ...this.volume, free: this.volume.free + res.bytes };
     if (res.ok.length) this.showToast('success', t('toast.freeNow', { size: fmtBytes(this.volume?.free ?? 0) }), [], t('toast.purged', { size: fmtBytes(res.bytes) }));
     if (res.failed.length) this.showToast('error', this.failedLines(res.failed).join('\n'), [], t('toast.notDeleted'));
@@ -792,6 +987,7 @@ export class App implements EngineHost {
     this.undoToken = null;
     this.requestLayout('delete', { reflow: true });
     this.refreshLegend(true);
+    this.refreshSearch(true);
     this.volume = { ...this.volume, free: this.volume.free + res.bytes };
     if (!res.failed.length) {
       this.showToast('success', t('toast.freeNow', { size: fmtBytes(this.volume.free) }), [], t('toast.binEmptied', { size: fmtBytes(res.bytes) }));
@@ -808,7 +1004,7 @@ export class App implements EngineHost {
 
   async copyPath(ids: number[]) {
     if (!this.backend) return;
-    const ds = await Promise.all(ids.filter(isNodeId).map(id => this.backend!.details(id, this.view, this.sizeMode)));
+    const ds = await Promise.all(ids.filter(isNodeId).map(id => this.backend!.details(this.contentId(id), this.view, this.sizeMode)));
     const text = ds.map(d => d?.path).filter(Boolean).join('\r\n');
     try {
       await navigator.clipboard.writeText(text);
@@ -820,6 +1016,7 @@ export class App implements EngineHost {
 
   async reveal(id: number) {
     if (!this.backend || !isNodeId(id)) return;
+    id = this.contentId(id);
     if (!this.platform?.core) {
       const d = await this.backend.details(id, this.view, this.sizeMode);
       this.showToast('info', t('preview.revealBody', { path: d?.path ?? '' }), [], t('preview.reveal'));
@@ -988,6 +1185,9 @@ export class App implements EngineHost {
   /* ------------------------------------------------------------------ keyboard */
 
   onKey(e: KeyboardEvent) {
+    const ctrlF = (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f';
+    // never the WebView's own find bar
+    if (ctrlF) e.preventDefault();
     if (this.phase !== 'map') return;
     const typing = e.target instanceof HTMLElement && e.target.matches('input, textarea, select');
     if (this.confirm) {
@@ -1002,6 +1202,10 @@ export class App implements EngineHost {
         e.preventDefault();
         this.menu = null;
       }
+      return;
+    }
+    if (ctrlF) {
+      this.searchFocus++;
       return;
     }
     if (typing) return;

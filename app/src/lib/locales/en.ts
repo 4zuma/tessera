@@ -25,6 +25,14 @@ export const en = {
   close: 'Close',
   items: { one: '{n} item', other: '{n} items' },
   files: { one: '{n} file', other: '{n} files' },
+  'age.days': { one: '{n} day', other: '{n} days' },
+  'age.weeks': { one: '{n} week', other: '{n} weeks' },
+  'age.months': { one: '{n} month', other: '{n} months' },
+  'age.years': { one: '{n} year', other: '{n} years' },
+  'age.within': 'Within {d}',
+  'age.between': '{a} – {b}',
+  'age.over': 'Older than {d}',
+  'age.unknown': 'Date not known',
   folders: { one: '{n} folder', other: '{n} folders' },
   smallItems: { one: '{n} small item', other: '{n} small items' },
   selected: '{n} selected · {size}',
@@ -63,6 +71,9 @@ export const en = {
 
   /* start */
   'app.startFailed': "Tessera couldn't start",
+  'caption.min': 'Minimize',
+  'caption.max': 'Maximize',
+  'caption.restore': 'Restore Down',
   'picker.title': 'Choose a drive to scan',
   'picker.sub': 'The map grows while the scan runs, so you can start exploring before it finishes.',
   'picker.space': '{free} free of {capacity} · {fs}',
@@ -90,6 +101,14 @@ export const en = {
   'cmd.more': 'More',
   'cmd.moreTip': 'More options',
 
+  /* search box (Ctrl+F) */
+  'search.placeholder': 'Search {drive}',
+  'search.label': 'Search files and folders',
+  'search.clear': 'Clear search',
+  /** count and total size of what the search found */
+  'search.found': '{items} · {size}',
+  'search.none': 'No matches',
+
   /* details pane */
   'pane.contains': 'Contains',
   'pane.modified': 'Modified',
@@ -100,7 +119,15 @@ export const en = {
   'pane.howToSelect': 'Click to select, Ctrl or Shift + click for more',
   'pane.howToMore': 'Double-click to zoom in, right-click for more',
   'pane.byType': 'By type',
+  'pane.byAge': 'By age',
+  'pane.colorBy': 'Colour tiles by',
+  'pane.typeTip': 'Colour by file type. A closed folder takes the type that fills it most.',
+  'pane.ageTip': 'Colour by when the files were last changed: the newer, the warmer. A folder takes the age of most of its bytes.',
   'pane.highlight': 'Highlight only {cat}',
+  'pane.editBands': 'Change the bands',
+  'pane.bandsDone': 'Done',
+  'pane.bandsHint': 'Pick where the bands split.',
+  'pane.bandsReset': 'Reset',
   'pane.afterScan': 'Shown after the scan',
 
   /* treemap and status bar */
@@ -200,6 +227,7 @@ export const en = {
   'core.personal': 'This is one of your personal folders. Windows and your apps use it.',
   'core.temp': 'Windows and your apps keep temporary files in this folder.',
   'core.noItem': 'This item no longer exists.',
+  'core.badSize': '“{word}” is not a size or an age. Try >1GB, <500MB or >1y.',
   'mock.dataLabel': 'Data',
   'mock.systemFolder': 'System folder, protected',
   'mock.cloud': 'OneDrive online-only file: large, but takes almost no disk space',

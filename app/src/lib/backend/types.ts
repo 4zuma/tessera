@@ -10,6 +10,8 @@ export interface PlatformInfo {
   elevated: boolean;
   /** the window backdrop that Rust managed to apply */
   backdrop: 'mica' | 'none';
+  /** 'custom': the page draws the title bar (Windows 11); 'native': Windows does */
+  titleBar: 'custom' | 'native';
   /** system accent colour, tuned per theme as Windows does (AccentDark1 / AccentLight2) */
   accent: { light: string; dark: string } | null;
   version: string;
@@ -38,6 +40,10 @@ export interface LayoutStyle {
   header: number;
   minHeaderW: number;
   minArea: number;
+  /** no tile narrower or shorter than this (CSS px, gap not counted); 0 = off */
+  minSide: number;
+  /** no folder tile narrower than this (CSS px, gap not counted), so its name fits; 0 = off */
+  minWidth: number;
   recurse: number;
   openShare: number;
   maxDepth: number;
@@ -122,6 +128,25 @@ export interface ScanProgress {
   errors: number;
 }
 
+/** what the page's caption buttons show (custom title bar only) */
+export interface CaptionState {
+  maximized: boolean;
+  /** the pointer is on the maximize button: Windows tells Rust, not the page (snap layouts) */
+  hover: boolean;
+  pressed: boolean;
+}
+
+/** what a search found (see docs/ipc.md › search) */
+export interface SearchResult {
+  /** echoed in the header of layouts that show these hits */
+  id: number;
+  /** matching files and folders, not counting what is inside a matching folder */
+  count: number;
+  /** their bytes, in the size mode searched */
+  bytes: number;
+  ms: number;
+}
+
 export interface TreeChanged {
   rev: number;
   bytesDelta: number;
@@ -130,6 +155,7 @@ export interface TreeChanged {
 export interface BackendEvents {
   'scan-progress': ScanProgress;
   'tree-changed': TreeChanged;
+  caption: CaptionState;
 }
 
 export type Unlisten = () => void;
@@ -144,6 +170,11 @@ export interface Backend {
   details(id: number, view: number, sizeMode: SizeMode): Promise<Details | null>;
   nav(id: number): Promise<NavInfo>;
   catStats(view: number, sizeMode: SizeMode): Promise<CatStat[]>;
+  /**
+   * the legend by age: bytes of the files in `view` per age bin (AGE_BINS entries, 0 = date
+   * not known; see ageBin in lib/age.ts)
+   */
+  ageStats(view: number, sizeMode: SizeMode): Promise<number[]>;
   recycle(ids: number[]): Promise<DeleteResult>;
   restore(token: number): Promise<DeleteResult>;
   purge(ids: number[]): Promise<DeleteResult>;
@@ -152,6 +183,19 @@ export interface Backend {
   /** Windows' own context menu for `ids` (one folder) at client point x, y; resolves when it closes */
   shellMenu(ids: number[], x: number, y: number, extended: boolean): Promise<ShellAction>;
   relaunchElevated(): Promise<void>;
+  /**
+   * runs the search box's query; layouts carry its hits from then on. null when a newer
+   * search or a clear came in meanwhile, or the query is empty (which clears). Rejects with a
+   * user-facing message for a query it can't read (">1XB").
+   */
+  search(query: string, sizeMode: SizeMode): Promise<SearchResult | null>;
+  /** stops a running search and drops the hits */
+  searchClear(): Promise<void>;
+  /** the custom title bar's buttons */
+  caption(action: 'min' | 'max' | 'close'): Promise<void>;
+  /** where the maximize button is (CSS px, from the window's right edge) */
+  captionButton(rect: { right: number; top: number; width: number; height: number }): Promise<void>;
+  captionState(): Promise<CaptionState>;
   /** the view options saved in the registry (see lib/settings.ts) */
   loadSettings(): Promise<Record<string, number | string>>;
   /** saves one value; `null` deletes it */

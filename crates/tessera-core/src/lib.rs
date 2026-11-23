@@ -1,6 +1,6 @@
 //! Tessera core: everything below the UI.
 //!
-//! * [`tree`]: the compact file tree (20-byte nodes).
+//! * [`tree`]: the compact file tree (20-byte nodes, plus an [`age`] byte each).
 //! * [`names`]: the tree's compressed, de-duplicated name pool.
 //! * [`scan`]: fills a tree, by parallel directory walk or by reading the
 //!   NTFS master file table directly when elevated.
@@ -8,18 +8,21 @@
 //! * [`delete`]: deletion to the recycle bin (or permanently) via `IFileOperation`.
 //! * [`layout`]: squarified treemap layout and the binary rectangle format
 //!   sent to the front end.
+//! * [`search`]: which nodes match a search, as one byte per node.
 //! * [`totals`]: file and folder counts and bytes per category below a
 //!   folder, cached across live changes.
 //!
 //! Hard rule from the architecture doc: the full tree stays in Rust. The UI
 //! only ever receives the rectangles currently on screen.
 
+pub mod age;
 pub mod category;
 pub mod delete;
 mod error;
 pub mod layout;
 pub mod names;
 pub mod scan;
+pub mod search;
 pub mod totals;
 pub mod tree;
 pub mod watch;

@@ -4,7 +4,8 @@
 //! file tree stays here, the WebView only receives the rects it draws.
 //! [`platform`] covers the window itself (Mica, accent colour, elevation),
 //! [`shell_menu`] Windows' own context menu for items, [`i18n`] the UI language
-//! and the text Rust produces, [`settings`] what is remembered between runs.
+//! and the text Rust produces, [`settings`] what is remembered between runs,
+//! [`titlebar`] the title bar the page draws on Windows 11.
 
 mod backend;
 mod i18n;
@@ -12,6 +13,7 @@ mod memlog;
 mod platform;
 mod settings;
 mod shell_menu;
+mod titlebar;
 mod volumes;
 
 use tauri::Manager;
@@ -37,7 +39,7 @@ pub fn run() {
         .manage(backend::Core::new())
         .manage(settings::WindowMemory::default())
         .setup(|app| {
-            let (window, backdrop) = platform::build_main_window(app)?;
+            let (window, built) = platform::build_main_window(app)?;
             // still hidden: it shows up where it was last closed
             settings::restore_window(&window, &app.state::<settings::WindowMemory>());
             // the language, before anything produces text (here COM is already set up
@@ -46,7 +48,7 @@ pub fn run() {
             platform::trim_when_minimized(&window);
             memlog::start(app.handle());
             app.manage(platform::Info::detect(
-                backdrop,
+                &built,
                 app.package_info().version.to_string(),
             ));
             #[cfg(windows)]
@@ -86,12 +88,18 @@ pub fn run() {
             backend::details,
             backend::nav,
             backend::cat_stats,
+            backend::age_stats,
             backend::recycle,
             backend::restore,
             backend::purge,
             backend::empty_recycle_bin,
             backend::reveal,
             backend::shell_menu,
+            backend::search,
+            backend::search_clear,
+            titlebar::caption,
+            titlebar::caption_button,
+            titlebar::caption_state,
             settings::settings_load,
             settings::settings_save,
             settings::settings_clear,

@@ -3,6 +3,7 @@
  * lives here; the UI only gets layout buffers and small JSON records, exactly as
  * with the real core (see docs/ipc.md).
  */
+import { AGE_BINS, ageBin, ageByte } from '../../age';
 import { browserChoice, t } from '../../i18n.svelte';
 import { encodeLayout, FREE, groupFolder, isGroupId, UNSCANNED } from '../codec';
 import type {
@@ -16,6 +17,7 @@ import type {
   PlatformInfo,
   ScanProgress,
   ScanStarted,
+  SearchResult,
   ShellAction,
   SizeMode,
   Unlisten,
@@ -23,6 +25,7 @@ import type {
 } from '../types';
 import { buildC, buildD, GB, MB, type Drive, type MNode } from './drive';
 import { flagsOf, layoutDrive, sizeOf, visibleKids } from './layout';
+import { BadSize, parseQuery, runSearch, type MockHits } from './search';
 
 const PROGRESS_MS = 100;
 
@@ -51,12 +54,14 @@ export class MockBackend implements Backend {
   private undos = new Map<number, UndoEntry>();
   private undoSeq = 1;
   private grow: { id: number; target: number; timer: ReturnType<typeof setInterval> } | null = null;
+  private hits: MockHits | null = null;
+  private searchSeq = 0;
 
   private scanMs: number;
 
   constructor(platform: Partial<PlatformInfo> = {}, opts: { scanMs?: number } = {}) {
     this.scanMs = opts.scanMs ?? 4600;
-    this.platform = { elevated: false, backdrop: 'none', accent: null, version: '1.2.1', core: false, native: false, ...browserChoice(), ...platform };
+    this.platform = { elevated: false, backdrop: 'none', titleBar: 'native', accent: null, version: '1.2.1', core: false, native: false, ...browserChoice(), ...platform };
   }
 
   /* ------------------------------ helpers ------------------------------ */
@@ -165,6 +170,8 @@ export class MockBackend implements Backend {
 
   async scanStart(root: string): Promise<ScanStarted> {
     this.stopScan();
+    this.searchSeq++;
+    this.hits = null;
     let d = this.drives.get(root);
     if (!d) {
       const build = this.builders[root];
@@ -234,8 +241,9 @@ export class MockBackend implements Backend {
     const d = this.d;
     const view = this.node(req.view) && this.attached(this.node(req.view)) ? req.view : 0;
     const unscanned = this.scanning ? Math.max(0, this.used(d) - d.nodes[0].dT) : null;
-    const L = layoutDrive({ drive: d, view, width: req.width, height: req.height, sizeMode: req.sizeMode, style: req.style, free: this.free(d), unscanned });
-    return encodeLayout({ view, rev: this.rev, bytesPerPx: L.bytesPerPx, rects: L.rects });
+    const hits = this.hits;
+    const L = layoutDrive({ drive: d, view, width: req.width, height: req.height, sizeMode: req.sizeMode, style: req.style, free: this.free(d), unscanned, hits: hits?.share });
+    return encodeLayout({ view, rev: this.rev, bytesPerPx: L.bytesPerPx, search: hits?.id ?? 0, rects: L.rects });
   }
 
   async details(id: number, view: number, mode: SizeMode): Promise<Details | null> {
@@ -318,6 +326,19 @@ export class MockBackend implements Backend {
     const v = this.node(view);
     if (v) walk(v);
     return [...acc].filter(([, b]) => b > 0).map(([cat, bytes]) => ({ cat, bytes })).sort((a, b) => b.bytes - a.bytes);
+  }
+
+  async ageStats(view: number, mode: SizeMode): Promise<number[]> {
+    const d = this.d;
+    const hist = new Array<number>(AGE_BINS).fill(0);
+    const walk = (n: MNode) => {
+      if (!n.seen) return;
+      if (n.kids) for (const k of n.kids) walk(d.nodes[k]);
+      else hist[ageBin(ageByte(n.age))] += mode === 'disk' ? n.disk : n.logical;
+    };
+    const v = this.node(view);
+    if (v) walk(v);
+    return hist;
   }
 
   async recycle(ids: number[]): Promise<DeleteResult> {
@@ -432,6 +453,40 @@ export class MockBackend implements Backend {
 
   async relaunchElevated() {
     /* nothing to relaunch in the preview */
+  }
+
+  async search(query: string, sizeMode: SizeMode): Promise<SearchResult | null> {
+    let q;
+    try {
+      q = parseQuery(query);
+    } catch (e) {
+      if (e instanceof BadSize) throw new Error(t('core.badSize', { word: e.word }));
+      throw e;
+    }
+    const id = ++this.searchSeq;
+    if (!q || !this.drive) {
+      this.hits = null;
+      return null;
+    }
+    const t0 = performance.now();
+    const hits = runSearch(this.drive, q, sizeMode, id);
+    // the real search takes a moment on a big drive; a newer one wins
+    await new Promise(r => setTimeout(r, 30));
+    if (id !== this.searchSeq) return null;
+    this.hits = hits;
+    return { id, count: hits.count, bytes: hits.bytes, ms: Math.round(performance.now() - t0) };
+  }
+
+  async searchClear() {
+    this.searchSeq++;
+    this.hits = null;
+  }
+
+  /* the preview draws a picture of a title bar */
+  async caption() {}
+  async captionButton() {}
+  async captionState() {
+    return { maximized: false, hover: false, pressed: false };
   }
 
   /** the preview remembers nothing between page loads */

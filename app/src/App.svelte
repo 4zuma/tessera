@@ -17,6 +17,8 @@
   let width = $state(1200);
   const paneOpen = $derived(app.paneWanted && width >= 820);
   const browser = $derived(!app.platform?.native);
+  /** Windows 11 gets the app's own title bar; Windows 10 keeps Windows' one */
+  const titleBar = $derived(browser || app.platform?.titleBar === 'custom');
 
   /**
    * The details pane slides in from the window edge, clipped to its own column, as WinUI's
@@ -46,7 +48,7 @@
 <svelte:window bind:innerWidth={width} onkeydown={e => app.onKey(e)} />
 
 <div class="window" class:framed={browser && width >= 900}>
-  {#if browser}<TitleBar />{/if}
+  {#if titleBar}<TitleBar />{/if}
   {#if app.error}
     <div class="fatal" role="alert">
       <h1>{t('app.startFailed')}</h1>
@@ -57,7 +59,7 @@
   {:else if app.phase === 'pick'}
     <DrivePicker />
   {:else}
-    <CommandBar {paneOpen} canTogglePane={width >= 820} onTogglePane={() => app.togglePane()} />
+    <CommandBar {paneOpen} canTogglePane={width >= 820} onTogglePane={() => app.togglePane()} search={!titleBar} />
     <div class="main">
       <Stage />
       {#if paneOpen}

@@ -42,3 +42,19 @@ export function fmtDate(ms: number | null): string {
   const digits = days < 730 ? 1 : 0;
   return tn('fmt.yearsAgo', Number((days / 365).toFixed(digits)), { date }, digits);
 }
+
+/** a span of days as the age bands name it: 3 days, 2 weeks, 6 months, 5 years */
+export function fmtSpan(days: number): string {
+  if (days >= 365) return tn('age.years', Math.round(days / 365.25));
+  if (days >= 28) return tn('age.months', Math.round(days / 30.44));
+  if (days >= 7 && days % 7 === 0) return tn('age.weeks', days / 7);
+  return tn('age.days', days);
+}
+
+/** an age band's name (see lib/age.ts › ageBand): "1 week – 1 month"; -1 is "not known" */
+export function bandName(band: number, edges: readonly number[]): string {
+  if (band < 0 || !edges.length) return t('age.unknown');
+  if (band === 0) return t('age.within', { d: fmtSpan(edges[0]) });
+  if (band >= edges.length) return t('age.over', { d: fmtSpan(edges[edges.length - 1]) });
+  return t('age.between', { a: fmtSpan(edges[band - 1]), b: fmtSpan(edges[band]) });
+}

@@ -538,7 +538,8 @@ impl Sink<'_, '_, '_, '_> {
             p.subdirs
                 .push((p.batch.len() as u32, start..p.names.len(), open));
         }
-        p.batch.push_utf16(e.name, size, logical, flags);
+        p.batch
+            .push_utf16(e.name, size, logical, flags, e.last_write);
         if is_dir {
             p.dirs += 1;
         } else {

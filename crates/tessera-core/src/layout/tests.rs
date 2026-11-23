@@ -150,6 +150,17 @@ fn check(tree: &Tree, req: &LayoutRequest, d: &Decoded, extras: u64) {
     for (i, r) in d.records.iter().enumerate() {
         assert!(index.insert(r.id, i).is_none(), "duplicate id {r:?}");
         assert!(r.w >= 1.0 && r.h >= 1.0, "{r:?} below 1 px");
+        // minWidth is for folders only (rule 2)
+        let folder = r.kind == kind::DIR || r.kind == kind::DIR_LEAF;
+        let min_w = if folder {
+            st.min_side.max(st.min_width)
+        } else {
+            st.min_side
+        };
+        assert!(
+            r.w >= min_w - eps && r.h >= st.min_side - eps,
+            "{r:?} smaller than minSide / minWidth"
+        );
         let (px, py, pw, ph, pdepth) = if r.parent == ids::NONE {
             (map.0, map.1, map.2, map.3, 0)
         } else {
@@ -258,10 +269,27 @@ fn check(tree: &Tree, req: &LayoutRequest, d: &Decoded, extras: u64) {
             .map(|c| mode.of(&tree.node(c)))
             .sum::<u64>()
             + if parent == ids::NONE { extras } else { 0 };
+        // With minSide, tiles left out give their room to the others, so
+        // the scale is the same for all siblings but can be larger.
+        let scale = if st.min_side > 0.0 || st.min_width > 0.0 {
+            let r = group
+                .iter()
+                .map(|&i| &d.records[i])
+                .max_by_key(|r| r.size)
+                .unwrap();
+            let s = (r.w + st.gap) as f64 * (r.h + st.gap) as f64 / r.size as f64;
+            assert!(
+                s >= area / total as f64 * 0.998,
+                "{r:?} smaller than its share"
+            );
+            s
+        } else {
+            area / total as f64
+        };
         for &i in group {
             let r = &d.records[i];
             let cell = (r.w + st.gap) as f64 * (r.h + st.gap) as f64;
-            let expect = r.size as f64 * area / total as f64;
+            let expect = r.size as f64 * scale;
             assert!(
                 (cell - expect).abs() <= 0.002 * expect + 0.05 * (r.w + r.h) as f64,
                 "{r:?}: cell {cell} but share {expect}"
@@ -275,6 +303,8 @@ fn buffer_conformance() {
     let mut t = Tree::new(b"C:\\");
     let d = t.add_child(NodeId::ROOT, b"Games", 0, 0, NodeFlags::DIR);
     let f = t.add_child(d, b"big.pak", 600 << 20, 600 << 20, NodeFlags::NONE);
+    let year_ago = crate::age::now_filetime() - 365 * 864_000_000_000;
+    assert!(t.set_modified(f, year_ago));
     let v = t.add_child(
         NodeId::ROOT,
         b"movie.mkv",
@@ -295,20 +325,21 @@ fn buffer_conformance() {
     let u32_at = |o: usize| u32::from_le_bytes(buf[o..o + 4].try_into().unwrap());
     let f32_at = |o: usize| f32::from_le_bytes(buf[o..o + 4].try_into().unwrap());
     assert_eq!(u16_at(4), 1);
-    assert_eq!(u16_at(6), 32);
+    assert_eq!(u16_at(6), 36);
     let count = u32_at(8) as usize;
     assert_eq!(count, 3); // Games (with big.pak) and movie.mkv
-    assert_eq!(u32_at(12), 52);
+    assert_eq!(u32_at(12), 56);
     let names_len = u32_at(16) as usize;
-    assert_eq!(buf.len(), 32 + 52 * count + names_len);
+    assert_eq!(buf.len(), 36 + 56 * count + names_len);
     assert_eq!(u32_at(20), 0);
     assert_eq!(u32_at(24), 42);
     let map_area = (800.0 - 12.0) * (600.0 - 12.0);
     assert!((f32_at(28) - (1000u64 << 20) as f32 / map_area).abs() < 1.0);
+    assert_eq!(u32_at(32), 0); // no search
 
     // Records, field by field.
-    let rec = |i: usize| 32 + 52 * i;
-    let names = &buf[32 + 52 * count..];
+    let rec = |i: usize| 36 + 56 * i;
+    let names = &buf[36 + 56 * count..];
     let name_of = |o: usize| {
         let (off, len) = (u32_at(o + 40) as usize, u16_at(o + 44) as usize);
         std::str::from_utf8(&names[off..off + len])
@@ -333,17 +364,23 @@ fn buffer_conformance() {
     assert_eq!(buf[g + 49], 0);
     assert_eq!(buf[g + 50], 21);
     assert_eq!(buf[g + 51], 0);
+    // an open folder's age comes from what it holds
+    let year = crate::age::byte_of_days(365.0);
+    assert_eq!(buf[g + 52], year);
+    assert_eq!(&buf[g + 53..g + 56], &[0, 0, 0]);
 
     assert_eq!(u32_at(m), v.0);
     assert_eq!(buf[m + 47], kind::FILE);
     assert_eq!(buf[m + 48], category::VIDEO);
     assert_eq!(buf[m + 49], flags::CLOUD);
+    assert_eq!(buf[m + 52], crate::age::UNKNOWN);
     assert_eq!(name_of(m), "movie.mkv");
 
     assert_eq!(u32_at(p), f.0);
     assert_eq!(u32_at(p + 4), d.0);
     assert_eq!(buf[p + 46], 2);
     assert_eq!(buf[p + 48], category::GAME);
+    assert_eq!(buf[p + 52], year);
     assert_eq!(name_of(p), "big.pak");
     // The child fills the folder's inner box, inset by gap / 2.
     let (gx, gy, gw, gh) = (
@@ -364,7 +401,7 @@ fn buffer_conformance() {
     assert_eq!(dec.rev, 42);
     check(&t, &req, &dec, 0);
     // Corrupt buffers are rejected.
-    assert!(decode(&buf[..31]).is_err());
+    assert!(decode(&buf[..35]).is_err());
     assert!(decode(&buf[..buf.len() - 1]).is_err());
     let mut bad = buf.clone();
     bad[0] = b'X';
@@ -372,6 +409,44 @@ fn buffer_conformance() {
     let mut bad = buf.clone();
     bad[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(decode(&bad).is_err());
+}
+
+#[test]
+fn search_hits_go_into_the_records() {
+    use crate::search::{Query, search, share_of};
+    let mut t = Tree::new(b"C:\\");
+    let d = t.add_child(NodeId::ROOT, b"Games", 0, 0, NodeFlags::DIR);
+    let big = t.add_child(d, b"big.iso", 600 << 20, 600 << 20, NodeFlags::NONE);
+    t.add_child(d, b"data.pak", 200 << 20, 200 << 20, NodeFlags::NONE);
+    // many small files: they end up in a group, one in four matching
+    let tiny = t.add_child(NodeId::ROOT, b"tiny", 0, 0, NodeFlags::DIR);
+    for i in 0..400u64 {
+        let name = if i % 4 == 0 {
+            format!("{i}.iso")
+        } else {
+            format!("{i}.txt")
+        };
+        t.add_child(tiny, name.as_bytes(), 64 << 10, 64 << 10, NodeFlags::NONE);
+    }
+    t.add_child(tiny, b"huge.bin", 300 << 20, 300 << 20, NodeFlags::NONE);
+    let q = Query::parse(".iso").unwrap().unwrap();
+    let hits = search(&t, &q, SizeMode::Disk, 9, &|| false).unwrap();
+    let req = LayoutRequest::new(NodeId::ROOT, 800.0, 600.0);
+    let mut e = LayoutEngine::new();
+    let dec = decode(&e.layout_with(&t, &req, RootExtras::default(), 1, Some(&hits))).unwrap();
+    assert_eq!(dec.search, 9);
+    let rec = |id: u32| dec.records.iter().find(|r| r.id == id).unwrap();
+    assert_eq!(rec(big.0).hit, 255);
+    assert_eq!(rec(d.0).hit, share_of(600 << 20, 800 << 20));
+    let g = rec(ids::GROUP_BIT | tiny.0);
+    assert_eq!(g.kind, kind::GROUP);
+    assert!((60..=66).contains(&g.hit), "about a quarter: {}", g.hit);
+    // the same picture with other hits is another picture
+    let plain = e.layout(&t, &req, RootExtras::default(), 1);
+    assert_eq!(decode(&plain).unwrap().search, 0);
+    assert!(decode(&plain).unwrap().records.iter().all(|r| r.hit == 0));
+    let with = e.layout_with(&t, &req, RootExtras::default(), 1, Some(&hits));
+    assert!(!same_picture(&plain, &with, 0.5));
 }
 
 #[test]
@@ -410,6 +485,8 @@ fn styles_are_respected() {
         header: 30.0,
         min_header_w: 100.0,
         min_area: 400.0,
+        min_side: 30.0,
+        min_width: 50.0,
         recurse: 1.0,
         open_share: 0.0,
         max_depth: 3,
@@ -431,6 +508,12 @@ fn styles_are_respected() {
     }
     assert!(per_parent.values().all(|&n| n <= 5), "{per_parent:?}");
     assert!(d.records.iter().any(|r| r.header == 30));
+    let folder = |r: &Record| r.kind == kind::DIR || r.kind == kind::DIR_LEAF;
+    assert!(
+        d.records
+            .iter()
+            .all(|r| r.w >= if folder(r) { 50.0 } else { 30.0 } && r.h >= 30.0)
+    );
 }
 
 #[test]
@@ -532,6 +615,31 @@ fn hysteresis_keeps_the_order_calm() {
 }
 
 #[test]
+fn a_group_of_folders_is_tinted_by_what_fills_them() {
+    // a big file and many small folders: the folders become one group
+    let mut t = Tree::new(b"R:\\");
+    t.add_child(NodeId::ROOT, b"big.iso", 1 << 30, 1 << 30, NodeFlags::NONE);
+    for i in 0..40 {
+        let d = t.add_child(
+            NodeId::ROOT,
+            format!("app{i}").as_bytes(),
+            0,
+            0,
+            NodeFlags::DIR,
+        );
+        let sub = t.add_child(d, b"bin", 0, 0, NodeFlags::DIR);
+        // each folder holds more bytes of programs than of images
+        t.add_child(sub, b"tool.exe", 3 << 20, 3 << 20, NodeFlags::NONE);
+        t.add_child(d, b"logo.png", 2 << 20, 2 << 20, NodeFlags::NONE);
+    }
+    let req = LayoutRequest::new(NodeId::ROOT, 800.0, 600.0);
+    let d = lay(&t, &req);
+    let group = d.records.iter().find(|r| r.kind == kind::GROUP).unwrap();
+    assert!(group.count > 1);
+    assert_eq!(group.cat, category::APP);
+}
+
+#[test]
 fn small_and_surplus_children_are_grouped() {
     let mut t = Tree::new(b"R:\\");
     let d = t.add_child(NodeId::ROOT, b"dir", 0, 0, NodeFlags::DIR);
@@ -552,7 +660,9 @@ fn small_and_surplus_children_are_grouped() {
         100_000,
         NodeFlags::NONE,
     );
-    let req = LayoutRequest::new(NodeId::ROOT, 800.0, 600.0);
+    let mut req = LayoutRequest::new(NodeId::ROOT, 800.0, 600.0);
+    req.style.min_side = 0.0;
+    req.style.min_width = 0.0;
     let dd = lay(&t, &req);
     let group = dd.records.iter().find(|r| r.kind == kind::GROUP).unwrap();
     assert_eq!(group.id, ids::GROUP_BIT | d.0);
@@ -577,6 +687,8 @@ fn small_and_surplus_children_are_grouped() {
     t.add_children(NodeId::ROOT, &b);
     let mut req = LayoutRequest::new(NodeId::ROOT, 1000.0, 800.0);
     req.style.max_per_dir = 10;
+    req.style.min_side = 0.0;
+    req.style.min_width = 0.0;
     let dd = lay(&t, &req);
     assert_eq!(dd.records.len(), 11);
     let g = dd.records.last().unwrap();
@@ -679,6 +791,9 @@ fn folders_open_by_size_and_depth() {
     let (t, chain) = chain_tree();
     let mut req = LayoutRequest::new(NodeId::ROOT, 3000.0, 3000.0);
     req.style.max_depth = 4;
+    // (the deepest folders get too small for minSide / minWidth)
+    req.style.min_side = 0.0;
+    req.style.min_width = 0.0;
     let d = lay(&t, &req);
     let by_id: HashMap<u32, &Record> = d.records.iter().map(|r| (r.id, r)).collect();
     assert_eq!(by_id[&chain[0].0].kind, kind::DIR);
@@ -737,7 +852,8 @@ fn closed_folders_take_their_main_category() {
     t.add_child(tie, b"c.zip", 700, 700, NodeFlags::NONE);
     t.add_child(tie, b"d.mp3", 700, 700, NodeFlags::NONE);
     // Too small to open, so both folders are closed.
-    let req = LayoutRequest::new(NodeId::ROOT, 100.0, 100.0);
+    let mut req = LayoutRequest::new(NodeId::ROOT, 100.0, 100.0);
+    req.style.min_width = 0.0;
     let mut eng = LayoutEngine::new();
     let cat_of = |eng: &mut LayoutEngine, t: &Tree, req: &LayoutRequest, id: NodeId| {
         let d = decode(&eng.layout(t, req, RootExtras::default(), 0)).unwrap();
@@ -870,7 +986,9 @@ fn flags_names_and_skipped_nodes() {
     let gone = t.add_child(NodeId::ROOT, b"gone", 1 << 29, 1 << 29, NodeFlags::NONE);
     let tiny = t.add_child(NodeId::ROOT, b"tiny", 1 << 21, 1, NodeFlags::NONE);
     assert!(t.mark_deleted(gone));
-    let req = LayoutRequest::new(NodeId::ROOT, 1000.0, 800.0);
+    let mut req = LayoutRequest::new(NodeId::ROOT, 1000.0, 800.0);
+    req.style.min_side = 0.0;
+    req.style.min_width = 0.0;
     let d = lay(&t, &req);
     let get = |id: NodeId| d.records.iter().find(|r| r.id == id.0);
     assert_eq!(get(bin).unwrap().flags, flags::RECYCLE_BIN);
@@ -884,7 +1002,6 @@ fn flags_names_and_skipped_nodes() {
     assert!(tr.w < 44.0 || tr.h < 20.0);
     assert_eq!(tr.name, None);
     // Only folders with a header are named when labels need a lot of room.
-    let mut req = req;
     req.style.label_min_w = 5000.0;
     let d = lay(&t, &req);
     assert!(d.records.iter().all(|r| r.name.is_some() == (r.header > 0)));
@@ -1008,6 +1125,8 @@ fn record_cap_keeps_the_big_structure() {
     }
     let mut req = LayoutRequest::new(NodeId::ROOT, 8000.0, 8000.0);
     req.style.min_area = 1.0;
+    req.style.min_side = 0.0;
+    req.style.min_width = 0.0;
     req.style.max_per_dir = u32::MAX;
     let d = lay(&t, &req);
     assert!(d.records.len() <= MAX_RECORDS);
@@ -1104,4 +1223,217 @@ fn layout_bench() {
     if !cfg!(debug_assertions) {
         assert!(worst < Duration::from_millis(50), "layout took {worst:?}");
     }
+}
+
+#[test]
+fn min_width_is_for_folders() {
+    // Big files, then folders and files of middling sizes side by side.
+    let mut t = Tree::new(b"R:\\");
+    let d = t.add_child(NodeId::ROOT, b"d", 0, 0, NodeFlags::DIR);
+    for (i, s) in [500u64, 200].into_iter().enumerate() {
+        let name = format!("big{i}.mkv");
+        t.add_child(d, name.as_bytes(), s << 20, s << 20, NodeFlags::NONE);
+    }
+    for i in 0..80u64 {
+        let size = (2 + i % 7) << 20;
+        let sub = format!("sub{i}");
+        let f = t.add_child(d, sub.as_bytes(), 0, 0, NodeFlags::DIR);
+        t.add_child(f, b"a.bin", size, size, NodeFlags::NONE);
+        let file = format!("file{i}.iso");
+        t.add_child(d, file.as_bytes(), size, size, NodeFlags::NONE);
+    }
+    let mut req = LayoutRequest::new(d, 900.0, 640.0);
+    req.style.min_width = 0.0;
+    let side = lay(&t, &req);
+    let thin = |dd: &Decoded, k: u8| {
+        dd.records
+            .iter()
+            .filter(|r| r.kind == k && r.w < 44.0)
+            .count()
+    };
+    assert!(thin(&side, kind::DIR_LEAF) > 0);
+    req.style.min_width = 44.0;
+    let wide = lay(&t, &req); // `check` asserts every folder is 44 wide
+    assert_eq!(thin(&wide, kind::DIR_LEAF), 0);
+    // so every folder tile is named, while narrow files stay
+    assert!(
+        wide.records
+            .iter()
+            .all(|r| r.kind != kind::DIR_LEAF || r.name.is_some())
+    );
+    // Only the narrow folders joined the group, not every sibling ranked
+    // after the first of them: files smaller than a grouped folder remain.
+    let shown: Vec<u32> = wide.records.iter().map(|r| r.id).collect();
+    let grouped_dir = t
+        .children(d)
+        .filter(|&c| t.node(c).is_dir() && !shown.contains(&c.0))
+        .map(|c| SizeMode::Disk.of(&t.node(c)))
+        .max()
+        .unwrap();
+    let smallest_file = wide
+        .records
+        .iter()
+        .filter(|r| r.kind == kind::FILE)
+        .map(|r| r.size)
+        .min()
+        .unwrap();
+    assert!(smallest_file < grouped_dir);
+    assert!(thin(&wide, kind::FILE) > 0);
+}
+
+#[test]
+fn min_side_keeps_every_tile_wide_enough() {
+    // A folder with a few big files, a long tail of middling ones and
+    // many tiny ones: without minSide the tail comes out as slivers.
+    let mut t = Tree::new(b"R:\\");
+    let d = t.add_child(NodeId::ROOT, b"d", 0, 0, NodeFlags::DIR);
+    let mut b = EntryBatch::new();
+    for (i, s) in [500u64, 200, 50].into_iter().enumerate() {
+        b.push_wtf8(
+            format!("big{i}.mkv").as_bytes(),
+            s << 20,
+            s << 20,
+            NodeFlags::NONE,
+        );
+    }
+    for i in 0..60u64 {
+        b.push_wtf8(
+            format!("mid{i}.iso").as_bytes(),
+            (3 + i % 5) << 20,
+            (3 + i % 5) << 20,
+            NodeFlags::NONE,
+        );
+    }
+    for i in 0..400u64 {
+        b.push_wtf8(
+            format!("tiny{i}.txt").as_bytes(),
+            300 << 10,
+            300 << 10,
+            NodeFlags::NONE,
+        );
+    }
+    t.add_children(d, &b);
+    let mut req = LayoutRequest::new(d, 900.0, 640.0);
+    req.style.min_side = 0.0;
+    req.style.min_width = 0.0;
+    let off = lay(&t, &req);
+    assert!(off.records.iter().any(|r| r.w.min(r.h) < 24.0));
+    req.style.min_side = 24.0;
+    let on = lay(&t, &req); // `check` asserts every tile is at least 24 x 24
+    assert!(on.records.len() < off.records.len());
+    assert!(on.records.iter().any(|r| r.w < 44.0));
+    req.style.min_width = 44.0;
+    // minWidth is for folders: files keep their tiles down to 24 x 24
+    assert_eq!(lay(&t, &req).records, on.records);
+    let g = on
+        .records
+        .iter()
+        .position(|r| r.kind == kind::GROUP)
+        .unwrap();
+    let group = &on.records[g];
+    assert_eq!(
+        group.size
+            + on.records
+                .iter()
+                .filter(|r| r.kind == kind::FILE)
+                .map(|r| r.size)
+                .sum::<u64>(),
+        SizeMode::Disk.of(&t.node(d))
+    );
+    // The group goes in by its size, not last.
+    assert!(on.records[g + 1..].iter().all(|r| r.size <= group.size));
+    assert!(on.records[..g].iter().all(|r| r.size >= group.size));
+    assert!(g < on.records.len() - 1);
+
+    // Free space too thin for a tile is left out; the files take its room.
+    let mut t = Tree::new(b"R:\\");
+    t.add_child(NodeId::ROOT, b"all.bin", 1 << 40, 1 << 40, NodeFlags::NONE);
+    let req = LayoutRequest::new(NodeId::ROOT, 800.0, 600.0);
+    let extras = RootExtras {
+        free: Some(1 << 29),
+        unscanned: None,
+    };
+    let buf = LayoutEngine::new().layout(&t, &req, extras, 1);
+    let dd = decode(&buf).unwrap();
+    check(&t, &req, &dd, 1 << 29);
+    assert_eq!(dd.records.len(), 1);
+    assert_eq!((dd.records[0].w, dd.records[0].h), (786.0, 586.0));
+}
+
+#[test]
+fn ages_go_into_the_records() {
+    use crate::age::{Mean, byte_of_days, now_filetime};
+    let mut t = Tree::new(b"C:\\");
+    let now = now_filetime();
+    let ago = |days: u64| now - days * 864_000_000_000;
+    let file = |t: &mut Tree, parent: NodeId, name: &str, size: u64, days: u64| {
+        let id = t.add_child(parent, name.as_bytes(), size, size, NodeFlags::NONE);
+        t.set_modified(id, ago(days));
+        id
+    };
+    // a folder that stays closed (too deep), one that opens, small files that group
+    let open = t.add_child(NodeId::ROOT, b"open", 0, 0, NodeFlags::DIR);
+    let shut = t.add_child(open, b"shut", 0, 0, NodeFlags::DIR);
+    let inner = t.add_child(shut, b"inner", 0, 0, NodeFlags::DIR);
+    file(&mut t, shut, "old.iso", 300 << 20, 1000);
+    file(&mut t, inner, "new.iso", 100 << 20, 10);
+    file(&mut t, open, "mid.zip", 200 << 20, 100);
+    for i in 0..60 {
+        file(&mut t, NodeId::ROOT, &format!("tiny{i}.txt"), 1 << 20, 3);
+    }
+    let no_time = t.add_child(
+        NodeId::ROOT,
+        b"no-time.bin",
+        50 << 20,
+        50 << 20,
+        NodeFlags::NONE,
+    );
+    let mut req = LayoutRequest::new(NodeId::ROOT, 800.0, 600.0);
+    req.style.max_depth = 2;
+    let d = lay(&t, &req);
+    check(&t, &req, &d, 0);
+    let by_id = |id: NodeId| d.records.iter().find(|r| r.id == id.0).unwrap();
+
+    let mut m = Mean::default();
+    m.add(byte_of_days(1000.0), 300 << 20);
+    m.add(byte_of_days(10.0), 100 << 20);
+    let shut_age = m.byte();
+    assert_eq!(by_id(shut).kind, kind::DIR_LEAF);
+    assert_eq!(by_id(shut).age, shut_age);
+    // the open folder: from its tiles, the closed folder and the zip
+    m.add(byte_of_days(100.0), 200 << 20);
+    assert_eq!(by_id(open).kind, kind::DIR);
+    assert!(by_id(open).age.abs_diff(m.byte()) <= 1);
+    assert_eq!(by_id(no_time).age, crate::age::UNKNOWN);
+    let group = d.records.iter().find(|r| r.kind == kind::GROUP).unwrap();
+    assert_eq!(group.age, byte_of_days(3.0));
+    // the age goes into the comparison of pictures
+    let mut t2 = t;
+    let f = t2.lookup_relative(b"open\\mid.zip").unwrap();
+    t2.set_modified(f, ago(2000));
+    let mut e = LayoutEngine::new();
+    let a = e.layout(&t2, &req, RootExtras::default(), 1);
+    t2.set_modified(f, ago(100));
+    let b = e.layout(&t2, &req, RootExtras::default(), 2);
+    assert!(!same_picture(&a, &b, 0.5));
+
+    // a write to an old file in a closed folder that keeps its size: the
+    // folder's cached tint is dropped, so its age follows
+    let old = t2.lookup_relative(b"open\\shut\\old.iso").unwrap();
+    let seq = t2.redated_seq();
+    assert!(t2.set_modified(old, now));
+    assert_eq!(t2.redated_since(seq).unwrap().collect::<Vec<_>>(), [shut]);
+    let c = e.layout(&t2, &req, RootExtras::default(), 3);
+    let rec = decode(&c).unwrap();
+    let shut_now = rec.records.iter().find(|r| r.id == shut.0).unwrap().age;
+    let mut m = Mean::default();
+    m.add(1, 300 << 20);
+    m.add(byte_of_days(10.0), 100 << 20);
+    assert_eq!(shut_now, m.byte());
+    assert_ne!(shut_now, shut_age);
+    // a new file's first time is not a re-dating
+    let seq = t2.redated_seq();
+    let fresh = t2.add_child(shut, b"fresh.txt", 1, 1, NodeFlags::NONE);
+    assert!(t2.set_modified(fresh, now));
+    assert_eq!(t2.redated_seq(), seq);
 }

@@ -7,6 +7,7 @@ import { listen } from '@tauri-apps/api/event';
 import type {
   Backend,
   BackendEvents,
+  CaptionState,
   CatStat,
   DeleteResult,
   Details,
@@ -14,6 +15,7 @@ import type {
   NavInfo,
   PlatformInfo,
   ScanStarted,
+  SearchResult,
   ShellAction,
   SizeMode,
   Unlisten,
@@ -44,6 +46,9 @@ export class TauriBackend implements Backend {
   catStats(view: number, sizeMode: SizeMode) {
     return invoke<CatStat[]>('cat_stats', { view, sizeMode });
   }
+  ageStats(view: number, sizeMode: SizeMode) {
+    return invoke<number[]>('age_stats', { view, sizeMode });
+  }
   recycle(ids: number[]) {
     return invoke<DeleteResult>('recycle', { ids });
   }
@@ -64,6 +69,21 @@ export class TauriBackend implements Backend {
   }
   relaunchElevated() {
     return invoke<void>('relaunch_elevated');
+  }
+  search(query: string, sizeMode: SizeMode) {
+    return invoke<SearchResult | null>('search', { query, sizeMode });
+  }
+  searchClear() {
+    return invoke<void>('search_clear');
+  }
+  caption(action: 'min' | 'max' | 'close') {
+    return invoke<void>('caption', { action });
+  }
+  captionButton(rect: { right: number; top: number; width: number; height: number }) {
+    return invoke<void>('caption_button', rect);
+  }
+  captionState() {
+    return invoke<CaptionState>('caption_state');
   }
   loadSettings() {
     return invoke<Record<string, number | string>>('settings_load');
