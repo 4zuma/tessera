@@ -26,10 +26,14 @@
 //!    and with `minWidth` every folder tile is at least that wide, since a
 //!    folder is known by its name, which is written across (a file is known
 //!    by its colour and can be as small as `minSide` either way):
-//!    * siblings whose area would be below `(minSide + gap)²`, or for a
-//!      folder `(minSide + gap) x (max(minSide, minWidth) + gap)`, go to
-//!      the group at once, and the group takes its place among the others
-//!      by its size instead of coming last;
+//!    * siblings whose area would be below `1.3 x (minSide + gap)²`, or
+//!      for a folder `1.3 x (minSide + gap) x (max(minSide, minWidth) +
+//!      gap)`, go to the group at once (a tile with barely enough area
+//!      seldom comes out square enough), and the group takes its place
+//!      among the others by its size instead of coming last;
+//!    * squarifying (rule 3), an item that would come out shorter than
+//!      `minSide + gap` along a row already that thick starts the next row
+//!      instead, so small items do not line up as slivers beside a big one;
 //!    * after squarifying, the first sibling (in rank order) that came out
 //!      shorter or narrower than `minSide` and every one after it join the
 //!      group, and so does every folder before it that is only narrower
@@ -266,6 +270,12 @@ pub const MIN_SIDE: f32 = 24.0;
 pub const MIN_WIDTH: f32 = 44.0;
 /// Times a folder is laid out again at most to get rid of thin tiles.
 const MIN_SIDE_PASSES: usize = 12;
+/// Rule 2: up front, a sibling needs this many times the least area for a
+/// tile of `minSide` (by `minWidth` for a folder). Squarify seldom makes a
+/// tile square, so one with barely that area nearly always comes out a
+/// little too thin and is folded afterwards, and every smaller sibling
+/// with it.
+const MIN_SIDE_ROOM: f64 = 1.3;
 /// Default `open_share`: a folder must also be over 0.25 % of the map to
 /// open. This only matters on maps over 2.6 million px² (about
 /// 2000 x 1300), where it keeps a very large window from opening more
@@ -536,14 +546,14 @@ impl Style {
 
     /// The least area a sibling can have before it goes to the group at
     /// once: `min_area`, and room for a cell of `minSide` (by `minWidth`
-    /// for a folder).
+    /// for a folder) with [`MIN_SIDE_ROOM`] to spare.
     fn least_area(&self, folder: bool) -> f64 {
         let w = if folder {
             self.min_cell.max(self.min_cell_w)
         } else {
             self.min_cell
         };
-        self.min_area.max(self.min_cell * w)
+        self.min_area.max(self.min_cell * w * MIN_SIDE_ROOM)
     }
 }
 
@@ -1042,6 +1052,11 @@ impl Run<'_> {
     /// Squarifies `s.items` into `b`, into `s.boxes` (cells before the
     /// inset).
     fn squarify_items(&mut self, b: BoxF) {
+        let min = if self.st.min_size() {
+            self.st.min_cell
+        } else {
+            0.0
+        };
         let s = &mut self.s;
         s.boxes.clear();
         let total: f64 = s.items.iter().map(|i| i.size as f64).sum();
@@ -1052,7 +1067,7 @@ impl Run<'_> {
         s.areas.clear();
         s.areas
             .extend(s.items.iter().map(|i| i.size as f64 * scale));
-        squarify(&s.areas, b, &mut s.boxes);
+        squarify(&s.areas, b, min, &mut s.boxes);
     }
 
     /// Rule 2 with `minSide` / `minWidth`: lays `s.items` out again until
@@ -1422,7 +1437,13 @@ fn worst(sum: f64, lo: f64, hi: f64, side: f64) -> f64 {
 
 /// Squarified layout of `areas` (which sum to the area of `b`) into `b`.
 /// Writes one box per area, in order, to `out`.
-fn squarify(areas: &[f64], b: BoxF, out: &mut Vec<BoxF>) {
+///
+/// With `min` > 0 (rule 2's `minSide` plus the gap), an item that would
+/// come out shorter than `min` along a row that is already `min` thick
+/// starts the next row instead. Plain squarify happily lines small items
+/// up as flat slivers beside a big one, because the big one's shape
+/// decides when a row is done.
+fn squarify(areas: &[f64], b: BoxF, min: f64, out: &mut Vec<BoxF>) {
     out.clear();
     let BoxF {
         mut x,
@@ -1443,6 +1464,9 @@ fn squarify(areas: &[f64], b: BoxF, out: &mut Vec<BoxF>) {
                 let a = areas[j];
                 let next = worst(sum + a, lo.min(a), hi.max(a), side);
                 if next > cur {
+                    break;
+                }
+                if min > 0.0 && sum >= min * side && lo.min(a) * side < min * (sum + a) {
                     break;
                 }
                 (sum, lo, hi, cur) = (sum + a, lo.min(a), hi.max(a), next);
