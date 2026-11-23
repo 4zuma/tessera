@@ -8,6 +8,7 @@
   --ease-decel: cubic-bezier(0, 0, 0, 1);
   --ease-fast: cubic-bezier(0.1, 0.9, 0.2, 1);
   --ease-accel: cubic-bezier(0.7, 0, 1, 0.5);
+  --t-faster: 83ms;
   --t-fast: 167ms;
   --t-norm: 250ms;
   --t-slow: 333ms;
@@ -175,6 +176,9 @@ kbd {
  * track, the chosen segment raised like a button with a short accent pill under its label.
  * The raised segment covers the track's border, so no edge is drawn twice, and both labels
  * keep the primary text colour: the surface says which one is on, not the ink.
+ * Its motion is the Toolkit's too: nothing slides; each segment's surface fades in 83 ms
+ * (SegmentedItemBackgroundBrushTransition), and the pill of the chosen one grows in 167 ms
+ * on the decelerate curve while the old one goes at once.
  */
 .seg {
   display: inline-flex;
@@ -193,7 +197,7 @@ kbd {
   background: transparent;
   color: var(--text);
   white-space: nowrap;
-  transition: background var(--t-fast) linear, border-color var(--t-fast) linear;
+  transition: background var(--t-faster) linear, border-color var(--t-faster) linear;
 }
 .seg button:hover:not(.on) {
   background: var(--subtle-hover);
@@ -221,11 +225,11 @@ kbd {
   background: var(--accent);
   opacity: 0;
   transform: scaleX(0.25);
-  transition: transform var(--t-fast) var(--ease-decel), opacity var(--t-fast) linear;
 }
 .seg button.on::after {
   opacity: 1;
   transform: none;
+  transition: transform var(--t-fast) var(--ease-decel), opacity var(--t-fast) var(--ease-decel);
 }
 .seg button.on:active::after {
   transform: scaleX(0.5);
