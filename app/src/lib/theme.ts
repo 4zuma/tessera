@@ -228,10 +228,10 @@ export function tones(scheme: Scheme, bases: readonly string[]): Tones {
 }
 
 /**
- * Colour by age: newest warm, oldest cold (red, orange, gold, teal, blue from the Windows
- * palette). Five bands take these as they are; other counts are spread over the same ramp.
+ * Colour by age: newest warm, oldest cold, red to blue from the Windows palette. Only the two
+ * ends are set, so any number of bands spreads evenly between them without getting loud.
  */
-export const AGE_RAMP: readonly string[] = ['#D13438', '#CA5010', '#C19C00', '#038387', '#0063B1'];
+export const AGE_RAMP: readonly string[] = ['#D13438', '#0063B1'];
 
 /** `n` base colours along {@link AGE_RAMP}, newest first (blended in OKLab, so no grey in between) */
 export function ageBases(n: number): string[] {

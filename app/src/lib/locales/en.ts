@@ -125,7 +125,7 @@ export const en = {
   'pane.highlight': 'Highlight only {cat}',
   'pane.editBands': 'Change the bands',
   'pane.bandsDone': 'Done',
-  'pane.bandsHint': 'Pick where the bands split (up to 6).',
+  'pane.bandsHint': 'Pick where the bands split.',
   'pane.bandsReset': 'Reset',
   'pane.afterScan': 'Shown after the scan',
 

@@ -22,7 +22,7 @@ export const zhCN: Partial<Dict> = {
   'age.months': '{n} 个月',
   'age.years': '{n} 年',
   'age.within': '{d}内',
-  'age.between': '{a} – {b}',
+  'age.between': '{a} ~ {b}',
   'age.over': '超过 {d}',
   'age.unknown': '时间未知',
   folders: '{n} 个文件夹',
@@ -107,7 +107,7 @@ export const zhCN: Partial<Dict> = {
   'pane.highlight': '只突出显示{cat}',
   'pane.editBands': '调整分段',
   'pane.bandsDone': '完成',
-  'pane.bandsHint': '选择在哪些时间点分段（最多 6 个）。',
+  'pane.bandsHint': '选择在哪些时间点分段。',
   'pane.bandsReset': '恢复默认',
   'pane.afterScan': '扫描后显示',
 

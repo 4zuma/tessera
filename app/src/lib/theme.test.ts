@@ -67,10 +67,10 @@ describe('acrylicBlend', () => {
 });
 
 describe('age colours', () => {
-  it('use the ramp as it is for five bands and spread it for other counts', () => {
-    expect(ageBases(5)).toEqual([...AGE_RAMP]);
-    expect(ageBases(3)).toEqual([AGE_RAMP[0], AGE_RAMP[2], AGE_RAMP[4]]);
-    for (let n = 2; n <= 7; n++) {
+  it('run from the first colour of the ramp to the last, evenly', () => {
+    expect(ageBases(2)).toEqual([...AGE_RAMP]);
+    expect(ageBases(3)[1]).toBe(mixLab(AGE_RAMP[0], AGE_RAMP[1], 0.5));
+    for (let n = 2; n <= 13; n++) {
       const b = ageBases(n);
       expect(b).toHaveLength(n);
       expect(b[0]).toBe(AGE_RAMP[0]);

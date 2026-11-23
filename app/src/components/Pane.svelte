@@ -21,13 +21,11 @@
   const bands = $derived(bandTotals(app.ageHist, app.ageEdges).map((bytes, i) => ({ i, bytes })));
   const unknownBytes = $derived(app.ageHist[AGE_UNKNOWN] ?? 0);
   const bandsTotal = $derived(bands.reduce((a, b) => a + b.bytes, 0) + unknownBytes || 1);
-  const MAX_EDGES = 6;
   let editing = $state(false);
   const isDefault = $derived(app.ageEdges.length === AGE_EDGES.length && app.ageEdges.every((e, i) => e === AGE_EDGES[i]));
   function toggleEdge(d: number) {
     const on = app.ageEdges.includes(d);
     if (on && app.ageEdges.length === 1) return;
-    if (!on && app.ageEdges.length >= MAX_EDGES) return;
     app.setAgeEdges(on ? app.ageEdges.filter(e => e !== d) : [...app.ageEdges, d]);
   }
 </script>
@@ -150,7 +148,7 @@
           <div class="chips">
             {#each AGE_EDGE_CHOICES as d (d)}
               {@const on = app.ageEdges.includes(d)}
-              <button class="chip caption" class:on aria-pressed={on} disabled={on ? app.ageEdges.length === 1 : app.ageEdges.length >= MAX_EDGES} onclick={() => toggleEdge(d)}>{fmtSpan(d)}</button>
+              <button class="chip caption" class:on aria-pressed={on} disabled={on && app.ageEdges.length === 1} onclick={() => toggleEdge(d)}>{fmtSpan(d)}</button>
             {/each}
           </div>
           <div class="ea">
