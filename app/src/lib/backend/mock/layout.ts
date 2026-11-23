@@ -248,8 +248,9 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     const tall = (o.minHeight ?? 0) > 0 ? o.minHeight! + o.gap : 0;
     const sized = side > 0 || wide > 0 || tall > 0 || !!o.sizeFit;
     const isDir = (c: Item) => !!c.n?.kids;
-    // with sizeFit a folder needs room for its own size label instead (on one line, or the
-    // number over the unit): its least width and height follow the label
+    // with sizeFit a folder needs room for its own size label instead of minHeight (on one
+    // line, or the number over the unit), and still minWidth for its name: its least width
+    // and height follow the label
     const sf = o.sizeFit;
     const labelW = new Map<Item, [number, number]>();
     const roomOf = (c: Item) => {
@@ -260,7 +261,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     const short = (cw: number, ch: number, c: Item) => {
       if (!sf) return cw < wide || ch < tall;
       const [one, two] = roomOf(c);
-      return !((cw >= one + o.gap && ch >= sf.one + o.gap) || (cw >= two + o.gap && ch >= sf.two + o.gap));
+      return !((cw >= Math.max(wide, one + o.gap) && ch >= sf.one + o.gap) || (cw >= Math.max(wide, two + o.gap) && ch >= sf.two + o.gap));
     };
     // 0 fits, 1 a folder only too narrow (or too short for minHeight / its label), 2 below minSide
     const fit = (cw: number, ch: number, c: Item) => (Math.min(cw, ch) < side ? 2 : isDir(c) && short(cw, ch, c) ? 1 : 0);
@@ -281,7 +282,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       if (!c || !isDir(c)) return Math.max(o.minArea, ROOM * side * side);
       if (!sf) return Math.max(o.minArea, ROOM * Math.max(side, wide) * Math.max(side, tall));
       const [one, two] = roomOf(c);
-      const a = (cw: number, ch: number) => Math.max(side, cw + o.gap) * Math.max(side, ch + o.gap);
+      const a = (cw: number, ch: number) => Math.max(side, wide, cw + o.gap) * Math.max(side, ch + o.gap);
       return Math.max(o.minArea, ROOM * Math.min(a(one, sf.one), a(two, sf.two)));
     };
     // in a level (rule 9) the group takes at most LEVEL_GROUP_SHARE of the box, so the box

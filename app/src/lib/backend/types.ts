@@ -61,7 +61,7 @@ export interface LayoutStyle {
  * every folder tile room for its own label (rule 2). With it, a folder's minimum is no longer
  * minWidth x minHeight but whichever of these it can have: the label on one line (label width
  * + inset wide, `one` tall) or the number over the unit (the wider of the two + inset wide,
- * `two` tall). CSS px, gap not counted.
+ * `two` tall), and never narrower than minWidth (its name). CSS px, gap not counted.
  */
 export interface SizeFit {
   /** the widest digit */

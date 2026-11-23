@@ -155,7 +155,7 @@ describe('mock backend', () => {
       const folders = on.filter(r => r.kind === Kind.DirLeaf);
       const cramped = folders.filter(r => {
         const [one, two] = labelRoom(r.size, sizeFit);
-        return !((r.w >= one - 1e-3 && r.h >= 45 - 1e-3) || (r.w >= two - 1e-3 && r.h >= 61 - 1e-3));
+        return !((r.w >= Math.max(44, one) - 1e-3 && r.h >= 45 - 1e-3) || (r.w >= Math.max(44, two) - 1e-3 && r.h >= 61 - 1e-3));
       });
       expect(cramped).toEqual([]);
       expect(folders.filter(r => !r.name)).toEqual([]);

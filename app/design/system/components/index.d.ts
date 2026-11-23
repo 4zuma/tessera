@@ -74,7 +74,7 @@ export interface PageProps {
   compact?: 'on' | 'off';
   /** band look: the least white area a folder gets, px; the folder minimum height (band + this + foot + 1) follows. 18 holds a closed folder's size line (6) */
   minWhite?: number;
-  /** band look: every folder gets room for its own size label, on one line or the number over the unit; its least width and height follow the label (minWidth and minWhite no longer apply to folders) ("off") */
+  /** band look: every folder gets room for its own size label, on one line or the number over the unit; its least width and height follow the label (never narrower than minWidth, for the name; minWhite no longer applies) ("off") */
   fitSize?: 'on' | 'off';
   /** the host element's style: where the component sits in its slot */
   style?: Record<string, string | number>;
