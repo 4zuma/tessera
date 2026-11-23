@@ -187,19 +187,53 @@ function toLab(h: string): [number, number, number] {
   return [0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s, 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s, 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s];
 }
 
-function fromLab([L, A, B]: [number, number, number]): string {
+/** linear sRGB of an OKLab colour (may fall outside 0..1) */
+function labToLin([L, A, B]: [number, number, number]): [number, number, number] {
   const l = (L + 0.3963377774 * A + 0.2158037573 * B) ** 3;
   const m = (L - 0.1055613458 * A - 0.0638541728 * B) ** 3;
   const s = (L - 0.0894841775 * A - 1.291485548 * B) ** 3;
-  const rgb = [4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s, -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s];
-  return '#' + rgb.map(v => Math.round(Math.max(0, Math.min(1, toSrgb(v))) * 255).toString(16).padStart(2, '0')).join('');
+  return [4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s, -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s];
 }
 
-/** `a` blended toward `b` by `t` in OKLab */
-export function mixLab(a: string, b: string, t: number): string {
-  const A = toLab(a);
-  const B = toLab(b);
-  return fromLab([A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t, A[2] + (B[2] - A[2]) * t]);
+function fromLab(lab: [number, number, number]): string {
+  return '#' + labToLin(lab).map(v => Math.round(Math.max(0, Math.min(1, toSrgb(v))) * 255).toString(16).padStart(2, '0')).join('');
+}
+
+/** OKLCH: lightness, chroma, hue in radians */
+function toLch(h: string): [number, number, number] {
+  const [L, a, b] = toLab(h);
+  return [L, Math.hypot(a, b), Math.atan2(b, a)];
+}
+
+const inGamut = (lab: [number, number, number]) => labToLin(lab).every(v => v > -1e-4 && v < 1 + 1e-4);
+
+/** an OKLCH colour, with its chroma cut to the most sRGB can show at that lightness and hue */
+function fromLch(L: number, C: number, H: number): string {
+  const at = (c: number): [number, number, number] => [L, c * Math.cos(H), c * Math.sin(H)];
+  let lo = 0;
+  let hi = C;
+  if (inGamut(at(C))) lo = C;
+  else
+    for (let i = 0; i < 20; i++) {
+      const c = (lo + hi) / 2;
+      if (inGamut(at(c))) lo = c;
+      else hi = c;
+    }
+  return fromLab(at(lo));
+}
+
+/**
+ * `a` blended toward `b` by `t` in OKLCH: lightness and chroma move evenly and the hue turns
+ * the shorter way round, so the colours in between stay as vivid as the ends (a blend in
+ * OKLab or sRGB goes grey in the middle when the hues are far apart).
+ */
+export function mixLch(a: string, b: string, t: number): string {
+  const [L1, C1, H1] = toLch(a);
+  const [L2, C2, H2] = toLch(b);
+  let d = H2 - H1;
+  if (d > Math.PI) d -= 2 * Math.PI;
+  if (d < -Math.PI) d += 2 * Math.PI;
+  return fromLch(L1 + (L2 - L1) * t, C1 + (C2 - C1) * t, H1 + d * t);
 }
 
 export function rgba(h: string, a: number): string {
@@ -233,7 +267,7 @@ export function tones(scheme: Scheme, bases: readonly string[]): Tones {
  */
 export const AGE_RAMP: readonly string[] = ['#D13438', '#0063B1'];
 
-/** `n` base colours along {@link AGE_RAMP}, newest first (blended in OKLab, so no grey in between) */
+/** `n` base colours along {@link AGE_RAMP}, newest first (blended in OKLCH: red, rose, purple, violet, blue) */
 export function ageBases(n: number): string[] {
   const k = AGE_RAMP.length - 1;
   const out: string[] = [];
@@ -241,7 +275,7 @@ export function ageBases(n: number): string[] {
     const p = n === 1 ? 0 : (i * k) / (n - 1);
     const j = Math.min(k - 1, Math.floor(p));
     const f = p - j;
-    out.push(f < 1e-6 ? AGE_RAMP[j] : f > 1 - 1e-6 ? AGE_RAMP[j + 1] : mixLab(AGE_RAMP[j], AGE_RAMP[j + 1], f));
+    out.push(f < 1e-6 ? AGE_RAMP[j] : f > 1 - 1e-6 ? AGE_RAMP[j + 1] : mixLch(AGE_RAMP[j], AGE_RAMP[j + 1], f));
   }
   return out;
 }
