@@ -192,7 +192,10 @@ These are what make the map calm while it changes, and they were tuned in the pr
    by `gap / 2`; rects smaller than 1 px in either direction are dropped.
 4. **Folded chains**: a folder whose only visible child is a folder is merged with it into
    one tile named `a › b › c`; `target` is the deepest folder. `nav().up` skips such
-   folders too, so "back" never lands on a view with a single tile.
+   folders too, so "back" never lands on a view with a single tile. The UI copies the
+   path of `target`, shows `target` in Explorer and shows its path in the details card,
+   since that is where the files are; delete and Windows' own menu take the whole tile
+   (`id`).
 5. A folder gets a header band of `header` px when it is at least `header * 2.2` tall and
    `minHeaderW` wide. It opens (kind DIR) only when `depth < maxDepth`, it has a header
    band (unless `header` is 0), and its area is above both `minArea * recurse` and

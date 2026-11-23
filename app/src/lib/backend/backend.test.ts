@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeLayout, encodeLayout, FREE, GROUP_BIT, isNodeId, Kind, NONE, RECORD_SIZE, HEADER_SIZE, UNSCANNED, type Rect } from './codec';
+import { contentOf, decodeLayout, encodeLayout, FREE, GROUP_BIT, isNodeId, Kind, NONE, RECORD_SIZE, HEADER_SIZE, UNSCANNED, type Rect } from './codec';
 import { categoryOf, Cat } from './categories';
 import { t } from '../i18n.svelte';
 import { MockBackend } from './mock';
@@ -29,6 +29,16 @@ describe('codec', () => {
     expect(l.rev).toBe(99);
     expect(l.search).toBe(5);
     expect(l.rects).toEqual(rects);
+  });
+
+  it('points a tile at the folder whose contents it shows', () => {
+    const r = (kind: Kind, id: number, target: number): Rect => ({ id, parent: NONE, target, count: 0, x: 0, y: 0, w: 9, h: 9, size: 1, name: '', depth: 1, kind, cat: 255, flags: 0, header: 0, hit: 0 });
+    expect(contentOf(r(Kind.Dir, 7, 9))).toBe(9); // a › b › c: c
+    expect(contentOf(r(Kind.DirLeaf, 7, 9))).toBe(9);
+    expect(contentOf(r(Kind.Dir, 7, 7))).toBe(7);
+    expect(contentOf(r(Kind.File, 5, 5))).toBe(5);
+    expect(contentOf(r(Kind.Group, GROUP_BIT + 7, 7))).toBe(GROUP_BIT + 7);
+    expect(contentOf(r(Kind.Free, FREE, FREE))).toBe(FREE);
   });
 
   it('rejects foreign buffers', () => {
@@ -93,6 +103,11 @@ describe('mock backend', () => {
     const chain = all.find(r => r.name.startsWith('archive › pc › content'));
     expect(chain).toBeTruthy();
     expect(chain!.target).not.toBe(chain!.id);
+    // the tile's path is where its files are: copy path and Explorer go to the deepest folder
+    const top = (await b.details(chain!.id, 0, 'disk'))!.path;
+    const inner = (await b.details(contentOf(chain!), 0, 'disk'))!.path;
+    expect(top.endsWith('\\archive')).toBe(true);
+    expect(inner).toBe(`${top}\\${chain!.name.split(' › ').slice(1).join('\\')}`);
 
     const first = new Promise<void>(res => b.on('scan-progress', p => !p.done && p.scanned > 0 && res()));
     await b.scanStart('C:\\');
