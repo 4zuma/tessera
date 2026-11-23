@@ -223,10 +223,11 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     const ROOM = 1.3;
     const side = o.minSide > 0 ? o.minSide + o.gap : 0;
     const wide = o.minWidth > 0 ? o.minWidth + o.gap : 0;
-    const sized = side > 0 || wide > 0;
+    const tall = (o.minHeight ?? 0) > 0 ? o.minHeight! + o.gap : 0;
+    const sized = side > 0 || wide > 0 || tall > 0;
     const isDir = (c: Item) => !!c.n?.kids;
-    // 0 fits, 1 a folder only too narrow, 2 below minSide
-    const fit = (cw: number, ch: number, dir: boolean) => (Math.min(cw, ch) < side ? 2 : dir && cw < wide ? 1 : 0);
+    // 0 fits, 1 a folder only too narrow (or too short for minHeight), 2 below minSide
+    const fit = (cw: number, ch: number, dir: boolean) => (Math.min(cw, ch) < side ? 2 : dir && (cw < wide || ch < tall) ? 1 : 0);
     let rest = 0;
     let restN = 0;
     let restHit = 0;
@@ -238,7 +239,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       const ct = c.n!.kids ? folderCat(c.n!) : c.n!.cat;
       m.set(ct, (m.get(ct) || 0) + c.s);
     };
-    const least = (dir: boolean) => Math.max(o.minArea, ROOM * side * (dir ? Math.max(side, wide) : side));
+    const least = (dir: boolean) => Math.max(o.minArea, ROOM * (dir ? Math.max(side, wide) * Math.max(side, tall) : side * side));
     // in a level (rule 9) the group takes at most LEVEL_GROUP_SHARE of the box, so the box
     // stands for min(total, kept / (1 - share)) bytes; an item keeps its tile while every
     // one kept so far still gets its least area at that scale, and the first that fails ends it

@@ -21,7 +21,7 @@
 import { Flag, Kind, Note } from '../backend/codec';
 import { fmtBytes } from '../format';
 import { t as tr, tn } from '../i18n.svelte';
-import { rgba } from '../theme';
+import { mix, rgba } from '../theme';
 import type { Box, Item, Painter, PaintState } from './engine';
 import { NONE, type BoxBatch, type RGBA } from './gpu';
 
@@ -39,7 +39,42 @@ const LINE = 16;
 export const paintStyle = {
   radius: 3,
   folderRadius: 4,
+  /**
+   * How folders are drawn. 'classic' is the shipped look (an open folder is a frame with a
+   * header band, a closed one a tinted tile). 'band' is the 1.3.1 candidate (folder-look
+   * thread, not decided yet): every folder is one frame, a band on top whose fill runs on
+   * as a 1 px ring inside the outline and rounds into the white area's corners; content sits
+   * `white` px in from the white area on all four sides; a closed folder shows its main
+   * colour as a band along the bottom. Only the design system's canvas switches it for now.
+   */
+  folders: 'classic' as 'classic' | 'band',
+  /** band look: the white margin round a folder's content, px */
+  white: 4,
+  /** band look: the header band's fill runs on round the sides and bottom, 1 px inside the outline */
+  ring: true,
+  /** band look: height of a closed folder's colour band above its outline, px */
+  foot: 5,
+  /** band look: the colour band mixed further into the ground, 0 = the file colour .. 3 = the 1.3.0 closed-folder tint */
+  tone: 0,
+  /** band look: the colour fades out upward from the band's top edge over this many px (0 = a hard edge) */
+  fade: 0,
 };
+/** band look: the header band's height, px */
+export const BAND = 21;
+/** band look: the least white area that still reads as one, px */
+const BAND_MIN_WHITE = 6;
+/** band look: how much further each tone step mixes the file colour into the ground */
+const TONE_MIX = [0, 0.25, 0.42, 0.58];
+/**
+ * The layout the band look needs (fluentLayout): the core insets content by pad plus half the
+ * 2 px gap, so pad = white (+ 1 for the ring) puts it `white` px inside the white area, and
+ * header = band - 1 + white does the same below the band. A closed folder is at least the
+ * band, a little white area and the colour band tall.
+ */
+export function bandLayout() {
+  const ring = paintStyle.ring ? 1 : 0;
+  return { pad: paintStyle.white + ring, header: BAND - 1 + paintStyle.white, minFolderH: BAND + BAND_MIN_WHITE + paintStyle.foot + 1 };
+}
 /** radius of the pointer light, CSS px */
 const LIGHT_R = 90;
 
@@ -90,11 +125,43 @@ export class FluentPainter implements Painter {
   private batches = new Map<string, Path2D>();
   /** folder outline per depth, per scheme */
   private strokes = new Map<string, string[]>();
+  /** band look: a closed folder's band colour per file colour and tone step */
+  private bandTones = new Map<string, string>();
+  /** band look: the fade above a colour band, per context, colour and length (drawn translated) */
+  private fades = new WeakMap<CanvasRenderingContext2D, Map<string, CanvasGradient>>();
 
   reset() {
     this.pats.clear();
     this.strokes.clear();
+    this.bandTones.clear();
+    this.fades = new WeakMap();
     textFit.clear();
+  }
+
+  private bandTone(fill: string, dark: boolean) {
+    const step = Math.max(0, Math.min(TONE_MIX.length - 1, Math.round(paintStyle.tone)));
+    if (!step) return fill;
+    const k = fill + '|' + step + (dark ? 'd' : 'l');
+    let c = this.bandTones.get(k);
+    if (!c) {
+      c = mix(fill, dark ? '#202020' : '#ffffff', TONE_MIX[step]);
+      this.bandTones.set(k, c);
+    }
+    return c;
+  }
+
+  private fade(ctx: CanvasRenderingContext2D, colour: string, len: number) {
+    let m = this.fades.get(ctx);
+    if (!m) this.fades.set(ctx, (m = new Map()));
+    const k = colour + '|' + len;
+    let g = m.get(k);
+    if (!g) {
+      g = ctx.createLinearGradient(0, 0, 0, len);
+      g.addColorStop(0, rgba(colour, 0));
+      g.addColorStop(1, colour);
+      m.set(k, g);
+    }
+    return g;
   }
 
   private folderStroke(dark: boolean, depth: number) {
@@ -135,6 +202,10 @@ export class FluentPainter implements Painter {
     ctx.clearRect(0, 0, S.W, S.H);
     ctx.textBaseline = 'alphabetic';
     ctx.globalAlpha = 1;
+    // the band look is drawn in 2D only for now (design canvas); its folders' translucent
+    // fills would cover GPU tiles under this canvas, so the whole scene stays here
+    const bandLook = paintStyle.folders === 'band';
+    if (bandLook) gpu = null;
 
     // a closed folder is washed with the category that fills it most (or its age band),
     // lighter than any file, and keeps its outline and neutral ink so it never reads as a file
@@ -160,11 +231,19 @@ export class FluentPainter implements Painter {
     const overlaid = (r: Item['r']) => r.kind === Kind.Group || r.flags & (Flag.NoAccess | Flag.InUse) || (r.note ?? 0) & Note.NotToScale;
 
     /* ---------- pass 1: open folders (containers), shallow to deep ---------- */
+    const notes: Item[] = [];
     for (const it of list) {
       const r = it.r;
-      if (r.kind !== Kind.Dir || it.va <= 0.004 || it.w < 2 || it.h < 2) continue;
+      const closedBand = bandLook && r.kind === Kind.DirLeaf;
+      if ((r.kind !== Kind.Dir && !closedBand) || it.va <= 0.004 || it.w < 2 || it.h < 2) continue;
       const b = box(it);
       ctx.globalAlpha = it.va;
+      if (bandLook) {
+        const c = closedBand ? tone.key(r) : -1;
+        this.folderBand(ctx, it, b, S, c >= 0 && c < n ? this.bandTone(tone.fill[c], dark) : null);
+        if (closedBand && (r.note ?? 0) & Note.NotToScale) notes.push(it);
+        continue;
+      }
       if (gpu) {
         // the outline's outer edge lies half a pixel outside the 2D path, so its radius is half a pixel more
         gpu.push(b.x * dpr, b.y * dpr, b.w * dpr, b.h * dpr, (paintStyle.folderRadius + 0.5) * dpr, gpu.color(t['tm-folder'], it.va), gpu.color(this.folderStroke(dark, r.depth), it.va), dpr);
@@ -197,10 +276,10 @@ export class FluentPainter implements Painter {
     const outlines = new Path2D();
     let hasOutlines = false;
     const loose: Item[] = [];
-    const overlays: Item[] = [];
+    const overlays: Item[] = notes;
     for (const it of list) {
       const r = it.r;
-      if (r.kind === Kind.Dir || r.kind === Kind.Unscanned || it.va <= 0.004 || it.w < 0.6 || it.h < 0.6) continue;
+      if (r.kind === Kind.Dir || (bandLook && r.kind === Kind.DirLeaf) || r.kind === Kind.Unscanned || it.va <= 0.004 || it.w < 0.6 || it.h < 0.6) continue;
       if (r.kind === Kind.Free || it.va < 0.995 || r.flags & Flag.Cloud) {
         loose.push(it);
         continue;
@@ -276,7 +355,7 @@ export class FluentPainter implements Painter {
         });
         ctx.fillStyle = this.usePattern(p, dpr);
         ctx.fill();
-      } else if (r.flags & (Flag.NoAccess | Flag.InUse)) {
+      } else if (r.flags & (Flag.NoAccess | Flag.InUse) && !(bandLook && r.kind === Kind.DirLeaf)) {
         const p = this.pattern(ctx, 'hatch' + th.scheme, 8, dpr, stripes(t['tm-hatch'], 8, 2));
         ctx.fillStyle = this.usePattern(p, dpr);
         ctx.fill();
@@ -298,7 +377,7 @@ export class FluentPainter implements Painter {
     /* ---------- pass 4: labels ---------- */
     for (const it of list) {
       const r = it.r;
-      if (r.kind === Kind.Dir || r.kind === Kind.Free || r.kind === Kind.Unscanned || it.va < 0.25) continue;
+      if (r.kind === Kind.Dir || (bandLook && r.kind === Kind.DirLeaf) || r.kind === Kind.Free || r.kind === Kind.Unscanned || it.va < 0.25) continue;
       if (it.w < LABEL_MIN_W || it.h < 20) continue;
       const name = r.kind === Kind.Group ? tn('smallItems', r.count) : r.name;
       if (!name) continue;
@@ -336,10 +415,11 @@ export class FluentPainter implements Painter {
     for (const it of marked) {
       const r = it.r;
       const b = box(it);
+      const folder = r.kind === Kind.Dir || (paintStyle.folders === 'band' && r.kind === Kind.DirLeaf);
       if (it.hv > 0.01) {
         ctx.globalAlpha = it.va * it.hv;
         ctx.beginPath();
-        if (r.kind === Kind.Dir) {
+        if (folder) {
           ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, paintStyle.folderRadius);
           ctx.lineWidth = 1;
           ctx.strokeStyle = t['ctl-strong'];
@@ -351,7 +431,7 @@ export class FluentPainter implements Painter {
         }
       }
       if (S.sel.has(it.id) && b.w > 3 && b.h > 3) {
-        const rad = r.kind === Kind.Dir ? paintStyle.folderRadius : paintStyle.radius;
+        const rad = folder ? paintStyle.folderRadius : paintStyle.radius;
         ctx.globalAlpha = it.va;
         ctx.beginPath();
         ctx.roundRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2, Math.max(0, Math.min(rad, b.w / 2 - 1, b.h / 2 - 1)));
@@ -389,6 +469,128 @@ export class FluentPainter implements Painter {
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
+  }
+
+  /**
+   * A folder in the band look (paintStyle.folders === 'band'). One frame for every folder:
+   * the band's fill runs down into the top corners of the white area (and, with the ring, on
+   * round the sides and bottom 1 px inside the outline), so the white area's four corners
+   * match. A closed folder with a colour shows it as a band along the bottom, inside the
+   * outline, which keeps its grey line all the way round.
+   */
+  private folderBand(ctx: CanvasRenderingContext2D, it: Item, b: Box, S: PaintState, colour: string | null) {
+    const r = it.r;
+    const t = S.theme.tok;
+    const dark = S.theme.scheme === 'dark';
+    const closed = r.kind === Kind.DirLeaf;
+    const R = paintStyle.folderRadius;
+    const ring = paintStyle.ring ? 1 : 0;
+    const E = closed && colour ? paintStyle.foot + 1 : 1 + ring;
+    const yW = b.y + BAND;
+    const yWb = b.y + b.h - E;
+    const wh = yWb - yW;
+    const wx = b.x + 1 + ring;
+    const ww = b.w - 2 - 2 * ring;
+    const wr = Math.max(0, Math.min(R - 0.5, ww / 2, wh / 2));
+    const white = new Path2D();
+    if (wh > 0 && ww > 0) white.roundRect(wx, yW, ww, wh, wr);
+    const outline = new Path2D();
+    outline.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, Math.max(0, Math.min(R, b.w / 2 - 0.5, b.h / 2 - 0.5)));
+    ctx.fillStyle = t['tm-folder'];
+    ctx.fill(outline);
+    const hasBand = b.h > BAND + 2 && b.w > 8;
+    if (hasBand) {
+      // the band: the folder above the white area's middle that is not the white area (with
+      // the ring, all of it that is not). The rectangle runs 2 px past the clip so the clip's
+      // soft edge never crosses the white area: no faint line through its middle.
+      ctx.save();
+      ctx.clip(outline);
+      const yMid = ring ? b.y + b.h + 2 : wh > 0 ? yW + wh / 2 : b.y + b.h;
+      ctx.beginPath();
+      ctx.rect(b.x, b.y, b.w, yMid - b.y);
+      ctx.clip();
+      const p = new Path2D();
+      p.rect(b.x, b.y, b.w, yMid + 2 - b.y);
+      p.addPath(white);
+      ctx.fillStyle = t['tm-folder-head'];
+      ctx.fill(p, 'evenodd');
+      ctx.restore();
+    }
+    if (closed && colour && wh > 0) this.footBand(ctx, b, colour, white, ring ? Math.max(yW + wh / 2, yWb - wr) : yW + wh / 2, yW, yWb);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = this.folderStroke(dark, r.depth);
+    ctx.stroke(outline);
+    if (closed && wh > 0 && r.flags & (Flag.NoAccess | Flag.InUse)) {
+      const p = this.pattern(ctx, 'hatchsoft' + S.theme.scheme, 8, S.dpr, stripes(dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.06)', 8, 2));
+      ctx.fillStyle = this.usePattern(p, S.dpr);
+      ctx.fill(white);
+    }
+    if (!hasBand || (!closed && !r.header)) return;
+    this.headerBand(ctx, it, b, S, closed ? wh : 0, yW);
+  }
+
+  /**
+   * Band look: a closed folder's colour band, the band's mirror below the white area (inside
+   * the outline, from `yCut`: where the white area's bottom corners start to round). With
+   * paintStyle.fade the colour also runs up from the band's top edge, fading out.
+   */
+  private footBand(ctx: CanvasRenderingContext2D, b: Box, colour: string, white: Path2D, yCut: number, yW: number, yWb: number) {
+    const R = paintStyle.folderRadius;
+    const inner = new Path2D();
+    inner.roundRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2, Math.max(0, Math.min(R - 0.5, (b.w - 2) / 2, (b.h - 2) / 2)));
+    ctx.save();
+    ctx.clip(inner);
+    const G = Math.min(paintStyle.fade, yWb - yW);
+    if (G > 0) {
+      ctx.save();
+      ctx.translate(0, yWb - G);
+      ctx.fillStyle = this.fade(ctx, colour, G);
+      ctx.fillRect(b.x, 0, b.w, G);
+      ctx.restore();
+    }
+    ctx.beginPath();
+    ctx.rect(b.x, yCut, b.w, b.y + b.h - yCut);
+    ctx.clip();
+    const q = new Path2D();
+    q.rect(b.x, yCut - 2, b.w, b.y + b.h - yCut + 2);
+    q.addPath(white);
+    ctx.fillStyle = colour;
+    ctx.fill(q, 'evenodd');
+    ctx.restore();
+  }
+
+  /** band look: a folder's name (and size) on the band; a closed folder's size goes into its white area when the band has no room */
+  private headerBand(ctx: CanvasRenderingContext2D, it: Item, b: Box, S: PaintState, roomBelow: number, yW: number) {
+    const r = it.r;
+    const t = S.theme.tok;
+    if (b.w < 30 || !r.name) return;
+    let x = b.x + 8;
+    const base = b.y + Math.round(BAND / 2 + 4.5);
+    if (r.flags & (Flag.Protected | Flag.NoAccess) && b.w > 80) {
+      lockGlyph(ctx, x, b.y + BAND / 2 - 5.5, t['text-3']);
+      x += 15;
+    }
+    ctx.font = F_REG;
+    const sz = fmtBytes(r.size);
+    const sw = textFit.measure(ctx, sz);
+    const showSize = b.w > sw + 96;
+    ctx.font = F_SEMI;
+    const nm = textFit.fit(ctx, r.name, b.x + b.w - x - 8 - (showSize ? sw + 10 : 0));
+    if (nm) {
+      ctx.fillStyle = t['tm-folder-text'];
+      ctx.fillText(nm, x, base);
+    }
+    ctx.font = F_REG;
+    if (showSize) {
+      ctx.fillStyle = t['text-3'];
+      ctx.fillText(sz, b.x + b.w - sw - 8, base);
+    } else if (roomBelow >= 18) {
+      const s = textFit.fit(ctx, sz, b.w - 16);
+      if (s) {
+        ctx.fillStyle = t['text-2'];
+        ctx.fillText(s, b.x + 8, yW + 14);
+      }
+    }
   }
 
   private header(ctx: CanvasRenderingContext2D, it: Item, b: { x: number; y: number; w: number; h: number }, S: PaintState) {

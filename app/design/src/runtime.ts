@@ -7,7 +7,7 @@ import { app } from '../../src/lib/app.svelte';
 import { Flag, Kind } from '../../src/lib/backend/codec';
 import { setLang } from '../../src/lib/i18n.svelte';
 import { fluentLayout } from '../../src/lib/treemap/motion';
-import { paintStyle } from '../../src/lib/treemap/paint';
+import { bandLayout, paintStyle } from '../../src/lib/treemap/paint';
 import type { Rect } from '../../src/lib/backend/codec';
 import { config } from './config';
 
@@ -36,6 +36,22 @@ export interface PageProps {
   /** tile and open-folder corner radii (src/lib/treemap/paint.ts › paintStyle) */
   radius?: number;
   folderRadius?: number;
+  /**
+   * The folder look (paintStyle.folders): 'classic' as shipped, 'band' the 1.3.1 candidate.
+   * With 'band' the layout's pad, header and folder minimum height follow from the band
+   * props below, and the pad / header props are ignored.
+   */
+  folderLook?: 'classic' | 'band';
+  /** band look: white margin round a folder's content, px */
+  white?: number;
+  /** band look: the band's fill runs on as a 1 px ring inside the outline ('on' / 'off') */
+  ring?: 'on' | 'off';
+  /** band look: a closed folder's colour band height, px */
+  foot?: number;
+  /** band look: 0 = the file colour .. 3 = the 1.3.0 closed-folder tint */
+  tone?: number;
+  /** band look: the colour fades out upward from the band's top edge over this many px (0 = none) */
+  fade?: number;
 }
 
 const LAYOUT_KEYS = ['pad', 'gap', 'header', 'minHeaderW', 'minArea', 'minSide', 'minWidth', 'labelMinW', 'labelMinH'] as const;
@@ -113,16 +129,27 @@ export async function apply(p: PageProps) {
   if (mine === run) await play(s, q, () => mine === run);
 }
 
+/** the layout as the app ships it, for going back from the band look */
+const SHIPPED = { pad: fluentLayout.pad, header: fluentLayout.header, minHeight: fluentLayout.minHeight };
+
 function applyTreemapStyle(p: PageProps, live: boolean) {
+  let paint = false;
   let layout = false;
+  // the folder look first: with the band look, pad and header follow from it
+  const wasBand = paintStyle.folders === 'band';
+  if ((p.folderLook === 'classic' || p.folderLook === 'band') && p.folderLook !== paintStyle.folders) {
+    paintStyle.folders = p.folderLook;
+    paint = true;
+  }
+  const band = paintStyle.folders === 'band';
   for (const k of LAYOUT_KEYS) {
+    if (band && (k === 'pad' || k === 'header')) continue;
     const v = p[k];
     if (typeof v === 'number' && Number.isFinite(v) && fluentLayout[k] !== v) {
       fluentLayout[k] = v;
       layout = true;
     }
   }
-  let paint = false;
   if (typeof p.radius === 'number' && p.radius !== paintStyle.radius) {
     paintStyle.radius = p.radius;
     paint = true;
@@ -130,6 +157,25 @@ function applyTreemapStyle(p: PageProps, live: boolean) {
   if (typeof p.folderRadius === 'number' && p.folderRadius !== paintStyle.folderRadius) {
     paintStyle.folderRadius = p.folderRadius;
     paint = true;
+  }
+  for (const k of ['white', 'foot', 'tone', 'fade'] as const) {
+    const v = p[k];
+    if (typeof v === 'number' && Number.isFinite(v) && paintStyle[k] !== v) {
+      paintStyle[k] = v;
+      paint = true;
+    }
+  }
+  if ((p.ring === 'on' || p.ring === 'off') && paintStyle.ring !== (p.ring === 'on')) {
+    paintStyle.ring = p.ring === 'on';
+    paint = true;
+  }
+  // the layout the band look needs, or the shipped one back when it is switched off
+  const want = band ? bandLayout() : wasBand ? { pad: p.pad ?? SHIPPED.pad, header: p.header ?? SHIPPED.header, minFolderH: SHIPPED.minHeight } : null;
+  if (want && (fluentLayout.pad !== want.pad || fluentLayout.header !== want.header || fluentLayout.minHeight !== want.minFolderH)) {
+    fluentLayout.pad = want.pad;
+    fluentLayout.header = want.header;
+    fluentLayout.minHeight = want.minFolderH;
+    layout = true;
   }
   if (!live) return;
   if (layout) app.requestLayout('update');

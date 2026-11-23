@@ -44,6 +44,8 @@ export interface LayoutStyle {
   minSide: number;
   /** no folder tile narrower than this (CSS px, gap not counted), so its name fits; 0 = off */
   minWidth: number;
+  /** no folder tile shorter than this (CSS px, gap not counted); 0 or absent = off (the band look's design canvas only, for now) */
+  minHeight?: number;
   recurse: number;
   openShare: number;
   maxDepth: number;

@@ -54,6 +54,22 @@ export interface PageProps {
   radius?: number;
   /** treemap: open-folder corner radius, px (app: 4) */
   folderRadius?: number;
+  /**
+   * treemap: how folders are drawn. "classic" as shipped (app). "band": the 1.3.1 candidate,
+   * one frame for every folder, a closed folder's colour as a band along its bottom; pad and
+   * header then follow from the band props and are ignored.
+   */
+  folderLook?: 'classic' | 'band';
+  /** band look: white margin round a folder's content on all four sides, px (4) */
+  white?: number;
+  /** band look: the title band's fill runs on round the sides and bottom, 1 px inside the outline ("on") */
+  ring?: 'on' | 'off';
+  /** band look: height of a closed folder's colour band, px (5) */
+  foot?: number;
+  /** band look: the colour band, 0 = the file colour, 1-2 lighter, 3 = the 1.3.0 closed-folder tint (0) */
+  tone?: number;
+  /** band look: the colour fades out upward from the band's top edge over this many px; 0 = a hard edge (0) */
+  fade?: number;
   /** the host element's style: where the component sits in its slot */
   style?: Record<string, string | number>;
 }

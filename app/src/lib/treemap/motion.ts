@@ -33,6 +33,8 @@ export const fluentLayout = {
   // its place by size
   minSide: 24,
   minWidth: 44,
+  // a folder at least this tall; 0 = off (only the band look on the design canvas sets it)
+  minHeight: 0,
   // a folder opens only when it gets a header, is over 110 * 60 = 6,600 px² (about
   // 80 x 80, room for a few labelled tiles) and over 0.25 % of the map; the share
   // only bites past ~2000 x 1300, so a huge window does not add levels of tiny boxes
