@@ -13,6 +13,14 @@
 //! the main window, which tells the page when to draw the button hovered or pressed (the
 //! `caption` event) and maximizes or restores on a click.
 //!
+//! "Transparent" hands the question to the windows below the child that belong to the same
+//! thread, in turn, before the main window. Several sit in between: Tauri's resize borders
+//! (`TAURI_DRAG_RESIZE_BORDERS`), wry's WebView holder (`WRY_WEBVIEW`) and the WebView's
+//! own host windows (`Chrome_WidgetWin_0`); only the windows that draw the page belong to
+//! another process and are skipped. Left alone they answer "client" and keep the pointer,
+//! and the button neither lights up nor clicks, so they answer "transparent" over the
+//! button too.
+//!
 //! Windows 10 keeps its own title bar (Mica is missing there, and with it the look this is
 //! for, see `platform::build_main_window`). `TESSERA_TITLEBAR=native` keeps it on
 //! Windows 11 too.
@@ -75,19 +83,22 @@ mod imp {
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows::Win32::Graphics::Gdi::PtInRect;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent,
     };
     use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, GetClientRect, GetWindowRect, HTMAXBUTTON, HTTRANSPARENT,
-        HWND_TOP, IsZoomed, MA_NOACTIVATE, PostMessageW, RegisterClassExW, SC_MAXIMIZE, SC_RESTORE,
-        SIZE_MAXIMIZED, SIZE_MINIMIZED, SM_CYFRAME, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_SHOWWINDOW,
-        SetWindowPos, WINDOW_EX_STYLE, WM_DPICHANGED, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST,
-        WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE,
-        WM_SIZE, WM_SYSCOMMAND, WNDCLASSEXW, WS_CHILD, WS_CLIPSIBLINGS,
+        CreateWindowExW, DefWindowProcW, EnumChildWindows, GetClientRect, GetWindowRect,
+        GetWindowThreadProcessId, HTMAXBUTTON, HTTRANSPARENT, HWND_TOP, IsZoomed, MA_NOACTIVATE,
+        PostMessageW, RegisterClassExW, SC_MAXIMIZE, SC_RESTORE, SIZE_MAXIMIZED, SIZE_MINIMIZED,
+        SM_CYFRAME, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetWindowPos, WINDOW_EX_STYLE,
+        WM_DPICHANGED, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK,
+        WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_SIZE, WM_SYSCOMMAND,
+        WNDCLASSEXW, WS_CHILD, WS_CLIPSIBLINGS,
     };
+    use windows::core::BOOL;
     use windows::core::w;
 
     use super::CaptionState;
@@ -172,6 +183,24 @@ mod imp {
             }));
             let _ = SetWindowSubclass(main, Some(main_proc), SUBCLASS_ID, 0);
         }
+        pass_through(main);
+    }
+
+    /// Makes the main window's other windows of this thread pass the hit test on over the
+    /// button, so that it reaches the main window (see the module docs). The WebView makes
+    /// its windows after the main window is built, so `place` (called once the page has
+    /// drawn its button) does it again; doing it twice is harmless.
+    fn pass_through(main: HWND) {
+        unsafe extern "system" fn each(h: HWND, _: LPARAM) -> BOOL {
+            let ours =
+                unsafe { GetWindowThreadProcessId(h, None) } == unsafe { GetCurrentThreadId() };
+            let button = with(|c| c.button == h.0 as isize).unwrap_or(true);
+            if ours && !button {
+                let _ = unsafe { SetWindowSubclass(h, Some(pass_proc), SUBCLASS_ID, 0) };
+            }
+            true.into()
+        }
+        let _ = unsafe { EnumChildWindows(Some(main), Some(each), LPARAM(0)) };
     }
 
     pub fn set_button(css: [f64; 4]) {
@@ -209,6 +238,7 @@ mod imp {
             let x = client.right - ((right + w) * k).round() as i32;
             let y0 = (top * k).round() as i32;
             let y1 = ((top + h) * k).round() as i32;
+            pass_through(main);
             let edge = if IsZoomed(main).as_bool() {
                 0
             } else {
@@ -237,13 +267,13 @@ mod imp {
         }
     }
 
-    fn on_button(main: HWND, lp: LPARAM) -> bool {
+    /// Whether the screen point of a WM_NCHITTEST is on the page's maximize button.
+    fn on_button(lp: LPARAM) -> bool {
         let pt = POINT {
             x: (lp.0 & 0xffff) as i16 as i32,
             y: ((lp.0 >> 16) & 0xffff) as i16 as i32,
         };
-        let Some(button) = with(|c| (c.main == main.0 as isize).then(|| hwnd(c.button))).flatten()
-        else {
+        let Some(button) = with(|c| hwnd(c.button)) else {
             return false;
         };
         let mut r = RECT::default();
@@ -262,7 +292,7 @@ mod imp {
     ) -> LRESULT {
         let max = wp.0 == HTMAXBUTTON as usize;
         match msg {
-            WM_NCHITTEST if on_button(h, lp) => return LRESULT(HTMAXBUTTON as isize),
+            WM_NCHITTEST if on_button(lp) => return LRESULT(HTMAXBUTTON as isize),
             WM_NCMOUSEMOVE => {
                 change(|s| {
                     s.hover = max;
@@ -313,6 +343,25 @@ mod imp {
             }
             WM_NCDESTROY => {
                 let _ = unsafe { RemoveWindowSubclass(h, Some(main_proc), SUBCLASS_ID) };
+            }
+            _ => {}
+        }
+        unsafe { DefSubclassProc(h, msg, wp, lp) }
+    }
+
+    /// The main window's other windows of this thread: transparent over the button.
+    unsafe extern "system" fn pass_proc(
+        h: HWND,
+        msg: u32,
+        wp: WPARAM,
+        lp: LPARAM,
+        _id: usize,
+        _data: usize,
+    ) -> LRESULT {
+        match msg {
+            WM_NCHITTEST if on_button(lp) => return LRESULT(HTTRANSPARENT as isize),
+            WM_NCDESTROY => {
+                let _ = unsafe { RemoveWindowSubclass(h, Some(pass_proc), SUBCLASS_ID) };
             }
             _ => {}
         }
