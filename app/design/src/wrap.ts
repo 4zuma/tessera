@@ -20,10 +20,11 @@ export const R = (): any => {
 
 const PAGE_KEYS: (keyof PageProps)[] = [
   'scenario', 'scheme', 'lang', 'colorBy', 'query', 'pad', 'gap', 'header', 'minHeaderW', 'minArea', 'minSide', 'minWidth', 'labelMinW', 'labelMinH', 'radius', 'folderRadius',
+  'folderLook', 'white', 'ring', 'foot', 'tone', 'minWhite', 'fitSize',
 ];
 
 /** the page props that are words; the rest are px and may come in as strings from markup */
-const WORD_KEYS = new Set<keyof PageProps>(['scenario', 'scheme', 'lang', 'colorBy', 'query']);
+const WORD_KEYS = new Set<keyof PageProps>(['scenario', 'scheme', 'lang', 'colorBy', 'query', 'folderLook', 'ring', 'fitSize']);
 
 function pageProps(p: Props): PageProps {
   const out: Props = {};

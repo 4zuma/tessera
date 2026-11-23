@@ -16,7 +16,7 @@ import { TreemapEngine, type ApplyOpts, type EngineHost, type EngineStats, type 
 import type { GpuMode } from './treemap/gpu';
 import { fluentLayout, fluentMotion } from './treemap/motion';
 import { fromStored, toStored, type Prefs } from './settings';
-import { FluentPainter } from './treemap/paint';
+import { FluentPainter, layoutSizeFit } from './treemap/paint';
 
 export type Phase = 'boot' | 'pick' | 'map';
 
@@ -420,7 +420,7 @@ export class App implements EngineHost {
         const e = this.engine;
         const view = this.view;
         const hide = this.hide;
-        const buf = await this.backend.layout({ view, width: e.W, height: e.H, sizeMode: this.sizeMode, style: fluentLayout, hide });
+        const buf = await this.backend.layout({ view, width: e.W, height: e.H, sizeMode: this.sizeMode, style: { ...fluentLayout, sizeFit: layoutSizeFit() }, hide });
         let L: Layout;
         try {
           L = decodeLayout(buf);

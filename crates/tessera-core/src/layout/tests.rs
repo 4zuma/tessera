@@ -156,16 +156,22 @@ fn check_level(tree: &Tree, req: &LayoutRequest, d: &Decoded, extras: u64, hide:
     for (i, r) in d.records.iter().enumerate() {
         assert!(index.insert(r.id, i).is_none(), "duplicate id {r:?}");
         assert!(r.w >= 1.0 && r.h >= 1.0, "{r:?} below 1 px");
-        // minWidth is for folders only (rule 2)
+        // minWidth, minHeight and the size fit are for folders only (rule 2)
         let folder = r.kind == kind::DIR || r.kind == kind::DIR_LEAF;
-        let min_w = if folder {
-            st.min_side.max(st.min_width)
-        } else {
-            st.min_side
+        let (min_w, min_h) = match (folder, st.size_fit) {
+            (false, _) => (st.min_side, st.min_side),
+            (true, None) => (
+                st.min_side.max(st.min_width),
+                st.min_side.max(st.min_height),
+            ),
+            (true, Some(f)) => (
+                st.min_side.max(st.min_width).max(f.width(r.size)),
+                st.min_side.max(f.height),
+            ),
         };
         assert!(
-            r.w >= min_w - eps && r.h >= st.min_side - eps,
-            "{r:?} smaller than minSide / minWidth"
+            r.w >= min_w - eps && r.h >= min_h - eps,
+            "{r:?} smaller than minSide / minWidth / minHeight / its size label"
         );
         let (px, py, pw, ph, pdepth) = if r.parent == ids::NONE {
             (map.0, map.1, map.2, map.3, 0)
@@ -303,7 +309,11 @@ fn check_level(tree: &Tree, req: &LayoutRequest, d: &Decoded, extras: u64, hide:
             + if top { extras } else { 0 };
         // With minSide, tiles left out give their room to the others, so
         // the scale is the same for all siblings but can be larger.
-        let scale = if st.min_side > 0.0 || st.min_width > 0.0 {
+        let scale = if st.min_side > 0.0
+            || st.min_width > 0.0
+            || st.min_height > 0.0
+            || st.size_fit.is_some()
+        {
             let Some(r) = group
                 .iter()
                 .map(|&i| &d.records[i])
@@ -529,6 +539,8 @@ fn styles_are_respected() {
         min_area: 400.0,
         min_side: 30.0,
         min_width: 50.0,
+        min_height: 0.0,
+        size_fit: None,
         recurse: 1.0,
         open_share: 0.0,
         max_depth: 3,
@@ -1321,6 +1333,107 @@ fn min_width_is_for_folders() {
         .unwrap();
     assert!(smallest_file < grouped_dir);
     assert!(thin(&wide, kind::FILE) > 0);
+}
+
+/// Glyph widths of Segoe UI at 12 px, about as the UI measures them.
+fn segoe_fit() -> SizeFit {
+    SizeFit {
+        digit: 6.9,
+        dot: 3.0,
+        space: 3.3,
+        units: [32.0, 13.7, 17.2, 15.1, 13.3],
+        inset: 16.0,
+        height: 45.0,
+    }
+}
+
+#[test]
+fn size_fit_widths_follow_the_label() {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    let f = SizeFit {
+        digit: 10.0,
+        dot: 1.0,
+        space: 100.0,
+        units: [1000.0, 2000.0, 3000.0, 4000.0, 5000.0],
+        inset: 0.0,
+        height: 45.0,
+    };
+    // digits x 10 + separators + space 100 + unit
+    assert_eq!(f.width(7), 10.0 + 100.0 + 1000.0); // "7 bytes"
+    assert_eq!(f.width(1023), 41.0 + 100.0 + 1000.0); // "1,023 bytes"
+    assert_eq!(f.width(5 * KB), 10.0 + 100.0 + 2000.0); // "5 KB"
+    assert_eq!(f.width(MB - 1), 40.0 + 100.0 + 2000.0); // "1024 KB"
+    assert_eq!(f.width(MB), 21.0 + 100.0 + 3000.0); // "1.0 MB"
+    assert_eq!(f.width(10 * MB - 1), 31.0 + 100.0 + 3000.0); // "10.0 MB"
+    assert_eq!(f.width(45 * MB), 20.0 + 100.0 + 3000.0); // "45 MB"
+    assert_eq!(f.width(12 * GB + GB / 3), 31.0 + 100.0 + 4000.0); // "12.3 GB"
+    assert_eq!(f.width(234 * GB), 30.0 + 100.0 + 4000.0); // "234 GB"
+    assert_eq!(f.width(1024 * GB), 31.0 + 100.0 + 5000.0); // "1.00 TB"
+    assert_eq!(f.width(12 * 1024 * GB), 41.0 + 100.0 + 5000.0); // "12.00 TB"
+}
+
+#[test]
+fn size_fit_gives_every_folder_room_for_its_size() {
+    // Big files, and folders of 10 to 30 MB whose labels ("24 MB") are
+    // narrower than the widest an MB folder can have ("999 MB").
+    let mut t = Tree::new(b"R:\\");
+    let d = t.add_child(NodeId::ROOT, b"d", 0, 0, NodeFlags::DIR);
+    for (i, s) in [2000u64, 1000].into_iter().enumerate() {
+        let name = format!("big{i}.mkv");
+        t.add_child(d, name.as_bytes(), s << 20, s << 20, NodeFlags::NONE);
+    }
+    for i in 0..150u64 {
+        let size = (10 + i % 21) << 20;
+        let sub = format!("sub{i}");
+        let f = t.add_child(d, sub.as_bytes(), 0, 0, NodeFlags::DIR);
+        t.add_child(f, b"a.bin", size, size, NodeFlags::NONE);
+    }
+    let mut req = LayoutRequest::new(d, 1200.0, 800.0);
+    let dirs = |dd: &Decoded| {
+        dd.records
+            .iter()
+            .filter(|r| r.kind == kind::DIR_LEAF)
+            .count()
+    };
+    let plain = lay(&t, &req);
+    let low = plain
+        .records
+        .iter()
+        .filter(|r| r.kind == kind::DIR_LEAF && r.h < 45.0)
+        .count();
+    assert!(low > 0, "every folder is tall enough already: no test");
+    // `check` asserts every folder is as wide as its label and 45 tall
+    req.style.size_fit = Some(segoe_fit());
+    let fit = lay(&t, &req);
+    assert!(fit.records.iter().any(|r| r.kind == kind::DIR_LEAF));
+    // a fixed minimum for the widest label keeps fewer
+    req.style.size_fit = None;
+    req.style.min_width = segoe_fit().width(999 << 20);
+    req.style.min_height = 45.0;
+    let fixed = lay(&t, &req);
+    assert!(
+        dirs(&fit) > dirs(&fixed),
+        "{} <= {}",
+        dirs(&fit),
+        dirs(&fixed)
+    );
+    // and minHeight alone holds every folder to it
+    req.style.min_width = MIN_WIDTH;
+    req.style.min_height = 50.0;
+    let tall = lay(&t, &req);
+    assert!(dirs(&tall) > 0);
+    // a size fit with a bad width is ignored, not a panic
+    req.style.min_height = 0.0;
+    let buf = |r: &LayoutRequest| LayoutEngine::new().layout(&t, r, RootExtras::default(), 7);
+    let want = buf(&req);
+    assert_eq!(decode(&want).unwrap(), plain);
+    req.style.size_fit = Some(SizeFit {
+        digit: f32::NAN,
+        ..segoe_fit()
+    });
+    assert_eq!(buf(&req), want);
 }
 
 #[test]

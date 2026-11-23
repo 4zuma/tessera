@@ -58,6 +58,8 @@ interface LayoutRequest {
     minArea: f32;       // px²; smaller siblings are merged into one group (110)
     minSide: f32;       // no tile narrower or shorter than this, gap not counted (24); 0 = off
     minWidth: f32;      // no folder tile narrower than this, gap not counted (44); 0 = off
+    minHeight?: f32;    // no folder tile shorter than this, gap not counted (0 = off)
+    sizeFit?: SizeFit;  // every folder tile has room for its size label on one line (off)
     recurse: f32;       // a folder opens only if area > minArea * recurse (60, so 6,600 px²)
     openShare: f32;     // ... and only if area > openShare * the map's area (0.0025); 0 = off
     maxDepth: u8;       // (14)
@@ -66,6 +68,19 @@ interface LayoutRequest {
     labelMinH: f32;     //   and for every folder that gets a header
   };
   hide?: u32[];         // a level of `view` (rule 9): the children left out, any order
+}
+
+// What the UI needs to write a folder's size on one line, measured once in its own font
+// (CSS px). The label is the size as the UI formats it (`fmtBytes`: "5.00 TB", "12.3 GB" /
+// "123 GB", "4.5 MB" / "45 MB", "123 KB", "1,023 bytes"; units of 1,024); its width is
+// digits × digit + separators × dot + space + the unit, plus inset.
+interface SizeFit {
+  digit: f32;           // the widest digit
+  dot: f32;             // the wider of "." and ","
+  space: f32;
+  units: [f32, f32, f32, f32, f32];   // bytes, KB, MB, GB, TB
+  inset: f32;           // room the folder leaves round the label, both sides together
+  height: f32;          // the least height of a folder tile with its label
 }
 
 interface Details {
@@ -231,17 +246,20 @@ These are what make the map calm while it changes, and they were tuned in the pr
    With `minSide`, every tile is at least that wide and tall, since a thin sliver hardly
    reads as a tile (24 px is a little more than Windows' 13 × 20 px arrow pointer); with
    `minWidth`, every folder tile is at least that wide, since a folder is known by its name,
-   which is written across (44 px is `labelMinW`, so every folder gets its name). A file is
-   known by its colour, so its tile can be as small as `minSide` either way. Siblings whose
-   area would be below `1.3 × (minSide + gap)²`, or for a folder `1.3 × (minSide + gap) ×
-   (max(minSide, minWidth) + gap)`, go to the group at once (barely enough area seldom comes
-   out square enough), and the group takes its place among the others by its size instead
-   of coming last. While squarifying, an item that would come out shorter than `minSide +
+   which is written across (44 px is `labelMinW`, so every folder gets its name); with
+   `minHeight`, every folder tile is at least that tall. With `sizeFit`, a folder tile
+   instead has room for its own size label on one line: at least as wide as the label
+   (and `minWidth`) and `sizeFit.height` tall, so the least size of each folder follows its
+   size. A file is known by its colour, so its tile can be as small as `minSide` either way.
+   Siblings whose area would be below `1.3 × (minSide + gap)²`, or for a folder `1.3 ×
+   (max(minSide, least width) + gap) × (max(minSide, least height) + gap)`, go to the group
+   at once (barely enough area seldom comes out square enough), and the group takes its
+   place among the others by its size instead of coming last. While squarifying, an item that would come out shorter than `minSide +
    gap` along a row already that thick starts the next row instead, so small items do not
    line up as slivers beside a big one. After squarifying, the first sibling (in rank
    order) that came out below `minSide` and every one after it join the group, and so does
-   every folder before it that is only narrower than `minWidth`; the folder is laid out
-   again. A group (or a single left-over sibling), UNSCANNED or FREE tile that is still too
+   every folder before it that is only below its least width or height; the folder is laid
+   out again. A group (or a single left-over sibling), UNSCANNED or FREE tile that is still too
    small is left out and the others take its room. This repeats at most 12 times; a tile
    still too small then is not drawn and its room stays empty.
 3. Squarified treemap (Bruls et al. 2000) into the parent's inner box. Every rect is inset

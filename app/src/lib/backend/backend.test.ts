@@ -3,9 +3,10 @@ import { contentOf, decodeLayout, encodeLayout, FREE, GROUP_BIT, groupId, isNode
 import { categoryOf, Cat } from './categories';
 import { t } from '../i18n.svelte';
 import { MockBackend } from './mock';
+import { labelRoom } from './mock/layout';
 import { AGE_BINS, AGE_EDGE_CHOICES, AGE_UNKNOWN, ageBand, ageBin, ageByte, bandTotals } from '../age';
 import { ageTable, BadSize, parseQuery } from './mock/search';
-import type { LayoutRequest, ScanProgress } from './types';
+import type { LayoutRequest, ScanProgress, SizeFit } from './types';
 
 const STYLE = { outer: 6, pad: 3, gap: 2, header: 21, minHeaderW: 60, minArea: 110, minSide: 0, minWidth: 0, recurse: 60, openShare: 0.0025, maxDepth: 14, maxPerDir: 400, labelMinW: 44, labelMinH: 20 };
 const req = (view = 0): LayoutRequest => ({ view, width: 1200, height: 800, sizeMode: 'disk', style: STYLE });
@@ -140,6 +141,25 @@ describe('mock backend', () => {
       expect(groups.filter(r => !((r.note ?? 0) & (Note.Files | Note.Folders)))).toEqual([]);
       expect(groups.some(r => (r.note ?? 0) & Note.Folders)).toBe(true);
       expect(groups.some(r => (r.note ?? 0) & Note.Files)).toBe(true);
+    }
+  });
+
+  it('gives every folder room for its own size label with sizeFit', async () => {
+    const b = new MockBackend({}, { scanMs: 300 });
+    await scanned(b);
+    // Segoe UI 12 px, roughly, and the band look's 45 px folder
+    const sizeFit: SizeFit = { digit: 6.9, dot: 3, space: 3.3, units: [32, 13.7, 17.2, 15.1, 13.3], inset: 16, height: 45 };
+    const fixed = { ...STYLE, minSide: 24, minWidth: 58, minHeight: 45 };
+    for (const [width, height] of [[960, 560], [1600, 900]]) {
+      const on = decodeLayout(await b.layout({ ...req(), width, height, style: { ...STYLE, minSide: 24, minWidth: 44, sizeFit } })).rects;
+      const folders = on.filter(r => r.kind === Kind.DirLeaf);
+      const cramped = folders.filter(r => r.w < Math.max(44, labelRoom(r.size, sizeFit)) - 1e-3 || r.h < 45 - 1e-3);
+      expect(cramped).toEqual([]);
+      expect(folders.filter(r => !r.name)).toEqual([]);
+      expect(on.filter(r => Math.min(r.w, r.h) < 24 - 1e-3)).toEqual([]);
+      // each folder asks for its own label, not the widest one: more of them keep a tile
+      const one = decodeLayout(await b.layout({ ...req(), width, height, style: fixed })).rects;
+      expect(folders.length).toBeGreaterThan(one.filter(r => r.kind === Kind.DirLeaf).length);
     }
   });
 

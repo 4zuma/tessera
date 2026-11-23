@@ -44,12 +44,37 @@ export interface LayoutStyle {
   minSide: number;
   /** no folder tile narrower than this (CSS px, gap not counted), so its name fits; 0 = off */
   minWidth: number;
+  /** no folder tile shorter than this (CSS px, gap not counted); 0 or absent = off (the band look's design canvas only, for now) */
+  minHeight?: number;
+  /** a folder tile holds its size label on one line (rule 2); absent = off (the band look's design canvas only, for now) */
+  sizeFit?: SizeFit;
   recurse: number;
   openShare: number;
   maxDepth: number;
   maxPerDir: number;
   labelMinW: number;
   labelMinH: number;
+}
+
+/**
+ * The room a folder's size label ("8.6 GB") takes at the UI's font, so the layout can give
+ * every folder tile room for its own label (rule 2). With it, a folder's minimum is no longer
+ * minWidth x minHeight but the label on one line: label width + inset wide (never narrower
+ * than minWidth) and `height` tall. CSS px, gap not counted.
+ */
+export interface SizeFit {
+  /** the widest digit */
+  digit: number;
+  /** '.' (and any digit grouping mark) */
+  dot: number;
+  /** the space between number and unit */
+  space: number;
+  /** the unit: bytes (the UI's word), KB, MB, GB, TB */
+  units: [number, number, number, number, number];
+  /** room left and right of the label, together */
+  inset: number;
+  /** least folder height with the label in it */
+  height: number;
 }
 
 export interface LayoutRequest {

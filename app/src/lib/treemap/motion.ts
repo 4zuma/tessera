@@ -22,9 +22,11 @@ export const fluentMotion: MotionSet = {
 /** layout parameters for the Fluent look (sent to the core with every layout request) */
 export const fluentLayout = {
   outer: 6,
-  pad: 3,
+  // the band look's (paint.ts › bandLayout): content 4 px inside a folder's white area, which
+  // sits inside the 1 px ring, and 4 px below the 21 px band
+  pad: 5,
   gap: 2,
-  header: 21,
+  header: 24,
   minHeaderW: 60,
   minArea: 110,
   // no tile thinner than 24 px either way (a bit more than the 13 x 20 arrow pointer), and
@@ -33,6 +35,10 @@ export const fluentLayout = {
   // its place by size
   minSide: 24,
   minWidth: 44,
+  // a folder at least this tall (the band, 6 px of white area, the colour band: bandLayout);
+  // with the size fit (paint.ts › layoutSizeFit, added to each request) a folder is instead
+  // at least as wide as its own size label and tall enough for it under the band
+  minHeight: 33,
   // a folder opens only when it gets a header, is over 110 * 60 = 6,600 px² (about
   // 80 x 80, room for a few labelled tiles) and over 0.25 % of the map; the share
   // only bites past ~2000 x 1300, so a huge window does not add levels of tiny boxes

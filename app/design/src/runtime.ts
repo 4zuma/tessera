@@ -7,7 +7,7 @@ import { app } from '../../src/lib/app.svelte';
 import { Flag, Kind } from '../../src/lib/backend/codec';
 import { setLang } from '../../src/lib/i18n.svelte';
 import { fluentLayout } from '../../src/lib/treemap/motion';
-import { paintStyle } from '../../src/lib/treemap/paint';
+import { bandLayout, paintStyle } from '../../src/lib/treemap/paint';
 import type { Rect } from '../../src/lib/backend/codec';
 import { config } from './config';
 
@@ -36,6 +36,24 @@ export interface PageProps {
   /** tile and open-folder corner radii (src/lib/treemap/paint.ts › paintStyle) */
   radius?: number;
   folderRadius?: number;
+  /**
+   * The folder look (paintStyle.folders): 'band' as shipped since 1.3.1, 'classic' the look up
+   * to 1.3.0. With 'band' the layout's pad, header and folder minimum height follow from the
+   * band props below, and the pad / header props are ignored.
+   */
+  folderLook?: 'classic' | 'band';
+  /** band look: white margin round a folder's content, px */
+  white?: number;
+  /** band look: the band's fill runs on as a 1 px ring inside the outline ('on' / 'off') */
+  ring?: 'on' | 'off';
+  /** band look: a closed folder's colour band height, px */
+  foot?: number;
+  /** band look: 0 = the file colour .. 3 = the 1.3.0 closed-folder tint */
+  tone?: number;
+  /** band look: the least white area a folder gets, px (6; 18 holds a closed folder's size); the folder minimum height follows */
+  minWhite?: number;
+  /** band look: every folder gets room for its own size label on one line ('on' / 'off'); its least width follows the label (never under minWidth), minWhite no longer applies */
+  fitSize?: 'on' | 'off';
 }
 
 const LAYOUT_KEYS = ['pad', 'gap', 'header', 'minHeaderW', 'minArea', 'minSide', 'minWidth', 'labelMinW', 'labelMinH'] as const;
@@ -113,16 +131,27 @@ export async function apply(p: PageProps) {
   if (mine === run) await play(s, q, () => mine === run);
 }
 
+/** the layout of the classic look (up to 1.3.0), for switching to it from the band look */
+const CLASSIC = { pad: 3, header: 21, minFolderH: 0 };
+
 function applyTreemapStyle(p: PageProps, live: boolean) {
+  let paint = false;
   let layout = false;
+  // the folder look first: with the band look, pad and header follow from it
+  const wasBand = paintStyle.folders === 'band';
+  if ((p.folderLook === 'classic' || p.folderLook === 'band') && p.folderLook !== paintStyle.folders) {
+    paintStyle.folders = p.folderLook;
+    paint = true;
+  }
+  const band = paintStyle.folders === 'band';
   for (const k of LAYOUT_KEYS) {
+    if (band && (k === 'pad' || k === 'header')) continue;
     const v = p[k];
     if (typeof v === 'number' && Number.isFinite(v) && fluentLayout[k] !== v) {
       fluentLayout[k] = v;
       layout = true;
     }
   }
-  let paint = false;
   if (typeof p.radius === 'number' && p.radius !== paintStyle.radius) {
     paintStyle.radius = p.radius;
     paint = true;
@@ -131,11 +160,37 @@ function applyTreemapStyle(p: PageProps, live: boolean) {
     paintStyle.folderRadius = p.folderRadius;
     paint = true;
   }
+  for (const k of ['white', 'foot', 'tone', 'minWhite'] as const) {
+    const v = p[k];
+    if (typeof v === 'number' && Number.isFinite(v) && paintStyle[k] !== v) {
+      paintStyle[k] = v;
+      paint = true;
+    }
+  }
+  if ((p.ring === 'on' || p.ring === 'off') && paintStyle.ring !== (p.ring === 'on')) {
+    paintStyle.ring = p.ring === 'on';
+    paint = true;
+  }
+  // the size fit goes with each layout request (paint.ts › layoutSizeFit)
+  if ((p.fitSize === 'on' || p.fitSize === 'off') && paintStyle.fitSize !== (p.fitSize === 'on')) {
+    paintStyle.fitSize = p.fitSize === 'on';
+    layout = true;
+  }
+  if (band !== wasBand) layout = true;
+  // the layout the band look needs, or the classic one when it is switched off
+  const want = band ? bandLayout() : wasBand ? { pad: p.pad ?? CLASSIC.pad, header: p.header ?? CLASSIC.header, minFolderH: CLASSIC.minFolderH } : null;
+  if (want && (fluentLayout.pad !== want.pad || fluentLayout.header !== want.header || fluentLayout.minHeight !== want.minFolderH)) {
+    fluentLayout.pad = want.pad;
+    fluentLayout.header = want.header;
+    fluentLayout.minHeight = want.minFolderH;
+    layout = true;
+  }
   if (!live) return;
   if (layout) app.requestLayout('update');
   if (paint) {
+    // kick alone only repaints what moved; a new look needs the whole scene again
     app.engine?.painter.reset();
-    app.engine?.kick();
+    app.engine?.invalidate();
   }
 }
 
