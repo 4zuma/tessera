@@ -86,11 +86,6 @@
     drivesOpen = false;
     void app.startScan(root);
   }
-  function openAppMenu(e: MouseEvent) {
-    const b = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    // under the button, right edges lined up (the menu flips left when it meets the window edge)
-    app.openAppMenu(b.right, b.bottom + 4);
-  }
   function onDocDown(e: PointerEvent) {
     if (drivesOpen && !(e.target as HTMLElement).closest('.drives-fly, .drive-btn')) drivesOpen = false;
   }
@@ -179,9 +174,6 @@
       <Icon name="pane" />
     </button>
   {/if}
-  <button class="sbtn app-menu" aria-haspopup="menu" onclick={openAppMenu} title={t('cmd.moreTip')} aria-label={t('cmd.more')}>
-    <Icon name="more" />
-  </button>
 </div>
 
 <style>

@@ -86,8 +86,6 @@ export const zhCN: Partial<Dict> = {
   'cmd.pane': '详情栏',
   'cmd.showPane': '显示详情栏',
   'cmd.hidePane': '隐藏详情栏',
-  'cmd.more': '更多',
-  'cmd.moreTip': '更多选项',
 
   /* 搜索框（Ctrl+F） */
   'search.placeholder': '在 {drive} 中搜索',
@@ -136,8 +134,6 @@ export const zhCN: Partial<Dict> = {
   'menu.purge': '永久删除…',
   'menu.more': '显示更多选项',
   'menu.moreMixed': 'Windows 的菜单只能用于同一个文件夹里的项目。',
-  'menu.clearSettings': '清除保存的设置',
-  'menu.settingsNote': 'Tessera 把窗口大小和视图选项记在注册表里（HKEY_CURRENT_USER\\Software\\Tessera），只记你改过的项。',
 
   'confirm.purgeTitle': '永久删除？',
   'confirm.selection': '所选项目',

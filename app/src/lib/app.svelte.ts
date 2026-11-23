@@ -274,6 +274,11 @@ export class App implements EngineHost {
     this.backend?.saveSetting(name, value).catch(err => console.warn('settings could not be saved', err));
   }
 
+  /**
+   * Deletes everything Tessera saved in the registry. No button calls it for now: the ⋯ menu
+   * that held it sat next to the details-pane toggle with nothing else in it (user, 2026-11-23);
+   * it comes back once the title bar has a menu with more in it.
+   */
   async clearSettings() {
     if (!this.backend) return;
     try {
@@ -288,21 +293,6 @@ export class App implements EngineHost {
     this.paneToggled();
     this.paneWanted = !this.paneWanted;
     this.remember('pane', this.paneWanted);
-  }
-
-  /** the ⋯ menu at the end of the command bar */
-  openAppMenu(x: number, y: number) {
-    this.tip = null;
-    const v = this.platform?.version;
-    this.menu = {
-      x,
-      y,
-      rows: [
-        { type: 'head', label: v ? `Tessera ${v}` : 'Tessera' },
-        { type: 'item', icon: 'undo', label: t('menu.clearSettings'), run: () => void this.clearSettings() },
-        { type: 'note', label: t('menu.settingsNote') },
-      ],
-    };
   }
 
   setScheme(s: Scheme) {

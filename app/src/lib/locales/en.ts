@@ -101,8 +101,6 @@ export const en = {
   'cmd.pane': 'Details pane',
   'cmd.showPane': 'Show details pane',
   'cmd.hidePane': 'Hide details pane',
-  'cmd.more': 'More',
-  'cmd.moreTip': 'More options',
 
   /* search box (Ctrl+F) */
   'search.placeholder': 'Search {drive}',
@@ -156,8 +154,6 @@ export const en = {
   'menu.purge': 'Delete permanently…',
   'menu.more': 'Show more options',
   'menu.moreMixed': "Windows' menu works only for items in one folder.",
-  'menu.clearSettings': 'Clear saved settings',
-  'menu.settingsNote': 'Tessera remembers its window size and view options in the registry (HKEY_CURRENT_USER\\Software\\Tessera), only the ones you changed.',
 
   /* confirmations */
   'confirm.purgeTitle': 'Delete permanently?',
