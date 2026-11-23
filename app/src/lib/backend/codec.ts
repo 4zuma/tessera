@@ -69,6 +69,11 @@ export const isSpecialId = (id: number) => id === FREE || id === UNSCANNED || id
 export const isNodeId = (id: number) => id < GROUP_BIT;
 export const groupFolder = (id: number) => id - GROUP_BIT;
 export const groupId = (folder: number) => GROUP_BIT + folder;
+/**
+ * The folder whose contents a tile shows: for a folded chain `a › b › c` the deepest
+ * folder `c`, where the files start; for any other tile its own id.
+ */
+export const contentOf = (r: Rect) => (r.kind === Kind.Dir || r.kind === Kind.DirLeaf ? r.target : r.id);
 
 const utf8 = new TextDecoder('utf-8');
 const utf8enc = new TextEncoder();
