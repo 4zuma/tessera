@@ -119,13 +119,24 @@ kbd {
   background: var(--accent-press);
   color: var(--on-accent);
 }
+/* Built like the accent button: WinUI has no critical button, so its hover and pressed fills
+   are the critical colour at 90% and 80%, as AccentFillColorSecondary/Tertiary are for the
+   accent. Each coloured variant has to set its own hover and pressed fill: .btn:hover and
+   .btn:active above outrank .btn.danger and would paint the light control fill under the
+   white label. */
 .btn.danger {
   background: var(--critical);
   color: var(--on-critical);
   border-color: transparent;
+  border-bottom-color: rgba(0, 0, 0, 0.2);
 }
 .btn.danger:hover:not(:disabled) {
-  filter: brightness(1.06);
+  background: var(--critical-hover);
+}
+.btn.danger:active:not(:disabled) {
+  background: var(--critical-press);
+  color: var(--on-critical);
+  border-bottom-color: transparent;
 }
 .btn.danger:disabled {
   background: var(--ctl);

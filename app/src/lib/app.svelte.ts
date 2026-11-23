@@ -4,7 +4,7 @@
  */
 import { SvelteSet } from 'svelte/reactivity';
 import { createBackend } from './backend';
-import { decodeLayout, Flag, FREE, groupFolder, isGroupId, isNodeId, Kind, NONE, UNSCANNED, type Layout, type Rect } from './backend/codec';
+import { contentOf, decodeLayout, Flag, FREE, groupFolder, isGroupId, isNodeId, Kind, NONE, UNSCANNED, type Layout, type Rect } from './backend/codec';
 import type { Backend, CaptionState, CatStat, Crumb, Details, PlatformInfo, ScanProgress, SearchResult, SizeMode, Volume } from './backend/types';
 import { AGE_EDGES, ageBand } from './age';
 import { makeColoring, type ColorBy, type Coloring } from './coloring';
@@ -320,6 +320,16 @@ export class App implements EngineHost {
     return this.engine?.items.get(id)?.r ?? null;
   }
 
+  /**
+   * The folder a tile's path means: the deepest folder of a folded chain `a › b › c`, so
+   * copying, showing in Explorer and the details card all land where the files are.
+   * Deleting and Windows' own menu still take the whole tile (`a`).
+   */
+  private contentId(id: number): number {
+    const r = this.rectOf(id);
+    return r && isNodeId(id) ? contentOf(r) : id;
+  }
+
   /* ------------------------------------------------------------------ layout */
 
   /** at most one layout request in flight; later requests merge, the stronger motion wins */
@@ -516,10 +526,22 @@ export class App implements EngineHost {
   async refreshDetails() {
     if (!this.backend || !this.volume) return;
     const id = this.focusId;
+    const inner = this.contentId(id);
     const seq = ++this.detailsSeq;
-    const d = await this.backend.details(id, this.view, this.sizeMode);
+    const [d, di] = await Promise.all([
+      this.backend.details(id, this.view, this.sizeMode),
+      inner !== id ? this.backend.details(inner, this.view, this.sizeMode) : null,
+    ]);
     if (seq !== this.detailsSeq) return;
     if (d && isGroupId(id)) d.size = this.rectOf(id)?.size ?? 0;
+    if (d && di) {
+      // a folded chain: name it as the tile does, and show what is inside its deepest
+      // folder; size, share and the lock stay the whole tile's, since delete takes it all
+      d.name = this.rectOf(id)?.name || d.name;
+      d.path = di.path;
+      d.files = di.files;
+      d.dirs = di.dirs;
+    }
     this.details = d;
   }
 
@@ -928,7 +950,7 @@ export class App implements EngineHost {
 
   async copyPath(ids: number[]) {
     if (!this.backend) return;
-    const ds = await Promise.all(ids.filter(isNodeId).map(id => this.backend!.details(id, this.view, this.sizeMode)));
+    const ds = await Promise.all(ids.filter(isNodeId).map(id => this.backend!.details(this.contentId(id), this.view, this.sizeMode)));
     const text = ds.map(d => d?.path).filter(Boolean).join('\r\n');
     try {
       await navigator.clipboard.writeText(text);
@@ -940,6 +962,7 @@ export class App implements EngineHost {
 
   async reveal(id: number) {
     if (!this.backend || !isNodeId(id)) return;
+    id = this.contentId(id);
     if (!this.platform?.core) {
       const d = await this.backend.details(id, this.view, this.sizeMode);
       this.showToast('info', t('preview.revealBody', { path: d?.path ?? '' }), [], t('preview.reveal'));

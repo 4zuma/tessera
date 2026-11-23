@@ -153,17 +153,41 @@ impl Query {
     fn age_table(&self) -> [bool; 256] {
         let mut ok = [true; 256];
         for (b, slot) in ok.iter_mut().enumerate() {
-            *slot = match age::days_of(b as u8) {
-                None => self.ages.is_empty(),
-                Some(d) => self.ages.iter().all(|&(c, bound)| c.holds(d, bound)),
-            };
+            *slot = self.age_fits(b as u8);
         }
         ok
+    }
+
+    /// The age bounds hold for an age byte.
+    fn age_fits(&self, b: u8) -> bool {
+        match age::days_of(b) {
+            None => self.ages.is_empty(),
+            Some(d) => self.ages.iter().all(|&(c, bound)| c.holds(d, bound)),
+        }
     }
 
     #[inline]
     fn size_fits(&self, size: u64) -> bool {
         self.sizes.iter().all(|&(c, b)| c.holds(size, b))
+    }
+
+    /// `id` matches by itself (not through a matching folder).
+    fn fits(&self, tree: &Tree, id: NodeId, mode: SizeMode, buf: &mut Vec<u8>) -> bool {
+        let node = tree.node(id);
+        let dir = node.is_dir();
+        if node.is_deleted()
+            || (dir && !self.matches_folders())
+            || !self.size_fits(mode.of(&node))
+            || (!dir && !self.age_fits(tree.age(id)))
+        {
+            return false;
+        }
+        if !self.reads_names() {
+            return true;
+        }
+        buf.clear();
+        wtf8::push_folded(buf, &tree.name(id));
+        self.name_fits(buf, false)
     }
 
     /// The name part of the query holds for a folded name.
@@ -272,6 +296,8 @@ pub struct Hits {
     pub count: u64,
     /// Their bytes, each counted once.
     pub bytes: u64,
+    /// The query, to tell which later changes it would see.
+    query: Query,
 }
 
 impl Hits {
@@ -284,6 +310,32 @@ impl Hits {
 
     pub fn heap_bytes(&self) -> usize {
         self.share.capacity()
+    }
+
+    /// Whether changes to the children of `dirs` (the folders a batch of
+    /// live changes touched) can change what this search finds: one of
+    /// them is inside a matching folder, a child it found changed or went
+    /// away, or a child matches now. Changes that miss the search can then
+    /// leave it as it is.
+    pub fn touched_by(&self, tree: &Tree, dirs: &[NodeId]) -> bool {
+        let mut buf = Vec::new();
+        dirs.iter().any(|&d| {
+            if d.index() >= tree.len() || tree.is_deleted(d) {
+                return false;
+            }
+            if self.share(d) == 255 {
+                return true;
+            }
+            // deleted children too: a match that went away counts
+            let mut c = tree.node(d).first_child;
+            while !c.is_none() {
+                if self.share(c) > 0 || self.query.fits(tree, c, self.mode, &mut buf) {
+                    return true;
+                }
+                c = tree.node(c).next_sibling;
+            }
+            false
+        })
     }
 }
 
@@ -413,6 +465,7 @@ pub fn search(
         share,
         count,
         bytes: total,
+        query: q.clone(),
     })
 }
 
@@ -631,6 +684,41 @@ mod tests {
         assert_eq!((h.count, h.bytes), (1, 100));
         assert_eq!(h.share(old), share_of(100, 4100));
         assert_eq!(run(&t, "2023").count, 1); // the folder, holding the log
+    }
+
+    #[test]
+    fn tells_which_live_changes_it_would_see() {
+        let (mut t, [games, images, _, old]) = sample();
+        let h = run(&t, ".iso");
+        // nothing changed yet in a folder without matches
+        let docs = t.add_child(NodeId::ROOT, b"docs", 0, 0, NodeFlags::DIR);
+        assert!(!h.touched_by(&t, &[docs]));
+        // a file that does not match appears there: still nothing to see
+        t.add_child(docs, b"notes.txt", 5, 5, NodeFlags::NONE);
+        assert!(!h.touched_by(&t, &[docs]));
+        // a match appears
+        t.add_child(docs, b"new.iso", 5, 5, NodeFlags::NONE);
+        assert!(h.touched_by(&t, &[docs]));
+        // a found file goes away (deleted children still count)
+        let setup = t.find_child(games, b"setup.iso").unwrap();
+        t.mark_deleted(setup);
+        assert!(h.touched_by(&t, &[games]));
+        // a deleted folder's contents were never found
+        assert!(!h.touched_by(&t, &[old]));
+        // anything inside a matching folder
+        let h = run(&t, "\"iso images\"");
+        assert_eq!(h.share(images), 255);
+        t.add_child(images, b"c.txt", 1, 1, NodeFlags::NONE);
+        assert!(h.touched_by(&t, &[images]));
+        assert!(!h.touched_by(&t, &[NodeId(9999)]));
+        // an age word: a new file matches only if it is old enough
+        let h = run(&t, ">1y");
+        let fresh = t.add_child(docs, b"fresh.bin", 5, 5, NodeFlags::NONE);
+        assert!(t.set_modified(fresh, crate::age::now_filetime()));
+        assert!(!h.touched_by(&t, &[docs]));
+        let aged = t.add_child(docs, b"aged.bin", 5, 5, NodeFlags::NONE);
+        assert!(t.set_modified(aged, crate::age::now_filetime() - 400 * 864_000_000_000));
+        assert!(h.touched_by(&t, &[docs]));
     }
 
     #[test]

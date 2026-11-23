@@ -293,6 +293,8 @@ export function applyThemeCss(t: Theme, el: HTMLElement = document.documentEleme
   el.style.setProperty('--accent-soft', rgba(t.tok.accent, t.scheme === 'dark' ? 0.14 : 0.1));
   el.style.setProperty('--accent-hover', rgba(t.tok.accent, 0.9));
   el.style.setProperty('--accent-press', rgba(t.tok.accent, 0.8));
+  el.style.setProperty('--critical-hover', rgba(t.tok.critical, 0.9));
+  el.style.setProperty('--critical-press', rgba(t.tok.critical, 0.8));
   t.fill.forEach((f, i) => el.style.setProperty(`--cat-${i}`, f));
   el.dataset.scheme = t.scheme;
   el.style.colorScheme = t.scheme;

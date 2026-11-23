@@ -31,60 +31,140 @@
 </script>
 
 <aside class="pane">
-  <section class="card details" aria-live="polite">
-    {#if d}
-      <div class="dh">
-        <span class="dic" style:background={d.kind === 'file' && d.cat < 12 ? `var(--cat-${d.cat})` : 'var(--ctl)'}>
-          <Icon name={d.kind === 'dir' ? 'folder' : d.kind === 'file' ? (d.flags & Flag.Cloud ? 'cloud' : 'file') : d.kind === 'free' ? 'drive' : 'more'} size={18} />
-        </span>
-        <div class="dt">
-          <div class="dn" title={d.name}>{d.name}</div>
-          <div class="dk caption">{kindLabel}</div>
-        </div>
-      </div>
-      <div class="dsize tabular">{fmtBytes(d.size)}</div>
-      {#if d.kind !== 'group' && !(d.id === app.crumbs[0]?.id && app.sizeMode === 'logical')}
-        <div class="share">
-          <div class="bar"><i style:width="{Math.min(100, d.share * 100).toFixed(1)}%"></i></div>
-          <span class="caption tabular">{t(d.kind === 'free' || d.kind === 'unscanned' || d.id === app.crumbs[0]?.id ? 'shareDrive' : 'shareParent', { pct: fmtPct(d.share) })}</span>
-        </div>
-      {/if}
-      {#if d.kind === 'file' || d.kind === 'dir'}
-        <dl class="kv caption tabular">
-          <dt class:on={app.sizeMode === 'disk'}>{t('sizeOnDisk')}</dt>
-          <dd>{fmtBytes(d.disk)}</dd>
-          <dt class:on={app.sizeMode === 'logical'}>{t('size')}</dt>
-          <dd>{fmtBytes(d.logical)}</dd>
-          {#if d.kind === 'dir'}
-            <dt>{t('pane.contains')}</dt>
-            <dd>{tn('files', d.files)}{d.dirs ? ` · ${tn('folders', d.dirs)}` : ''}</dd>
-          {:else}
-            <dt>{t('pane.modified')}</dt>
-            <dd>{fmtDate(d.modified)}</dd>
-          {/if}
-        </dl>
-        <div class="path caption">{d.path}</div>
-      {/if}
-      {#if d.lockReason && d.id !== app.view && (d.kind === 'file' || d.kind === 'dir')}
-        <!-- a fact about the item, not an error: neutral, and it says first what is locked -->
-        <div class="note locked caption" role="note">
-          <Icon name="lock" size={14} />
-          <div class="nb">
-            <b>{d.kind === 'dir' ? t('pane.folderLocked') : t('pane.fileLocked')}</b>
-            <span>{d.lockReason}</span>
+  <div class="scroll">
+    <div class="inner">
+      <section class="card details" aria-live="polite">
+        {#if d}
+          <div class="dh">
+            <span class="dic" style:background={d.kind === 'file' && d.cat < 12 ? `var(--cat-${d.cat})` : 'var(--ctl)'}>
+              <Icon name={d.kind === 'dir' ? 'folder' : d.kind === 'file' ? (d.flags & Flag.Cloud ? 'cloud' : 'file') : d.kind === 'free' ? 'drive' : 'more'} size={18} />
+            </span>
+            <div class="dt">
+              <div class="dn" title={d.name}>{d.name}</div>
+              <div class="dk caption">{kindLabel}</div>
+            </div>
           </div>
+          <div class="dsize tabular">{fmtBytes(d.size)}</div>
+          {#if d.kind !== 'group' && !(d.id === app.crumbs[0]?.id && app.sizeMode === 'logical')}
+            <div class="share">
+              <div class="bar"><i style:width="{Math.min(100, d.share * 100).toFixed(1)}%"></i></div>
+              <span class="caption tabular">{t(d.kind === 'free' || d.kind === 'unscanned' || d.id === app.crumbs[0]?.id ? 'shareDrive' : 'shareParent', { pct: fmtPct(d.share) })}</span>
+            </div>
+          {/if}
+          {#if d.kind === 'file' || d.kind === 'dir'}
+            <dl class="kv caption tabular">
+              <dt class:on={app.sizeMode === 'disk'}>{t('sizeOnDisk')}</dt>
+              <dd>{fmtBytes(d.disk)}</dd>
+              <dt class:on={app.sizeMode === 'logical'}>{t('size')}</dt>
+              <dd>{fmtBytes(d.logical)}</dd>
+              {#if d.kind === 'dir'}
+                <dt>{t('pane.contains')}</dt>
+                <dd>{tn('files', d.files)}{d.dirs ? ` · ${tn('folders', d.dirs)}` : ''}</dd>
+              {:else}
+                <dt>{t('pane.modified')}</dt>
+                <dd>{fmtDate(d.modified)}</dd>
+              {/if}
+            </dl>
+            <div class="path caption">{d.path}</div>
+          {/if}
+          {#if d.lockReason && d.id !== app.view && (d.kind === 'file' || d.kind === 'dir')}
+            <!-- a fact about the item, not an error: neutral, and it says first what is locked -->
+            <div class="note locked caption" role="note">
+              <Icon name="lock" size={14} />
+              <div class="nb">
+                <b>{d.kind === 'dir' ? t('pane.folderLocked') : t('pane.fileLocked')}</b>
+                <span>{d.lockReason}</span>
+              </div>
+            </div>
+          {/if}
+          {#if d.hint}
+            <div class="note caption"><Icon name="info" size={14} /><span>{d.hint}</span></div>
+          {/if}
+        {:else}
+          <div class="empty caption">{t('pane.empty')}</div>
+        {/if}
+      </section>
+
+      <section class="card legend">
+        <div class="seg" role="radiogroup" aria-label={t('pane.colorBy')}>
+          <button role="radio" aria-checked={app.colorBy === 'type'} class:on={app.colorBy === 'type'} onclick={() => app.setColorBy('type')} title={t('pane.typeTip')}>{t('pane.byType')}</button>
+          <button role="radio" aria-checked={app.colorBy === 'age'} class:on={app.colorBy === 'age'} onclick={() => app.setColorBy('age')} title={t('pane.ageTip')}>{t('pane.byAge')}</button>
         </div>
-      {/if}
-      {#if d.hint}
-        <div class="note caption"><Icon name="info" size={14} /><span>{d.hint}</span></div>
-      {/if}
-    {:else}
-      <div class="empty caption">{t('pane.empty')}</div>
-    {/if}
-  </section>
+        {#if app.colorBy === 'age'}
+          {#if app.ageHist.length}
+            <div class="stack" aria-hidden="true">
+              {#each bands as b (b.i)}
+                {#if b.bytes > 0}
+                  <i style:flex-grow={b.bytes / bandsTotal} style:background={app.coloring.fill[b.i]} class:dim={app.filter != null && app.filter !== b.i}></i>
+                {/if}
+              {/each}
+              {#if unknownBytes > 0}
+                <i style:flex-grow={unknownBytes / bandsTotal} class="unk" class:dim={app.filter != null}></i>
+              {/if}
+            </div>
+            <div class="rows">
+              {#each bands as b (b.i)}
+                {@const name = bandName(b.i, app.ageEdges)}
+                <button class="lg" class:on={app.filter === b.i} class:zero={!b.bytes} aria-pressed={app.filter === b.i} onclick={() => app.setFilter(b.i)} title={t('pane.highlight', { cat: name })}>
+                  <i class="sw" style:background={app.coloring.fill[b.i]}></i>
+                  <span class="ln">{name}</span>
+                  <span class="lv caption tabular">{fmtBytes(b.bytes)}</span>
+                </button>
+              {/each}
+              {#if unknownBytes > 0}
+                <div class="lg static">
+                  <i class="sw unk"></i>
+                  <span class="ln">{bandName(-1, app.ageEdges)}</span>
+                  <span class="lv caption tabular">{fmtBytes(unknownBytes)}</span>
+                </div>
+              {/if}
+            </div>
+          {:else}
+            <div class="empty caption">{t('pane.afterScan')}</div>
+          {/if}
+          {#if editing}
+            <div class="edges">
+              <div class="caption hint">{t('pane.bandsHint')}</div>
+              <div class="chips">
+                {#each AGE_EDGE_CHOICES as d (d)}
+                  {@const on = app.ageEdges.includes(d)}
+                  <button class="chip caption" class:on aria-pressed={on} disabled={on && app.ageEdges.length === 1} onclick={() => toggleEdge(d)}>{fmtSpan(d)}</button>
+                {/each}
+              </div>
+              <div class="ea">
+                <button class="btn" disabled={isDefault} onclick={() => app.setAgeEdges(AGE_EDGES)}>{t('pane.bandsReset')}</button>
+                <button class="btn accent" onclick={() => (editing = false)}>{t('pane.bandsDone')}</button>
+              </div>
+            </div>
+          {:else}
+            <button class="link caption" onclick={() => (editing = true)}><Icon name="edit" size={14} />{t('pane.editBands')}</button>
+          {/if}
+        {:else if app.legend.length}
+          <div class="stack" aria-hidden="true">
+            {#each app.legend as c (c.cat)}
+              <i style:flex-grow={c.bytes / legendTotal} style:background="var(--cat-{c.cat})" class:dim={app.filter != null && app.filter !== c.cat}></i>
+            {/each}
+          </div>
+          <div class="rows">
+            {#each app.legend as c (c.cat)}
+              <button class="lg" class:on={app.filter === c.cat} aria-pressed={app.filter === c.cat} onclick={() => app.setFilter(c.cat)} title={t('pane.highlight', { cat: catName(c.cat) ?? '' })}>
+                <i class="sw" style:background="var(--cat-{c.cat})"></i>
+                <span class="ln">{catName(c.cat)}</span>
+                <span class="lv caption tabular">{fmtBytes(c.bytes)}</span>
+              </button>
+            {/each}
+          </div>
+        {:else}
+          <div class="empty caption">{t('pane.afterScan')}</div>
+        {/if}
+      </section>
+    </div>
+  </div>
 
   <!-- The buttons stay put with nothing selected, greyed out, so the card says what it is for
-       before anything is picked; the two hint lines say how to pick. -->
+       before anything is picked; the two hint lines say how to pick. The card comes last and
+       stays in reach: when the pane is too short, the cards above scroll and this one keeps
+       its place under them. -->
   <section class="card sel">
     {#if app.selInfo.count}
       <div class="st">
@@ -104,80 +184,6 @@
       <div class="why caption"><Icon name="lock" size={14} /><span>{app.selInfo.lockReason}</span></div>
     {/if}
   </section>
-
-  <section class="card legend">
-    <div class="seg" role="radiogroup" aria-label={t('pane.colorBy')}>
-      <button role="radio" aria-checked={app.colorBy === 'type'} class:on={app.colorBy === 'type'} onclick={() => app.setColorBy('type')} title={t('pane.typeTip')}>{t('pane.byType')}</button>
-      <button role="radio" aria-checked={app.colorBy === 'age'} class:on={app.colorBy === 'age'} onclick={() => app.setColorBy('age')} title={t('pane.ageTip')}>{t('pane.byAge')}</button>
-    </div>
-    {#if app.colorBy === 'age'}
-      {#if app.ageHist.length}
-        <div class="stack" aria-hidden="true">
-          {#each bands as b (b.i)}
-            {#if b.bytes > 0}
-              <i style:flex-grow={b.bytes / bandsTotal} style:background={app.coloring.fill[b.i]} class:dim={app.filter != null && app.filter !== b.i}></i>
-            {/if}
-          {/each}
-          {#if unknownBytes > 0}
-            <i style:flex-grow={unknownBytes / bandsTotal} class="unk" class:dim={app.filter != null}></i>
-          {/if}
-        </div>
-        <div class="rows">
-          {#each bands as b (b.i)}
-            {@const name = bandName(b.i, app.ageEdges)}
-            <button class="lg" class:on={app.filter === b.i} class:zero={!b.bytes} aria-pressed={app.filter === b.i} onclick={() => app.setFilter(b.i)} title={t('pane.highlight', { cat: name })}>
-              <i class="sw" style:background={app.coloring.fill[b.i]}></i>
-              <span class="ln">{name}</span>
-              <span class="lv caption tabular">{fmtBytes(b.bytes)}</span>
-            </button>
-          {/each}
-          {#if unknownBytes > 0}
-            <div class="lg static">
-              <i class="sw unk"></i>
-              <span class="ln">{bandName(-1, app.ageEdges)}</span>
-              <span class="lv caption tabular">{fmtBytes(unknownBytes)}</span>
-            </div>
-          {/if}
-        </div>
-      {:else}
-        <div class="empty caption">{t('pane.afterScan')}</div>
-      {/if}
-      {#if editing}
-        <div class="edges">
-          <div class="caption hint">{t('pane.bandsHint')}</div>
-          <div class="chips">
-            {#each AGE_EDGE_CHOICES as d (d)}
-              {@const on = app.ageEdges.includes(d)}
-              <button class="chip caption" class:on aria-pressed={on} disabled={on && app.ageEdges.length === 1} onclick={() => toggleEdge(d)}>{fmtSpan(d)}</button>
-            {/each}
-          </div>
-          <div class="ea">
-            <button class="btn" disabled={isDefault} onclick={() => app.setAgeEdges(AGE_EDGES)}>{t('pane.bandsReset')}</button>
-            <button class="btn accent" onclick={() => (editing = false)}>{t('pane.bandsDone')}</button>
-          </div>
-        </div>
-      {:else}
-        <button class="link caption" onclick={() => (editing = true)}><Icon name="edit" size={14} />{t('pane.editBands')}</button>
-      {/if}
-    {:else if app.legend.length}
-      <div class="stack" aria-hidden="true">
-        {#each app.legend as c (c.cat)}
-          <i style:flex-grow={c.bytes / legendTotal} style:background="var(--cat-{c.cat})" class:dim={app.filter != null && app.filter !== c.cat}></i>
-        {/each}
-      </div>
-      <div class="rows">
-        {#each app.legend as c (c.cat)}
-          <button class="lg" class:on={app.filter === c.cat} aria-pressed={app.filter === c.cat} onclick={() => app.setFilter(c.cat)} title={t('pane.highlight', { cat: catName(c.cat) ?? '' })}>
-            <i class="sw" style:background="var(--cat-{c.cat})"></i>
-            <span class="ln">{catName(c.cat)}</span>
-            <span class="lv caption tabular">{fmtBytes(c.bytes)}</span>
-          </button>
-        {/each}
-      </div>
-    {:else}
-      <div class="empty caption">{t('pane.afterScan')}</div>
-    {/if}
-  </section>
 </aside>
 
 <style>
@@ -187,8 +193,22 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+    min-height: 0;
+  }
+  /* as tall as its cards, and no taller than the room the selection card leaves */
+  .scroll {
+    flex: 0 1 auto;
+    min-height: 0;
     overflow: auto;
     scrollbar-width: thin;
+  }
+  .inner {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .sel {
+    flex: none;
   }
   .card {
     padding: 14px 16px;

@@ -120,8 +120,10 @@ the last layout it sent and how many bytes changed since (`Tree::changed_bytes`)
 px² of the shown view it stays silent; past that it lays the view out again and sends the
 event only when some edge moved by more than 0.5 px or a tile, colour or size label changed
 (`layout::same_picture`). Changes Windows keeps making on a system drive (logs, caches) thus
-cost no IPC, no layout in the WebView and no frame. `bytesDelta` covers everything since the
-last event.
+cost no IPC, no layout in the WebView and no frame. While a search is shown, a change is
+sent anyway when it touches what the search found or would find now (`Hits::touched_by`: a
+folder that matched, a child that was found, or a child that matches now), so the count and
+the bytes follow small changes too. `bytesDelta` covers everything since the last event.
 
 ## Layout buffer
 
@@ -228,7 +230,10 @@ These are what make the map calm while it changes, and they were tuned in the pr
    by `gap / 2`; rects smaller than 1 px in either direction are dropped.
 4. **Folded chains**: a folder whose only visible child is a folder is merged with it into
    one tile named `a › b › c`; `target` is the deepest folder. `nav().up` skips such
-   folders too, so "back" never lands on a view with a single tile.
+   folders too, so "back" never lands on a view with a single tile. The UI copies the
+   path of `target`, shows `target` in Explorer and shows its path in the details card,
+   since that is where the files are; delete and Windows' own menu take the whole tile
+   (`id`).
 5. A folder gets a header band of `header` px when it is at least `header * 2.2` tall and
    `minHeaderW` wide. It opens (kind DIR) only when `depth < maxDepth`, it has a header
    band (unless `header` is 0), and its area is above both `minArea * recurse` and
