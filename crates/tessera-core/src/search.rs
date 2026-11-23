@@ -19,20 +19,28 @@
 //! * `>1GB`, `<=500MB`, `>=2.5g`: the size, in the size mode searched, in
 //!   binary units as the map shows them (`b`, `k`/`kb`, `m`/`mb`, `g`/`gb`,
 //!   `t`/`tb`, any case; no unit means bytes).
+//! * `>1y`, `<2w`, `>=6mo`, `<3d`: how long ago the file was last written
+//!   (files only), in days (`d`, `day`, `days`, `天`), weeks (`w`, `wk`,
+//!   `week`, `weeks`, `周`), months of 30 days (`mo`, `month`, `months`,
+//!   `月`, `个月`) or years of 365 days (`y`, `yr`, `year`, `years`, `年`),
+//!   compared on the start of the file's [`crate::age`] step; a file whose
+//!   time is not known never fits. A word that reads as a size is a size
+//!   (`>1m` is a megabyte, `>1mo` a month).
 //! * anything else: the name contains it, ignoring case as Windows does.
 //!
-//! A folder matches when the query has words for the name and no extension,
-//! and the folder's name and size fit; everything in a matching folder is
-//! then a match too, but only the folder is counted.
+//! A folder matches when the query has words for the name and no extension
+//! or age, and the folder's name and size fit; everything in a matching
+//! folder is then a match too, but only the folder is counted.
 
 use rayon::prelude::*;
 
+use crate::age;
 use crate::layout::SizeMode;
 use crate::tree::{NodeId, Tree};
 use crate::wtf8;
 
 /// A parsed query; see the module docs.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Query {
     /// Name fragments, folded ([`wtf8::push_folded`]); all must appear.
     words: Vec<Vec<u8>>,
@@ -40,6 +48,8 @@ pub struct Query {
     exts: Vec<Vec<u8>>,
     /// Size bounds; all must hold.
     sizes: Vec<(Cmp, u64)>,
+    /// Age bounds in days; all must hold (files only).
+    ages: Vec<(Cmp, f64)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,12 +62,12 @@ enum Cmp {
 
 impl Cmp {
     #[inline]
-    fn holds(self, size: u64, bound: u64) -> bool {
+    fn holds<T: PartialOrd>(self, v: T, bound: T) -> bool {
         match self {
-            Cmp::Gt => size > bound,
-            Cmp::Ge => size >= bound,
-            Cmp::Lt => size < bound,
-            Cmp::Le => size <= bound,
+            Cmp::Gt => v > bound,
+            Cmp::Ge => v >= bound,
+            Cmp::Lt => v < bound,
+            Cmp::Le => v <= bound,
         }
     }
 }
@@ -65,15 +75,15 @@ impl Cmp {
 /// Why a query could not be read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QueryError {
-    /// A size word (`>1GB`) whose number or unit is not understood; holds
-    /// the word.
+    /// A size or age word (`>1GB`, `>1y`) whose number or unit is not
+    /// understood; holds the word.
     BadSize(String),
 }
 
 impl std::fmt::Display for QueryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            QueryError::BadSize(w) => write!(f, "not a size: {w}"),
+            QueryError::BadSize(w) => write!(f, "not a size or an age: {w}"),
         }
     }
 }
@@ -99,8 +109,13 @@ impl Query {
                     (false, false) => Cmp::Lt,
                     (false, true) => Cmp::Le,
                 };
-                let bytes = parse_size(num).ok_or_else(|| QueryError::BadSize(word.into()))?;
-                q.sizes.push((cmp, bytes));
+                if let Some(bytes) = parse_size(num) {
+                    q.sizes.push((cmp, bytes));
+                } else if let Some(days) = parse_age(num) {
+                    q.ages.push((cmp, days));
+                } else {
+                    return Err(QueryError::BadSize(word.into()));
+                }
             } else if let Some(ext) = word
                 .strip_prefix("*.")
                 .or_else(|| word.strip_prefix('.'))
@@ -117,7 +132,10 @@ impl Query {
     }
 
     fn is_empty(&self) -> bool {
-        self.words.is_empty() && self.exts.is_empty() && self.sizes.is_empty()
+        self.words.is_empty()
+            && self.exts.is_empty()
+            && self.sizes.is_empty()
+            && self.ages.is_empty()
     }
 
     /// The query looks at names at all (else names are never decoded).
@@ -127,7 +145,20 @@ impl Query {
 
     /// A folder can match by itself.
     fn matches_folders(&self) -> bool {
-        !self.words.is_empty() && self.exts.is_empty()
+        !self.words.is_empty() && self.exts.is_empty() && self.ages.is_empty()
+    }
+
+    /// Which age bytes fit every age bound: a byte stands for the start of
+    /// its step, and a time not known fits only when there is no bound.
+    fn age_table(&self) -> [bool; 256] {
+        let mut ok = [true; 256];
+        for (b, slot) in ok.iter_mut().enumerate() {
+            *slot = match age::days_of(b as u8) {
+                None => self.ages.is_empty(),
+                Some(d) => self.ages.iter().all(|&(c, bound)| c.holds(d, bound)),
+            };
+        }
+        ok
     }
 
     #[inline]
@@ -188,6 +219,25 @@ fn parse_size(s: &str) -> Option<u64> {
     };
     let v = n * (1u64 << shift) as f64;
     (v.is_finite() && v >= 0.0 && v < u64::MAX as f64).then(|| v.round() as u64)
+}
+
+/// `6mo` → days; a month is 30 days and a year 365, as the legend's bands
+/// count them.
+fn parse_age(s: &str) -> Option<f64> {
+    let split = s
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(s.len());
+    let (num, unit) = s.split_at(split);
+    let n: f64 = num.parse().ok()?;
+    let per = match unit.trim().to_ascii_lowercase().as_str() {
+        "d" | "day" | "days" | "天" => 1.0,
+        "w" | "wk" | "week" | "weeks" | "周" => 7.0,
+        "mo" | "month" | "months" | "月" | "个月" => 30.0,
+        "y" | "yr" | "year" | "years" | "年" => 365.0,
+        _ => return None,
+    };
+    let d = n * per;
+    d.is_finite().then_some(d)
 }
 
 #[inline]
@@ -256,6 +306,7 @@ pub fn search(
     let mut bits = vec![0u64; words];
     let reads_names = q.reads_names();
     let folders = q.matches_folders();
+    let aged = q.age_table();
 
     // 1. Which nodes match by themselves.
     let stopped = bits
@@ -278,7 +329,11 @@ pub fn search(
                 let id = NodeId(i as u32);
                 let node = tree.node(id);
                 let dir = node.is_dir();
-                if node.is_deleted() || (dir && !folders) || !q.size_fits(mode.of(&node)) {
+                if node.is_deleted()
+                    || (dir && !folders)
+                    || !q.size_fits(mode.of(&node))
+                    || (!dir && !aged[tree.age(id) as usize])
+                {
                     continue;
                 }
                 let hit = if reads_names {
@@ -392,6 +447,44 @@ mod tests {
     }
 
     #[test]
+    fn parses_ages() {
+        let a = q(">1y <=2W >=6mo <3d >1.5w <2年 >3个月 >=1天 <1周 >2月");
+        assert_eq!(
+            a.ages,
+            vec![
+                (Cmp::Gt, 365.0),
+                (Cmp::Le, 14.0),
+                (Cmp::Ge, 180.0),
+                (Cmp::Lt, 3.0),
+                (Cmp::Gt, 10.5),
+                (Cmp::Lt, 730.0),
+                (Cmp::Gt, 90.0),
+                (Cmp::Ge, 1.0),
+                (Cmp::Lt, 7.0),
+                (Cmp::Gt, 60.0),
+            ]
+        );
+        assert!(a.words.is_empty() && a.sizes.is_empty());
+        // a unit after a space is a word of its own: `>1.5` is then bytes
+        let b = q(">1.5 weeks");
+        assert_eq!(
+            (b.sizes, b.words),
+            (vec![(Cmp::Gt, 2)], vec![b"WEEKS".to_vec()])
+        );
+        // a size wins where a word reads as both: m is a megabyte
+        assert_eq!(q(">1m").sizes, vec![(Cmp::Gt, 1 << 20)]);
+        assert_eq!(q(">1mo").ages, vec![(Cmp::Gt, 30.0)]);
+        assert_eq!(q(">2y").sizes, vec![]);
+        for bad in [">1x", ">y", ">1yy", ">-1d"] {
+            assert_eq!(
+                Query::parse(bad),
+                Err(QueryError::BadSize(bad.into())),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
     fn shares_round_up_to_one() {
         assert_eq!(share_of(0, 100), 0);
         assert_eq!(share_of(1, 1 << 40), 1);
@@ -492,6 +585,52 @@ mod tests {
         b.push_wtf8(b"late.iso", 10, 10, NodeFlags::NONE);
         let r = t.add_children(games, &b);
         assert_eq!(h.share(NodeId(r.start)), 0);
+    }
+
+    #[test]
+    fn ages_match_files_only() {
+        use crate::age::now_filetime;
+        let mut t = Tree::new(b"C:\\");
+        let now = now_filetime();
+        let ago = |days: f64| now - (days * 864e9) as u64;
+        let old = t.add_child(NodeId::ROOT, b"old 2023", 0, 0, NodeFlags::DIR);
+        let new = t.add_child(NodeId::ROOT, b"new", 0, 0, NodeFlags::DIR);
+        let file = |t: &mut Tree, dir: NodeId, name: &str, size: u64, days: Option<f64>| {
+            let id = t.add_child(dir, name.as_bytes(), size, size, NodeFlags::NONE);
+            if let Some(d) = days {
+                assert!(t.set_modified(id, ago(d)));
+            }
+            id
+        };
+        let setup = file(&mut t, old, "setup.iso", 4000, Some(800.0));
+        let log = file(&mut t, old, "2023.log", 100, Some(400.0));
+        let clip = file(&mut t, new, "clip.mp4", 2000, Some(3.0));
+        let today = file(&mut t, new, "today.txt", 10, Some(0.2));
+        let unknown = file(&mut t, new, "unknown.iso", 500, None);
+
+        let h = run(&t, ">1y");
+        assert_eq!((h.count, h.bytes), (2, 4100));
+        assert_eq!(h.share(old), 255);
+        assert_eq!(
+            (h.share(setup), h.share(log), h.share(unknown)),
+            (255, 255, 0)
+        );
+        let h = run(&t, ">1y .iso");
+        assert_eq!((h.count, h.bytes), (1, 4000));
+        let h = run(&t, "<1w");
+        assert_eq!((h.count, h.bytes), (2, 2010));
+        assert_eq!((h.share(clip), h.share(today)), (255, 255));
+        // a day counts from the start of its step: under a day is 0 days
+        assert_eq!(run(&t, "<1d").count, 1);
+        assert_eq!(run(&t, ">=0d").count, 4);
+        // between two bounds; a time not known never fits
+        assert_eq!(run(&t, ">1w <2y").count, 1);
+        assert_eq!(run(&t, ">=0d .iso").count, 1);
+        // with an age word a folder cannot match by name: only files do
+        let h = run(&t, "2023 >1w");
+        assert_eq!((h.count, h.bytes), (1, 100));
+        assert_eq!(h.share(old), share_of(100, 4100));
+        assert_eq!(run(&t, "2023").count, 1); // the folder, holding the log
     }
 
     #[test]

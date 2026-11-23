@@ -296,6 +296,8 @@ fn buffer_conformance() {
     let mut t = Tree::new(b"C:\\");
     let d = t.add_child(NodeId::ROOT, b"Games", 0, 0, NodeFlags::DIR);
     let f = t.add_child(d, b"big.pak", 600 << 20, 600 << 20, NodeFlags::NONE);
+    let year_ago = crate::age::now_filetime() - 365 * 864_000_000_000;
+    assert!(t.set_modified(f, year_ago));
     let v = t.add_child(
         NodeId::ROOT,
         b"movie.mkv",
@@ -319,9 +321,9 @@ fn buffer_conformance() {
     assert_eq!(u16_at(6), 36);
     let count = u32_at(8) as usize;
     assert_eq!(count, 3); // Games (with big.pak) and movie.mkv
-    assert_eq!(u32_at(12), 52);
+    assert_eq!(u32_at(12), 56);
     let names_len = u32_at(16) as usize;
-    assert_eq!(buf.len(), 36 + 52 * count + names_len);
+    assert_eq!(buf.len(), 36 + 56 * count + names_len);
     assert_eq!(u32_at(20), 0);
     assert_eq!(u32_at(24), 42);
     let map_area = (800.0 - 12.0) * (600.0 - 12.0);
@@ -329,8 +331,8 @@ fn buffer_conformance() {
     assert_eq!(u32_at(32), 0); // no search
 
     // Records, field by field.
-    let rec = |i: usize| 36 + 52 * i;
-    let names = &buf[36 + 52 * count..];
+    let rec = |i: usize| 36 + 56 * i;
+    let names = &buf[36 + 56 * count..];
     let name_of = |o: usize| {
         let (off, len) = (u32_at(o + 40) as usize, u16_at(o + 44) as usize);
         std::str::from_utf8(&names[off..off + len])
@@ -355,17 +357,23 @@ fn buffer_conformance() {
     assert_eq!(buf[g + 49], 0);
     assert_eq!(buf[g + 50], 21);
     assert_eq!(buf[g + 51], 0);
+    // an open folder's age comes from what it holds
+    let year = crate::age::byte_of_days(365.0);
+    assert_eq!(buf[g + 52], year);
+    assert_eq!(&buf[g + 53..g + 56], &[0, 0, 0]);
 
     assert_eq!(u32_at(m), v.0);
     assert_eq!(buf[m + 47], kind::FILE);
     assert_eq!(buf[m + 48], category::VIDEO);
     assert_eq!(buf[m + 49], flags::CLOUD);
+    assert_eq!(buf[m + 52], crate::age::UNKNOWN);
     assert_eq!(name_of(m), "movie.mkv");
 
     assert_eq!(u32_at(p), f.0);
     assert_eq!(u32_at(p + 4), d.0);
     assert_eq!(buf[p + 46], 2);
     assert_eq!(buf[p + 48], category::GAME);
+    assert_eq!(buf[p + 52], year);
     assert_eq!(name_of(p), "big.pak");
     // The child fills the folder's inner box, inset by gap / 2.
     let (gx, gy, gw, gh) = (
@@ -1263,4 +1271,62 @@ fn min_side_keeps_every_tile_wide_enough() {
     check(&t, &req, &dd, 1 << 29);
     assert_eq!(dd.records.len(), 1);
     assert_eq!((dd.records[0].w, dd.records[0].h), (786.0, 586.0));
+}
+
+#[test]
+fn ages_go_into_the_records() {
+    use crate::age::{Mean, byte_of_days, now_filetime};
+    let mut t = Tree::new(b"C:\\");
+    let now = now_filetime();
+    let ago = |days: u64| now - days * 864_000_000_000;
+    let file = |t: &mut Tree, parent: NodeId, name: &str, size: u64, days: u64| {
+        let id = t.add_child(parent, name.as_bytes(), size, size, NodeFlags::NONE);
+        t.set_modified(id, ago(days));
+        id
+    };
+    // a folder that stays closed (too deep), one that opens, small files that group
+    let open = t.add_child(NodeId::ROOT, b"open", 0, 0, NodeFlags::DIR);
+    let shut = t.add_child(open, b"shut", 0, 0, NodeFlags::DIR);
+    let inner = t.add_child(shut, b"inner", 0, 0, NodeFlags::DIR);
+    file(&mut t, shut, "old.iso", 300 << 20, 1000);
+    file(&mut t, inner, "new.iso", 100 << 20, 10);
+    file(&mut t, open, "mid.zip", 200 << 20, 100);
+    for i in 0..60 {
+        file(&mut t, NodeId::ROOT, &format!("tiny{i}.txt"), 1 << 20, 3);
+    }
+    let no_time = t.add_child(
+        NodeId::ROOT,
+        b"no-time.bin",
+        50 << 20,
+        50 << 20,
+        NodeFlags::NONE,
+    );
+    let mut req = LayoutRequest::new(NodeId::ROOT, 800.0, 600.0);
+    req.style.max_depth = 2;
+    let d = lay(&t, &req);
+    check(&t, &req, &d, 0);
+    let by_id = |id: NodeId| d.records.iter().find(|r| r.id == id.0).unwrap();
+
+    let mut m = Mean::default();
+    m.add(byte_of_days(1000.0), 300 << 20);
+    m.add(byte_of_days(10.0), 100 << 20);
+    let shut_age = m.byte();
+    assert_eq!(by_id(shut).kind, kind::DIR_LEAF);
+    assert_eq!(by_id(shut).age, shut_age);
+    // the open folder: from its tiles, the closed folder and the zip
+    m.add(byte_of_days(100.0), 200 << 20);
+    assert_eq!(by_id(open).kind, kind::DIR);
+    assert!(by_id(open).age.abs_diff(m.byte()) <= 1);
+    assert_eq!(by_id(no_time).age, crate::age::UNKNOWN);
+    let group = d.records.iter().find(|r| r.kind == kind::GROUP).unwrap();
+    assert_eq!(group.age, byte_of_days(3.0));
+    // the age goes into the comparison of pictures
+    let mut t2 = t;
+    let f = t2.lookup_relative(b"open\\mid.zip").unwrap();
+    t2.set_modified(f, ago(2000));
+    let mut e = LayoutEngine::new();
+    let a = e.layout(&t2, &req, RootExtras::default(), 1);
+    t2.set_modified(f, ago(100));
+    let b = e.layout(&t2, &req, RootExtras::default(), 2);
+    assert!(!same_picture(&a, &b, 0.5));
 }

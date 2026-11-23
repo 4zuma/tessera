@@ -23,6 +23,7 @@ All sizes are bytes. All ids are `u32` node indices into the core's arena unless
 | `details` | `{ id: u32, view: u32, sizeMode }` | `Details \| null` (null when the id no longer exists) |
 | `nav` | `{ id: u32 }` | `{ crumbs: {id, name}[], up: u32 \| null }` |
 | `cat_stats` | `{ view: u32, sizeMode }` | `{ cat: u8, bytes: u64 }[]`, largest first |
+| `age_stats` | `{ view: u32, sizeMode }` | `u64[]`: the bytes of the files below `view` in each of the 14 [age bins](#ages-age), bin 0 = time not known; `[]` when `view` is not a folder |
 | `recycle` | `{ ids: u32[] }` | `DeleteResult` (with `undo` token) |
 | `restore` | `{ token: u32 }` | `DeleteResult` – undo of a `recycle` |
 | `purge` | `{ ids: u32[] }` | `DeleteResult` |
@@ -124,7 +125,7 @@ last event.
 
 ## Layout buffer
 
-Little-endian. A 36-byte header, `count` records of 52 bytes, then the UTF-8 name pool.
+Little-endian. A 36-byte header, `count` records of 56 bytes, then the UTF-8 name pool.
 Readers take the header and record sizes from the header, so fields can be added at the end.
 
 ```
@@ -133,14 +134,14 @@ header (36 bytes)
   4  u16  version     1
   6  u16  headerSize  36
   8  u32  count       number of records
- 12  u32  recordSize  52
+ 12  u32  recordSize  56
  16  u32  namesLen    bytes in the name pool
  20  u32  view        echo of the request
  24  u32  rev         tree revision this layout was computed from
  28  f32  bytesPerPx  bytes represented by one px² at this view
  32  u32  search      id of the search whose hits are in `hit`, 0 = no search
 
-record (52 bytes)
+record (56 bytes)
   0  u32  id          node id, or a special id (below)
   4  u32  parent      id of the enclosing rect, NONE at the top level
   8  u32  target      what a double-click zooms into: the deepest folder of a folded
@@ -166,6 +167,10 @@ record (52 bytes)
  51  u8   hit         what the search found in it, 0 when there is no search: 255 = all
                       of it (a match, or inside a matching folder), 0 = nothing, else
                       1..254 = that share of its bytes (folders and groups)
+ 52  u8   age         how long ago it was written, see Ages; 0 = not known. FILE: its
+                      own; DIR_LEAF, open DIR and GROUP: the mean of the files in it,
+                      weighted by their bytes; 0 for pseudo tiles
+ 53  u8[3] reserved   0
 ```
 
 Records are in paint order: a folder always comes before its children.
@@ -180,6 +185,23 @@ can tween it. Real node ids must therefore stay below `0x80000000`.
 10 cache, 11 system`. The core maps file extensions with the table in
 `crates/tessera-core/src/category.rs`; `app/src/lib/backend/categories.ts` is a copy of it
 for the mock. A `.ts` file under 1 MiB is `dev` (TypeScript), otherwise `video`.
+
+### Ages (`age`)
+
+One byte per node says how long ago a file was last written (`$STANDARD_INFORMATION`'s
+modified time in the MFT, `LastWriteTime` in the walk and the watcher), counted from when
+the tree was created: 0 = not known, 1 = under a day (or in the future), then a log scale,
+`1 + floor(ln(days) / (ln(30 × 365.25) / 254))`, up to 255 for 30 years or more, about
+3.7 % per step. A byte stands for the start of its step: `days = exp((b − 1) × step)`.
+`crates/tessera-core/src/age.rs` has the scale and `app/src/lib/age.ts` a copy. Folders
+store 0; a folder's or a group's byte is the size-weighted mean of the bytes of the files
+in it, files without a time left out.
+
+The legend by age counts bytes in 14 fixed bins: bin 0 = not known, then one per span
+between two of the band edges a user can pick (1, 3, 7, 14, 30, 91, 182, 365, 730, 1095,
+1826 and 3652 days): bin `1 + (the number of edges at or below the byte's days)`. Any
+choice of bands is then a sum of bins, so `age_stats` does not depend on the bands. The
+core keeps these bins with the other totals of big folders (`totals.rs`).
 
 ### Layout rules the core implements
 
@@ -216,8 +238,9 @@ These are what make the map calm while it changes, and they were tuned in the pr
    is inset by `pad` (by `header` at the top). If the inner box is smaller than 3 × 3 px
    it stays DIR_LEAF.
 6. A DIR_LEAF's `cat` is the category with the most bytes among all files below it (lower
-   category on a tie), so the UI can tint closed folders by what fills them. The core
-   caches it per folder and walks the folder again only when its size moved by over 1/8.
+   category on a tie), so the UI can tint closed folders by what fills them; its `age` comes
+   from the same walk. The core caches both per folder and walks the folder again only when
+   its size moved by over 1/8.
 7. At the volume root, two pseudo children are added: UNSCANNED (`used - scanned`, while
    scanning and above 64 MiB) ranked first, and FREE (the volume's free bytes) ranked last.
 8. With a search set, every record's `hit` says how much of it the search found. A GROUP
@@ -234,10 +257,12 @@ in `app/src/lib/backend/mock/search.ts`). Words are separated by spaces and all 
 | `report` | a file or folder whose name contains it, ignoring case as Windows does |
 | `"tax 2024"` | the same, with spaces in it |
 | `.iso`, `*.iso` | files ending in `.iso`; with several extension words, any of them |
-| `>1GB`, `>=1.5g`, `<500MB`, `<=4k` | a size bound in the searched size mode; binary units (`k` = 1024), `b k kb kib m mb mib g gb gib t tb tib`, any case, decimals allowed. A word that starts with `<` or `>` and is not a size rejects the query |
+| `>1GB`, `>=1.5g`, `<500MB`, `<=4k` | a size bound in the searched size mode; binary units (`k` = 1024), `b k kb kib m mb mib g gb gib t tb tib`, any case, decimals allowed |
+| `>1y`, `<2w`, `>=6mo`, `<3d` | files written longer ago than / within that time (see [Ages](#ages-age)), compared on the start of the file's age step; units `d day days 天`, `w wk week weeks 周` (7 days), `mo month months 月 个月` (30 days), `y yr year years 年` (365 days), any case, decimals allowed. Files whose time is not known never match. A word that reads as a size is a size: `>1m` is a MiB, `>1mo` a month |
 
-A folder matches only through name words, and not when the query has an extension word
-(`.iso` finds files only). Everything inside a matching folder counts as found and is lit,
+A word that starts with `<` or `>` and is neither a size nor an age rejects the query.
+A folder matches only through name words, and not when the query has an extension or an
+age word (`.iso` and `>1y` find files only). Everything inside a matching folder counts as found and is lit,
 but only the folder is counted. Deleted nodes and nodes that are not attached yet are
 skipped. A search over 3.3 M nodes takes about 70 ms on 4 cores: one parallel pass marks
 the matches (a node's name is folded once per distinct name), a second pass walks the tree

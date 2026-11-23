@@ -197,7 +197,7 @@ pub mod text {
         UNDO_GONE: "This can no longer be undone.", "这次操作已经不能撤销了。";
 
         // search box
-        BAD_SIZE: "“{}” is not a size. Try >1GB or <500MB.", "“{}”不是大小，可以写成 >1GB 或 <500MB";
+        BAD_SIZE: "“{}” is not a size or an age. Try >1GB, <500MB or >1y.", "“{}”不是大小或时间，可以写成 >1GB、<500MB 或 >1y";
     }
 }
 

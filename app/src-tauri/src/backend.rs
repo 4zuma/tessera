@@ -1039,6 +1039,26 @@ fn cat_stats_of(s: &Session, view: NodeId, mode: SizeMode) -> Vec<CatStat> {
     out
 }
 
+#[tauri::command]
+pub async fn age_stats(
+    core: State<'_, Core>,
+    view: u32,
+    size_mode: Mode,
+) -> Result<Vec<u64>, String> {
+    let s = core.current()?;
+    Ok(age_stats_of(&s, NodeId(view), size_mode.into()))
+}
+
+/// Bytes below `view` per legend bin of [`tessera_core::age::bin`] (bin 0:
+/// files whose time is not known); empty when `view` is not a folder.
+fn age_stats_of(s: &Session, view: NodeId, mode: SizeMode) -> Vec<u64> {
+    let t = s.tree();
+    if view.index() >= t.len() || t.is_deleted(view) || !t.node(view).is_dir() {
+        return Vec::new();
+    }
+    totals(s, &t, view).age_bytes(mode).to_vec()
+}
+
 // ---------------------------------------------------------------------------
 // Deleting
 
@@ -1361,6 +1381,24 @@ mod tests {
         );
         let me = id_of(&s, &[b"Users", b"me"]);
         assert_eq!(cat_stats_of(&s, me, SizeMode::Disk).len(), 3);
+    }
+
+    #[test]
+    fn ages_below_a_view() {
+        use tessera_core::age;
+        let s = sample();
+        let me = id_of(&s, &[b"Users", b"me"]);
+        let a = id_of(&s, &[b"Users", b"me", b"a.mp4"]);
+        let year_ago = age::now_filetime() - 400 * 864_000_000_000;
+        assert!(s.tree.write().unwrap().set_modified(a, year_ago));
+        let bins = age_stats_of(&s, me, SizeMode::Logical);
+        assert_eq!(bins.len(), age::BINS);
+        let old = age::bin(age::byte_of_days(400.0));
+        assert_eq!(bins[old], 400_000);
+        assert_eq!(bins[0], 900 + 8000, "b.ts and c.pdf have no time");
+        assert_eq!(bins.iter().sum::<u64>(), 400_000 + 900 + 8000);
+        assert!(age_stats_of(&s, a, SizeMode::Disk).is_empty());
+        assert!(age_stats_of(&s, NodeId(9999), SizeMode::Disk).is_empty());
     }
 
     #[test]

@@ -175,7 +175,13 @@ pub(crate) fn non_resident(
 
 /// `$STANDARD_INFORMATION` with the given file attributes.
 pub(crate) fn si(file_attributes: u32) -> Vec<u8> {
+    si_at(file_attributes, 0)
+}
+
+/// `$STANDARD_INFORMATION` with file attributes and a last write time (FILETIME).
+pub(crate) fn si_at(file_attributes: u32, modified: u64) -> Vec<u8> {
     let mut v = vec![0u8; 0x48];
+    put64(&mut v, 0x08, modified);
     put32(&mut v, 0x20, file_attributes);
     resident(AT_STANDARD_INFORMATION, None, &v)
 }
