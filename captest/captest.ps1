@@ -31,6 +31,22 @@ public static class W {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern int GetSystemMetrics(int i);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc p, IntPtr l);
+  public static IntPtr Biggest(uint pid) {
+    IntPtr best = IntPtr.Zero; long area = 0;
+    EnumProc p = (h, x) => {
+      uint id; GetWindowThreadProcessId(h, out id);
+      RECT r;
+      if (id == pid && IsWindowVisible(h) && GetWindowRect(h, out r)) {
+        long a = (long)(r.R - r.L) * (r.B - r.T);
+        if (a > area) { area = a; best = h; }
+      }
+      return true;
+    };
+    EnumWindows(p, IntPtr.Zero);
+    GC.KeepAlive(p);
+    return area > 40000 ? best : IntPtr.Zero;
+  }
   public static string Cls(IntPtr h) { var s = new StringBuilder(256); GetClassName(h, s, 256); return s.ToString(); }
   public static List<IntPtr> Children(IntPtr h) {
     var l = new List<IntPtr>();
@@ -64,8 +80,8 @@ $p = Start-Process -FilePath $Exe -PassThru
 $main = [IntPtr]::Zero
 for ($i = 0; $i -lt 90; $i++) {
   Start-Sleep -Milliseconds 500
-  $p.Refresh()
-  if ($p.MainWindowHandle -ne [IntPtr]::Zero -and [W]::IsWindowVisible($p.MainWindowHandle)) { $main = $p.MainWindowHandle; break }
+  $main = [W]::Biggest([uint32]$p.Id)
+  if ($main -ne [IntPtr]::Zero) { break }
 }
 if ($main -eq [IntPtr]::Zero) { Shot 'nowindow'; throw 'no window' }
 Start-Sleep -Seconds 6
