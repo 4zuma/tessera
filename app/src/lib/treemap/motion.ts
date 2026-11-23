@@ -28,10 +28,10 @@ export const fluentLayout = {
   minHeaderW: 60,
   minArea: 110,
   // no tile thinner than 24 px either way (a bit more than the 13 x 20 arrow pointer) or
-  // narrower than 48 px (room for a few letters of a name, which is written across):
+  // narrower than 44 px (labelMinW: names are written across, so every tile gets one):
   // smaller ones join the "small items" tile, which takes its place by size
   minSide: 24,
-  minWidth: 48,
+  minWidth: 44,
   // a folder opens only when it gets a header, is over 110 * 60 = 6,600 px² (about
   // 80 x 80, room for a few labelled tiles) and over 0.25 % of the map; the share
   // only bites past ~2000 x 1300, so a huge window does not add levels of tiny boxes

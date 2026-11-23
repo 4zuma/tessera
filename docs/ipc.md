@@ -53,7 +53,7 @@ interface LayoutRequest {
     minHeaderW: f32;    // a folder narrower than this gets no header (60)
     minArea: f32;       // px²; smaller siblings are merged into one group (110)
     minSide: f32;       // no tile narrower or shorter than this, gap not counted (24); 0 = off
-    minWidth: f32;      // no tile narrower than this, gap not counted (48); 0 = off
+    minWidth: f32;      // no tile narrower than this, gap not counted (44); 0 = off
     recurse: f32;       // a folder opens only if area > minArea * recurse (60, so 6,600 px²)
     openShare: f32;     // ... and only if area > openShare * the map's area (0.0025); 0 = off
     maxDepth: u8;       // (14)
@@ -194,7 +194,7 @@ These are what make the map calm while it changes, and they were tuned in the pr
    With `minSide`, every tile is at least that wide and tall, since a thin sliver hardly
    reads as a tile (24 px is a little more than Windows' 13 × 20 px arrow pointer); with
    `minWidth`, at least that wide, since names are written across and a tall narrow tile
-   shows only a letter or two (48 px leaves room for about five letters). Siblings whose
+   shows only a letter or two (44 px is `labelMinW`, so every tile gets its name). Siblings whose
    area would be below `(minSide + gap) × (max(minSide, minWidth) + gap)` go to the group at
    once, and the group takes its place among the others by its size instead of coming
    last. After squarifying, the first sibling (in rank order) that came out too small and

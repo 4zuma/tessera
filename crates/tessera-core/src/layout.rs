@@ -258,9 +258,9 @@ pub const RECURSE: f32 = 60.0;
 /// more than the 13 x 20 px of Windows' standard arrow pointer at the same
 /// scale, so every tile can be pointed at.
 pub const MIN_SIDE: f32 = 24.0;
-/// Default `min_width`: with 7 px of padding on each side, 48 px leaves
-/// room for about five letters of a name.
-pub const MIN_WIDTH: f32 = 48.0;
+/// Default `min_width`: the width a tile needs to show its name (the
+/// default `label_min_w`), so every file and folder tile is named.
+pub const MIN_WIDTH: f32 = 44.0;
 /// Times a folder is laid out again at most to get rid of thin tiles.
 const MIN_SIDE_PASSES: usize = 12;
 /// Default `open_share`: a folder must also be over 0.25 % of the map to

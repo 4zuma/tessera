@@ -105,14 +105,16 @@ describe('mock backend', () => {
   it('keeps every tile at least minSide tall and minWidth wide', async () => {
     const b = new MockBackend({}, { scanMs: 300 });
     await scanned(b);
-    const style = { ...STYLE, minSide: 24, minWidth: 48 };
+    const style = { ...STYLE, minSide: 24, minWidth: 44 };
     for (const [width, height] of [[900, 640], [1280, 820], [1700, 1050]]) {
       const off = decodeLayout(await b.layout({ ...req(), width, height })).rects;
       const on = decodeLayout(await b.layout({ ...req(), width, height, style })).rects;
       expect(off.some(r => Math.min(r.w, r.h) < 24)).toBe(true);
-      const thin = on.filter(r => r.w < 48 - 1e-3 || r.h < 24 - 1e-3);
+      const thin = on.filter(r => r.w < 44 - 1e-3 || r.h < 24 - 1e-3);
       expect(thin).toEqual([]);
       expect(on.length).toBeLessThan(off.length);
+      // every file and folder tile is wide enough for its name
+      expect(on.filter(r => (r.kind === Kind.File || r.kind === Kind.DirLeaf) && !r.name)).toEqual([]);
     }
   });
 

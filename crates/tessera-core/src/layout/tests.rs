@@ -1220,10 +1220,16 @@ fn min_side_keeps_every_tile_wide_enough() {
     req.style.min_side = 24.0;
     let on = lay(&t, &req); // `check` asserts every tile is at least 24 x 24
     assert!(on.records.len() < off.records.len());
-    assert!(on.records.iter().any(|r| r.w < 48.0));
-    req.style.min_width = 48.0;
-    let wide = lay(&t, &req); // ... and here at least 48 wide
+    assert!(on.records.iter().any(|r| r.w < 44.0));
+    req.style.min_width = 44.0;
+    let wide = lay(&t, &req); // ... and here at least 44 wide
     assert!(wide.records.len() <= on.records.len());
+    // so every file tile is named
+    assert!(
+        wide.records
+            .iter()
+            .all(|r| r.kind != kind::FILE || r.name.is_some())
+    );
     let g = on
         .records
         .iter()
