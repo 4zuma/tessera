@@ -15,7 +15,7 @@ All sizes are bytes. All ids are `u32` node indices into the core's arena unless
 
 | Command | Args | Returns |
 | --- | --- | --- |
-| `platform_info` | – | `{ elevated: bool, backdrop: "mica" \| "none", accent: { light, dark } \| null, version: string, core: bool, lang: "en" \| "zh-CN", locale: string }` – `lang` is the UI language, `locale` the BCP 47 tag for dates and numbers (see below) |
+| `platform_info` | – | `{ elevated: bool, backdrop: "mica" \| "none", titleBar: "custom" \| "native", accent: { light, dark } \| null, version: string, core: bool, lang: "en" \| "zh-CN", locale: string }` – `lang` is the UI language, `locale` the BCP 47 tag for dates and numbers (see below) |
 | `list_volumes` | – | `Volume[]` |
 | `scan_start` | `{ root: string }` | `{ scanId: u32, rootId: u32 }` – cancels any running scan |
 | `scan_cancel` | – | `()` |
@@ -30,6 +30,9 @@ All sizes are bytes. All ids are `u32` node indices into the core's arena unless
 | `reveal` | `{ id: u32 }` | `()` – `explorer.exe /select,"<path>"` |
 | `shell_menu` | `{ ids: u32[], x: f64, y: f64, extended: bool }` | `"none" \| "invoked" \| "recycle" \| "purge"` – Windows' classic context menu for `ids` (all in one folder, else an error) at client point `x`, `y` (CSS px), with Explorer's Shift-only verbs if `extended`; resolves when the menu closes. "Delete" is not run by the shell: `"recycle"` (`"purge"` with Shift held) tells the UI to delete through `recycle` / `purge` itself |
 | `relaunch_elevated` | – | `()` – restarts with `runas`, keeps the window position |
+| `caption` | `{ action: "min" \| "max" \| "close" }` | `()` – the custom title bar's buttons (`"max"` maximizes or restores) |
+| `caption_button` | `{ right, top, width, height: f64 }` | `()` – where the custom title bar's maximize button is, in CSS px (`right` = distance from the window's right edge), so Windows 11 can open its snap layouts there |
+| `caption_state` | – | `CaptionState` |
 
 ```ts
 type SizeMode = "disk" | "logical";        // allocated size (default) | file length
@@ -100,6 +103,7 @@ through as Windows worded it.
 | --- | --- | --- |
 | `scan-progress` | `{ scanId, files, dirs, scanned, used, elapsedMs, done, rev, errors }` | every 100 ms while scanning, and once with `done: true` |
 | `tree-changed` | `{ rev, bytesDelta }` | live updates from the watcher that can show: at most every 500 ms (2 s while the window is in the background), never while it is minimized (one on restore) |
+| `caption` | `{ maximized, hover, pressed }` | custom title bar only: the window was maximized or restored, or the pointer moved onto, off, or pressed the maximize button (Windows reports that spot to Rust, not to the page; see `app/src-tauri/src/titlebar.rs`) |
 
 `scanned` is bytes found so far, `used` is the volume's used bytes (known up front from
 `GetDiskFreeSpaceExW`), so `scanned / used` is the progress and `used - scanned` is the

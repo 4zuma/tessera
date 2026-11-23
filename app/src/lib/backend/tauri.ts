@@ -7,6 +7,7 @@ import { listen } from '@tauri-apps/api/event';
 import type {
   Backend,
   BackendEvents,
+  CaptionState,
   CatStat,
   DeleteResult,
   Details,
@@ -64,6 +65,15 @@ export class TauriBackend implements Backend {
   }
   relaunchElevated() {
     return invoke<void>('relaunch_elevated');
+  }
+  caption(action: 'min' | 'max' | 'close') {
+    return invoke<void>('caption', { action });
+  }
+  captionButton(rect: { right: number; top: number; width: number; height: number }) {
+    return invoke<void>('caption_button', rect);
+  }
+  captionState() {
+    return invoke<CaptionState>('caption_state');
   }
   on<K extends keyof BackendEvents>(event: K, cb: (payload: BackendEvents[K]) => void): Promise<Unlisten> {
     return listen<BackendEvents[K]>(event, e => cb(e.payload));

@@ -48,6 +48,9 @@ export const zhCN: Partial<Dict> = {
   'lock.protected': '受保护，不能删除',
   'lock.bin': '请使用“清空回收站”',
 
+  'caption.min': '最小化',
+  'caption.max': '最大化',
+  'caption.restore': '向下还原',
   'app.startFailed': 'Tessera 没能启动',
   'picker.title': '选择要扫描的磁盘',
   'picker.sub': '扫描时树图会边扫边长出来，扫完之前也可以开始浏览。',

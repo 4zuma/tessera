@@ -5,7 +5,7 @@
 import { SvelteSet } from 'svelte/reactivity';
 import { createBackend } from './backend';
 import { contentOf, decodeLayout, Flag, FREE, groupFolder, isGroupId, isNodeId, Kind, NONE, UNSCANNED, type Layout, type Rect } from './backend/codec';
-import type { Backend, CatStat, Crumb, Details, PlatformInfo, ScanProgress, SizeMode, Volume } from './backend/types';
+import type { Backend, CaptionState, CatStat, Crumb, Details, PlatformInfo, ScanProgress, SizeMode, Volume } from './backend/types';
 import { fmtBytes, fmtSecs } from './format';
 import { catName, fmtNum, joinList, setLang, t, tn } from './i18n.svelte';
 import type { IconName } from './icons';
@@ -125,6 +125,8 @@ export class App implements EngineHost {
   stats = $state<EngineStats>({ rects: 0, fps: 0, frameMs: 0, busy: false, gpu: false });
   showHud = $state(false);
   error = $state<string | null>(null);
+  /** the custom title bar's caption buttons (Windows 11) */
+  caption = $state<CaptionState>({ maximized: false, hover: false, pressed: false });
   reduced = false;
   undoToken = $state<number | null>(null);
   /** Windows' menu is open (or about to be): input on the map waits for it */
@@ -181,6 +183,10 @@ export class App implements EngineHost {
     new MutationObserver(() => this.setScheme(resolve())).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
     await b.on('scan-progress', p => this.onProgress(p));
     await b.on('tree-changed', e => this.onTreeChanged(e.rev, e.bytesDelta));
+    if (b.platform.titleBar === 'custom') {
+      await b.on('caption', s => (this.caption = s));
+      this.caption = await b.captionState();
+    }
     this.volumes = await b.listVolumes();
     this.phase = 'pick';
     // the browser preview opens on a scan of the sample C: so the map is visible right away
