@@ -226,9 +226,12 @@ These are what make the map calm while it changes, and they were tuned in the pr
    `minWidth`, every folder tile is at least that wide, since a folder is known by its name,
    which is written across (44 px is `labelMinW`, so every folder gets its name). A file is
    known by its colour, so its tile can be as small as `minSide` either way. Siblings whose
-   area would be below `(minSide + gap)²`, or for a folder `(minSide + gap) × (max(minSide,
-   minWidth) + gap)`, go to the group at once, and the group takes its place among the
-   others by its size instead of coming last. After squarifying, the first sibling (in rank
+   area would be below `1.3 × (minSide + gap)²`, or for a folder `1.3 × (minSide + gap) ×
+   (max(minSide, minWidth) + gap)`, go to the group at once (barely enough area seldom comes
+   out square enough), and the group takes its place among the others by its size instead
+   of coming last. While squarifying, an item that would come out shorter than `minSide +
+   gap` along a row already that thick starts the next row instead, so small items do not
+   line up as slivers beside a big one. After squarifying, the first sibling (in rank
    order) that came out below `minSide` and every one after it join the group, and so does
    every folder before it that is only narrower than `minWidth`; the folder is laid out
    again. A group (or a single left-over sibling), UNSCANNED or FREE tile that is still too

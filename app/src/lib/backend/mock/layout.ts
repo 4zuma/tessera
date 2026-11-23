@@ -69,7 +69,12 @@ export function flagsOf(drive: Drive, n: MNode): number {
   return f;
 }
 
-export function squarify<T extends { s: number }>(items: T[], x: number, y: number, w: number, h: number, out: [T, number, number, number, number][]) {
+/**
+ * With `min` > 0 (rule 2's minSide + gap), an item that would come out shorter than `min`
+ * along a row that is already `min` thick starts the next row instead, so small items do
+ * not line up as slivers beside a big one.
+ */
+export function squarify<T extends { s: number }>(items: T[], x: number, y: number, w: number, h: number, out: [T, number, number, number, number][], min = 0) {
   let total = 0;
   for (const it of items) total += it.s;
   if (total <= 0 || w <= 0 || h <= 0) return;
@@ -90,6 +95,7 @@ export function squarify<T extends { s: number }>(items: T[], x: number, y: numb
       const nmax = Math.max(amax, a);
       const wr = Math.max((s2 * nmax) / (ns * ns), (ns * ns) / (s2 * nmin));
       if (wr > best) break;
+      if (min > 0 && sum >= min * short && nmin * short < min * ns) break;
       sum = ns;
       amin = nmin;
       amax = nmax;
@@ -200,6 +206,8 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     // item), or a free / unscanned tile, that is itself too thin is not drawn: the others
     // take its room. A tile still too thin after the last pass is left out and its room stays
     // empty.
+    // barely enough area seldom comes out square enough, so ask for 30 % more up front
+    const ROOM = 1.3;
     const side = o.minSide > 0 ? o.minSide + o.gap : 0;
     const wide = o.minWidth > 0 ? o.minWidth + o.gap : 0;
     const sized = side > 0 || wide > 0;
@@ -220,7 +228,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     for (const c of items) {
       if (c.special === 'unscanned') head.push(c);
       else if (c.special) tail.push(c);
-      else if (c.s * k >= Math.max(o.minArea, side * (isDir(c) ? Math.max(side, wide) : side)) && nodes.length < o.maxPerDir) nodes.push(c);
+      else if (c.s * k >= Math.max(o.minArea, ROOM * side * (isDir(c) ? Math.max(side, wide) : side)) && nodes.length < o.maxPerDir) nodes.push(c);
       else {
         rest += c.s;
         restN++;
@@ -273,7 +281,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       }
       const list = [...head, ...mid, ...tail].filter(c => !gone.has(c));
       rs = [];
-      squarify(list, x, y, w, h, rs);
+      squarify(list, x, y, w, h, rs, side);
       if (!sized) break;
       let first = -1;
       const narrow = new Set<Item>();
