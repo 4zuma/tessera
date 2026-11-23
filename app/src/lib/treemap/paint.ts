@@ -56,7 +56,7 @@ export const paintStyle = {
   foot: 5,
   /** band look: the colour band mixed further into the ground, 0 = the file colour .. 3 = the 1.3.0 closed-folder tint */
   tone: 0,
-  /** band look: the colour fades out upward from the band's top edge over this many px (0 = a hard edge) */
+  /** band look: at the seams where the side ring meets the colour band, the colour runs up the ring, fading out over this many px (0 = a hard edge) */
   fade: 0,
 };
 /** band look: the header band's height, px */
@@ -516,7 +516,7 @@ export class FluentPainter implements Painter {
       ctx.fill(p, 'evenodd');
       ctx.restore();
     }
-    if (closed && colour && wh > 0) this.footBand(ctx, b, colour, white, ring ? Math.max(yW + wh / 2, yWb - wr) : yW + wh / 2, yW, yWb);
+    if (closed && colour && wh > 0) this.footBand(ctx, b, colour, white, ring ? Math.max(yW + wh / 2, yWb - wr) : yW + wh / 2, yW);
     ctx.lineWidth = 1;
     ctx.strokeStyle = this.folderStroke(dark, r.depth);
     ctx.stroke(outline);
@@ -532,20 +532,30 @@ export class FluentPainter implements Painter {
   /**
    * Band look: a closed folder's colour band, the band's mirror below the white area (inside
    * the outline, from `yCut`: where the white area's bottom corners start to round). With
-   * paintStyle.fade the colour also runs up from the band's top edge, fading out.
+   * paintStyle.fade the colour also runs up the ring beside the white area from that seam,
+   * fading out; the white area itself is never tinted.
    */
-  private footBand(ctx: CanvasRenderingContext2D, b: Box, colour: string, white: Path2D, yCut: number, yW: number, yWb: number) {
+  private footBand(ctx: CanvasRenderingContext2D, b: Box, colour: string, white: Path2D, yCut: number, yW: number) {
     const R = paintStyle.folderRadius;
     const inner = new Path2D();
     inner.roundRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2, Math.max(0, Math.min(R - 0.5, (b.w - 2) / 2, (b.h - 2) / 2)));
     ctx.save();
     ctx.clip(inner);
-    const G = Math.min(paintStyle.fade, yWb - yW);
+    const G = Math.min(paintStyle.fade, yCut - yW);
     if (G > 0) {
+      // only beside the white area: the ring's strip from yCut - G to the seam. The gradient is
+      // cached by length, so it is drawn translated, and the path with it.
+      const y0 = yCut - G;
       ctx.save();
-      ctx.translate(0, yWb - G);
+      ctx.beginPath();
+      ctx.rect(b.x, y0, b.w, G);
+      ctx.clip();
+      ctx.translate(0, y0);
+      const f = new Path2D();
+      f.rect(b.x, -2, b.w, G + 4);
+      f.addPath(white, { f: -y0 });
       ctx.fillStyle = this.fade(ctx, colour, G);
-      ctx.fillRect(b.x, 0, b.w, G);
+      ctx.fill(f, 'evenodd');
       ctx.restore();
     }
     ctx.beginPath();

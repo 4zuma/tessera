@@ -68,7 +68,7 @@ export interface PageProps {
   foot?: number;
   /** band look: the colour band, 0 = the file colour, 1-2 lighter, 3 = the 1.3.0 closed-folder tint (0) */
   tone?: number;
-  /** band look: the colour fades out upward from the band's top edge over this many px; 0 = a hard edge (0) */
+  /** band look: at the seams where the side ring meets the colour band, the colour runs up the ring, fading out over this many px; 0 = a hard edge (0) */
   fade?: number;
   /** the host element's style: where the component sits in its slot */
   style?: Record<string, string | number>;

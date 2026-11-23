@@ -50,7 +50,7 @@ export interface PageProps {
   foot?: number;
   /** band look: 0 = the file colour .. 3 = the 1.3.0 closed-folder tint */
   tone?: number;
-  /** band look: the colour fades out upward from the band's top edge over this many px (0 = none) */
+  /** band look: the colour runs up the side ring from its seam with the colour band, fading out over this many px (0 = none) */
   fade?: number;
 }
 
