@@ -17,7 +17,7 @@
   });
   const legendTotal = $derived(app.legend.reduce((a, c) => a + c.bytes, 0) || 1);
 
-  // by age: one row per band, newest first, and the bytes whose date is not known
+  // by age: one row per band, newest first, and the bytes whose date is not known (bin 0)
   const bands = $derived(bandTotals(app.ageHist, app.ageEdges).map((bytes, i) => ({ i, bytes })));
   const unknownBytes = $derived(app.ageHist[AGE_UNKNOWN] ?? 0);
   const bandsTotal = $derived(bands.reduce((a, b) => a + b.bytes, 0) + unknownBytes || 1);

@@ -37,9 +37,31 @@ export function ageBand(b: number, edges: readonly number[]): number {
   return i;
 }
 
-/** bytes per band from a histogram of bytes per age byte */
-export function bandTotals(hist: readonly number[], edges: readonly number[]): number[] {
+/**
+ * The legend's bins (Backend.ageStats): 0 = not known, then one per span between two
+ * neighbouring edge choices, so the bytes of any bands drawn from the choices are sums of
+ * bins. The core has the same table.
+ */
+export const AGE_BINS = AGE_EDGE_CHOICES.length + 2;
+
+/** the bin of an age byte */
+export function ageBin(b: number): number {
+  if (b <= AGE_UNKNOWN) return 0;
+  const d = ageDays(b);
+  let i = 0;
+  while (i < AGE_EDGE_CHOICES.length && d >= AGE_EDGE_CHOICES[i]) i++;
+  return i + 1;
+}
+
+/** bytes per band from bytes per bin; `edges` ascending and among AGE_EDGE_CHOICES */
+export function bandTotals(bins: readonly number[], edges: readonly number[]): number[] {
   const out = new Array<number>(edges.length + 1).fill(0);
-  for (let b = 1; b < hist.length; b++) if (hist[b]) out[ageBand(b, edges)] += hist[b];
+  for (let j = 1; j < bins.length; j++) {
+    if (!bins[j]) continue;
+    const from = j === 1 ? 0 : AGE_EDGE_CHOICES[j - 2];
+    let band = 0;
+    while (band < edges.length && from >= edges[band]) band++;
+    out[band] += bins[j];
+  }
   return out;
 }

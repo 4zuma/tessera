@@ -3,7 +3,7 @@ import { decodeLayout, encodeLayout, FREE, GROUP_BIT, isNodeId, Kind, NONE, RECO
 import { categoryOf, Cat } from './categories';
 import { t } from '../i18n.svelte';
 import { MockBackend } from './mock';
-import { AGE_UNKNOWN, ageBand, ageByte } from '../age';
+import { AGE_BINS, AGE_EDGE_CHOICES, AGE_UNKNOWN, ageBand, ageBin, ageByte, bandTotals } from '../age';
 import { ageTable, BadSize, parseQuery } from './mock/search';
 import type { LayoutRequest, ScanProgress } from './types';
 
@@ -190,9 +190,20 @@ describe('mock backend', () => {
     expect(old.count + recent.count).toBe(all.count);
     expect(old.bytes + recent.bytes).toBe(all.bytes);
     const hist = await b.ageStats(0, 'disk');
-    expect(hist).toHaveLength(256);
-    const older = hist.reduce((a, v, i) => a + (ageBand(i, [365]) === 1 ? v : 0), 0);
-    expect(older).toBe(old.bytes);
+    expect(hist).toHaveLength(AGE_BINS);
+    expect(bandTotals(hist, [365])[1]).toBe(old.bytes);
+    expect(bandTotals(hist, [365])[0]).toBe(recent.bytes);
+  });
+
+  it('bins ages so that any choice of edges sums them as the tiles are coloured', () => {
+    const edges = [3, 30, 1095];
+    for (let b = 1; b < 256; b++) {
+      const bins = new Array<number>(AGE_BINS).fill(0);
+      bins[ageBin(b)] = 1;
+      expect(bandTotals(bins, edges)[ageBand(b, edges)]).toBe(1);
+    }
+    expect(ageBin(AGE_UNKNOWN)).toBe(0);
+    expect(ageBin(255)).toBe(AGE_EDGE_CHOICES.length + 1);
   });
 
   it('recycles into $Recycle.Bin, restores, and purges', async () => {
