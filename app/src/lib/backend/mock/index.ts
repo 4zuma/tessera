@@ -434,6 +434,19 @@ export class MockBackend implements Backend {
     /* nothing to relaunch in the preview */
   }
 
+  /** the preview remembers nothing between page loads */
+  private settings: Record<string, number | string> = {};
+  async loadSettings() {
+    return { ...this.settings };
+  }
+  async saveSetting(name: string, value: number | string | null) {
+    if (value == null) delete this.settings[name];
+    else this.settings[name] = value;
+  }
+  async clearSettings() {
+    this.settings = {};
+  }
+
   async on<K extends keyof BackendEvents>(event: K, cb: (payload: BackendEvents[K]) => void): Promise<Unlisten> {
     let set = this.listeners.get(event);
     if (!set) this.listeners.set(event, (set = new Set()));

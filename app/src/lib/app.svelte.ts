@@ -13,6 +13,7 @@ import { applyThemeCss, makeTheme, type Scheme, type Theme } from './theme';
 import { TreemapEngine, type ApplyOpts, type EngineHost, type EngineStats, type MotionKind } from './treemap/engine';
 import type { GpuMode } from './treemap/gpu';
 import { fluentLayout, fluentMotion } from './treemap/motion';
+import { fromStored, toStored, type Prefs } from './settings';
 import { FluentPainter } from './treemap/paint';
 
 export type Phase = 'boot' | 'pick' | 'map';
@@ -107,6 +108,8 @@ export class App implements EngineHost {
   crumbs = $state<Crumb[]>([]);
   up = $state<number | null>(null);
   sizeMode = $state<SizeMode>('disk');
+  /** the details pane is wanted (it shows when the window is wide enough) */
+  paneWanted = $state(true);
   readonly sel = new SvelteSet<number>();
   hoverId = $state<number | null>(null);
   filter = $state<number | null>(null);
@@ -181,10 +184,60 @@ export class App implements EngineHost {
     new MutationObserver(() => this.setScheme(resolve())).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
     await b.on('scan-progress', p => this.onProgress(p));
     await b.on('tree-changed', e => this.onTreeChanged(e.rev, e.bytesDelta));
+    await this.loadSettings();
     this.volumes = await b.listVolumes();
     this.phase = 'pick';
     // the browser preview opens on a scan of the sample C: so the map is visible right away
     if (!b.platform.native && this.volumes.length) setTimeout(() => void this.startScan(this.volumes[0].root), 300);
+  }
+
+  /* ------------------------------------------------------------------ settings */
+
+  private async loadSettings() {
+    try {
+      const p = fromStored(await this.backend!.loadSettings());
+      this.sizeMode = p.sizeMode;
+      this.paneWanted = p.pane;
+    } catch (err) {
+      console.warn('settings could not be read', err);
+    }
+  }
+
+  /** remembers one setting for the next run (only what differs from the default is kept) */
+  private remember<K extends keyof Prefs>(key: K, v: Prefs[K]) {
+    const [name, value] = toStored(key, v);
+    this.backend?.saveSetting(name, value).catch(err => console.warn('settings could not be saved', err));
+  }
+
+  async clearSettings() {
+    if (!this.backend) return;
+    try {
+      await this.backend.clearSettings();
+      this.showToast('success', t('toast.settingsClearedBody'), [], t('toast.settingsCleared'));
+    } catch (err) {
+      this.fail(t('toast.settingsFailed'), err);
+    }
+  }
+
+  togglePane() {
+    this.paneToggled();
+    this.paneWanted = !this.paneWanted;
+    this.remember('pane', this.paneWanted);
+  }
+
+  /** the ⋯ menu at the end of the command bar */
+  openAppMenu(x: number, y: number) {
+    this.tip = null;
+    const v = this.platform?.version;
+    this.menu = {
+      x,
+      y,
+      rows: [
+        { type: 'head', label: v ? `Tessera ${v}` : 'Tessera' },
+        { type: 'item', icon: 'undo', label: t('menu.clearSettings'), run: () => void this.clearSettings() },
+        { type: 'note', label: t('menu.settingsNote') },
+      ],
+    };
   }
 
   setScheme(s: Scheme) {
@@ -631,6 +684,7 @@ export class App implements EngineHost {
   setSizeMode(m: SizeMode) {
     if (m === this.sizeMode) return;
     this.sizeMode = m;
+    this.remember('sizeMode', m);
     this.requestLayout('mode');
     this.refreshLegend(true);
     this.showToast('info', m === 'disk' ? t('toast.diskMode') : t('toast.logicalMode'));

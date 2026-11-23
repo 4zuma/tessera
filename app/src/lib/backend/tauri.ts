@@ -65,6 +65,15 @@ export class TauriBackend implements Backend {
   relaunchElevated() {
     return invoke<void>('relaunch_elevated');
   }
+  loadSettings() {
+    return invoke<Record<string, number | string>>('settings_load');
+  }
+  saveSetting(name: string, value: number | string | null) {
+    return invoke<void>('settings_save', { name, value });
+  }
+  clearSettings() {
+    return invoke<void>('settings_clear');
+  }
   on<K extends keyof BackendEvents>(event: K, cb: (payload: BackendEvents[K]) => void): Promise<Unlisten> {
     return listen<BackendEvents[K]>(event, e => cb(e.payload));
   }

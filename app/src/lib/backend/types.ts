@@ -152,6 +152,12 @@ export interface Backend {
   /** Windows' own context menu for `ids` (one folder) at client point x, y; resolves when it closes */
   shellMenu(ids: number[], x: number, y: number, extended: boolean): Promise<ShellAction>;
   relaunchElevated(): Promise<void>;
+  /** the view options saved in the registry (see lib/settings.ts) */
+  loadSettings(): Promise<Record<string, number | string>>;
+  /** saves one value; `null` deletes it */
+  saveSetting(name: string, value: number | string | null): Promise<void>;
+  /** deletes everything Tessera saved, the window's place and size too */
+  clearSettings(): Promise<void>;
   on<K extends keyof BackendEvents>(event: K, cb: (payload: BackendEvents[K]) => void): Promise<Unlisten>;
   /** preview-only helpers (live-update demo); absent on the real backend */
   demo?: { startDownload(): boolean };

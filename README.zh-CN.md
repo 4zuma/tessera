@@ -42,6 +42,7 @@
 * 需要 WebView2 运行时。Windows 11 自带，保持更新的 Windows 10 也已经有了。
 * exe 暂时没有代码签名，第一次运行时 SmartScreen 可能会拦一下：点“更多信息”，再点“仍要运行”。
 * 以管理员身份运行（或者在 Tessera 里点“以管理员身份重启”）可以用更快的 MFT 扫描；没有管理员权限时，Tessera 会逐个文件夹遍历。
+* Tessera 不会写自己的文件。窗口大小和你改过的视图选项记在注册表的 `HKEY_CURRENT_USER\Software\Tessera` 下，只有和默认值不同时才会写。点“⋯ › 清除保存的设置”就会删掉这个键。
 
 ## 和 SpaceSniffer 对比
 

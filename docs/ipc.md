@@ -30,6 +30,9 @@ All sizes are bytes. All ids are `u32` node indices into the core's arena unless
 | `reveal` | `{ id: u32 }` | `()` – `explorer.exe /select,"<path>"` |
 | `shell_menu` | `{ ids: u32[], x: f64, y: f64, extended: bool }` | `"none" \| "invoked" \| "recycle" \| "purge"` – Windows' classic context menu for `ids` (all in one folder, else an error) at client point `x`, `y` (CSS px), with Explorer's Shift-only verbs if `extended`; resolves when the menu closes. "Delete" is not run by the shell: `"recycle"` (`"purge"` with Shift held) tells the UI to delete through `recycle` / `purge` itself |
 | `relaunch_elevated` | – | `()` – restarts with `runas`, keeps the window position |
+| `settings_load` | – | `{ [name]: number \| string }` – the view options saved in `HKEY_CURRENT_USER\Software\Tessera` (REG_DWORD as numbers, REG_SZ as text), without the window's own `Window` value |
+| `settings_save` | `{ name: string, value: number \| string \| bool \| null }` | `()` – `name` is 1–32 ASCII letters and digits; `null` deletes the value (the setting is back at its default), and the key goes once it is empty |
+| `settings_clear` | – | `()` – deletes the key; the window's current place is not saved on closing unless it moves first |
 
 ```ts
 type SizeMode = "disk" | "logical";        // allocated size (default) | file length

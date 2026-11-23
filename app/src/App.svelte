@@ -15,14 +15,8 @@
   import { t } from './lib/i18n.svelte';
 
   let width = $state(1200);
-  let paneWanted = $state(true);
-  const paneOpen = $derived(paneWanted && width >= 820);
+  const paneOpen = $derived(app.paneWanted && width >= 820);
   const browser = $derived(!app.platform?.native);
-
-  function togglePane() {
-    app.paneToggled();
-    paneWanted = !paneWanted;
-  }
 
   /**
    * The details pane slides in from the window edge, clipped to its own column, as WinUI's
@@ -63,7 +57,7 @@
   {:else if app.phase === 'pick'}
     <DrivePicker />
   {:else}
-    <CommandBar {paneOpen} canTogglePane={width >= 820} onTogglePane={togglePane} />
+    <CommandBar {paneOpen} canTogglePane={width >= 820} onTogglePane={() => app.togglePane()} />
     <div class="main">
       <Stage />
       {#if paneOpen}
