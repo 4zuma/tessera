@@ -33,3 +33,12 @@ body {
 .tessera-host .tb:not(.native) .r > .sbtn {
   display: none;
 }
+
+/* A design shows the window in use. A canvas artboard or a preview card is a frame that rarely
+   has focus, and the app would then draw Windows' inactive title bar (dimmed title and logo). */
+.tessera-host .tb.inactive .t {
+  color: inherit !important;
+}
+.tessera-host .tb.inactive .logo {
+  opacity: 1 !important;
+}
