@@ -1,0 +1,58 @@
+<!-- @dsCard height=288 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tessera Fluent</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--solid-base); color: var(--text); font-family: var(--font-sans); overflow: hidden; }
+  .cover { position: relative; height: 288px; overflow: hidden; }
+  .art { position: absolute; top: 0; left: 480px; width: 480px; height: 288px; overflow: hidden; }
+  .art svg { display: block; width: 488px; height: 296px; }
+  .blue { fill: var(--brand-blue); }
+  .sky { fill: var(--brand-sky); }
+  .deep { fill: var(--brand-navy); }
+  /* navy sits within a few percent of the dark ground: the open folder turns to paper there */
+  [data-theme="dark"] .deep { fill: var(--brand-paper); }
+  .blk { rx: var(--r-card); }
+  .folder { rx: var(--tm-folder-radius); }
+  .tile { rx: var(--tm-radius); }
+  .words { position: absolute; left: var(--space-6); bottom: var(--space-6); max-width: 440px; }
+  .name { margin: 0; font-family: var(--font-display); font-size: 96px; line-height: .95; font-weight: 600; letter-spacing: -.02em; color: var(--text); }
+  .tag { margin: var(--space-2) 0 0 4px; font-size: 14px; line-height: 20px; color: var(--text-2); }
+</style>
+</head>
+<body>
+<div class="cover">
+<div class="art" aria-hidden="true">
+<svg viewBox="0 0 488 296" width="488" height="296">
+<!--
+  blocks      brand-blue 288×304 slab (the logo's big tile, bled off top and bottom) · brand-sky 192×112 and brand-navy 192×184 satellites bled off the right, as the logo's two small tiles · about 50% of 960×288
+  arrangement one tall slab with two stacked satellites, space-2 gutters: the logo's three-tile treemap, opened up
+  pattern     "dense UI, tiles cut by the radius tokens": the navy block is an open treemap folder (tm-header band, tm-folder-radius) holding eleven sky and blue tiles at tm-radius with space-1 gaps, some two-wide, the way the map draws
+  scales      gutters space-2 (8); tile gaps space-1 (4); band tm-header (21); corners r-card, tm-folder-radius, tm-radius
+-->
+<rect class="blue blk" x="0" y="-8" width="288" height="304" rx="8"/>
+<rect class="sky blk" x="296" y="-8" width="200" height="112" rx="8"/>
+<rect class="deep folder" x="296" y="112" width="200" height="192" rx="4"/>
+<rect class="sky tile" x="300" y="137" width="88" height="72" rx="3"/>
+<rect class="sky tile" x="300" y="213" width="88" height="44" rx="3"/>
+<rect class="sky tile" x="300" y="261" width="42" height="40" rx="3"/>
+<rect class="blue tile" x="346" y="261" width="42" height="40" rx="3"/>
+<rect class="blue tile" x="392" y="137" width="100" height="40" rx="3"/>
+<rect class="sky tile" x="392" y="181" width="46" height="36" rx="3"/>
+<rect class="sky tile" x="442" y="181" width="50" height="36" rx="3"/>
+<rect class="sky tile" x="392" y="221" width="30" height="30" rx="3"/>
+<rect class="sky tile" x="426" y="221" width="30" height="30" rx="3"/>
+<rect class="blue tile" x="460" y="221" width="32" height="30" rx="3"/>
+<rect class="sky tile" x="392" y="255" width="100" height="46" rx="3"/>
+</svg>
+</div>
+<div class="words">
+<h1 class="name">Tessera<br>Fluent</h1>
+<p class="tag">A disk-space map that looks like part of Windows.</p>
+</div>
+</div>
+</body>
+</html>

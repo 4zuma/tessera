@@ -1,0 +1,12 @@
+<!-- @dsCard group="Chrome" height=56 width=480 subtitle="Search with live result count; scenario "search" fills it" -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>SearchBox — preview</title></head>
+<body style="margin:0">
+<div id="root" style="width:480px;height:56px"></div>
+<script>
+  var T = window.Tessera, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h('div', { style: { padding: 12 } }, h(T.SearchBox, { scenario: 'search' })));
+</script>
+</body>
+</html>

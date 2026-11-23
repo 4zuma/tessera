@@ -1,0 +1,28 @@
+/* What app.css gives the app's own page, for components shown on someone else's page. */
+body {
+  font: 14px/20px var(--font);
+  color: var(--text);
+  background: var(--solid-base);
+  -webkit-font-smoothing: antialiased;
+}
+.tessera-host {
+  font: 14px/20px var(--font);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Tessera.Window fills its slot as a Windows 11 window (8 px corners, Mica-like wash). The
+   browser preview's "window on a desk" margins (App.svelte, .framed) only with frame="desk". */
+.tessera-host[data-frame='window'] > .window {
+  height: 100% !important;
+  margin: 0 !important;
+  border-radius: 8px;
+  border: 1px solid var(--ctl-stroke-2);
+  background: linear-gradient(135deg, var(--mica-a), var(--mica-b));
+  box-shadow: none !important;
+}
+.tessera-host[data-frame='desk'] {
+  background: var(--solid-base);
+}

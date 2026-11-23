@@ -1,0 +1,12 @@
+<!-- @dsCard group="Controls" height=200 width=640 subtitle="The surface of menus, tooltips and toasts (.acrylic)" -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Acrylic — preview</title></head>
+<body style="margin:0">
+<div id="root" style="width:640px;height:200px"></div>
+<script>
+  var T = window.Tessera, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h('div', { style: { position: 'relative', height: 200, background: 'linear-gradient(135deg, var(--cat-1), var(--cat-5) 50%, var(--cat-2))' } }, h('div', { style: { position: 'absolute', left: 40, top: 40 } }, h(T.Acrylic, { padding: 12, style: { width: 260 } }, h('div', { className: 'type-body-strong' }, 'docker_data.vhdx'), h('div', { className: 'type-caption', style: { color: 'var(--text-2)' } }, '41.5 GB · Disk images · 100% of parent')))));
+</script>
+</body>
+</html>

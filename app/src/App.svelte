@@ -80,7 +80,7 @@
   <Tooltip />
 </div>
 
-<!-- The acrylic blend behind .acrylic surfaces (app.css). Opaque on purpose: where the window
+<!-- The acrylic blend behind .acrylic surfaces (ui.css). Opaque on purpose: where the window
      is see-through (Mica), a part-transparent result would let the sharp content show through. -->
 <svg class="defs" aria-hidden="true" focusable="false">
   <filter id="acrylic" x="0" y="0" width="1" height="1" color-interpolation-filters="sRGB">
