@@ -40,7 +40,8 @@ PowerShell, then run `npx tauri dev` or the exe from that shell.
 
 Keyboard: arrows move the selection, Enter zooms in, Backspace goes up, Delete moves to
 the recycle bin, Shift+Delete deletes permanently, Ctrl+Z undoes, Ctrl+C copies paths,
-Shift+F10 opens Windows' context menu for the selection, F5 rescans, Ctrl+Shift+F shows
+Shift+F10 opens Windows' context menu for the selection, F5 rescans, Ctrl+F goes to the
+search box (Esc there clears it, a second Esc goes back to the map), Ctrl+Shift+F shows
 the frame-rate overlay (with WebGL or 2D for the drawing path).
 
 Mouse: click selects, Ctrl+click toggles a tile, Shift+click selects the run of siblings
