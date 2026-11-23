@@ -32,6 +32,13 @@ public static class W {
   [DllImport("user32.dll")] public static extern int GetSystemMetrics(int i);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc p, IntPtr l);
+  public static List<IntPtr> Tops() {
+    var l = new List<IntPtr>();
+    EnumProc p = (h, x) => { if (IsWindowVisible(h)) l.Add(h); return true; };
+    EnumWindows(p, IntPtr.Zero);
+    GC.KeepAlive(p);
+    return l;
+  }
   public static IntPtr Biggest(uint pid) {
     IntPtr best = IntPtr.Zero; long area = 0;
     EnumProc p = (h, x) => {
@@ -103,9 +110,10 @@ function Probe($label, $cssFromRight) {
   $ht = [int64][W]::SendMessage($main, 0x84, [IntPtr]::Zero, [W]::LParam($pt.X, $pt.Y))
   Write-Host "$label at $($pt.X),$($pt.Y): WindowFromPoint $(Describe $at); main WM_NCHITTEST $ht"
   foreach ($c in [W]::Children($main)) {
-    if ([W]::GetParent($c) -eq $main) {
+    $procId = [uint32]0; [W]::GetWindowThreadProcessId($c, [ref]$procId) | Out-Null
+    if ($procId -eq $p.Id) {
       $hc = [int64][W]::SendMessage($c, 0x84, [IntPtr]::Zero, [W]::LParam($pt.X, $pt.Y))
-      Write-Host "    child $([W]::Cls($c)) WM_NCHITTEST $hc"
+      Write-Host ("    {0:X8} {1} WM_NCHITTEST {2}" -f [int64]$c, [W]::Cls($c), $hc)
     }
   }
   return $pt
@@ -127,8 +135,10 @@ function Click() {
 
 Shot '0-start'
 MoveTo $min; Start-Sleep -Milliseconds 800; Shot '1-hover-min'
+$tops = [W]::Tops()
 MoveTo $max; Start-Sleep -Milliseconds 800; Shot '2-hover-max'
 Start-Sleep -Seconds 2; Shot '3-rest-max'
+foreach ($t in [W]::Tops()) { if (-not $tops.Contains($t)) { Write-Host "new top-level window while resting on max: $(Describe $t)" } }
 Write-Host "before click: zoomed $([W]::IsZoomed($main))"
 Click; Start-Sleep -Seconds 2
 $z1 = [W]::IsZoomed($main)
