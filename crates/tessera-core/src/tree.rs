@@ -406,6 +406,8 @@ pub struct EntryBatch {
 pub struct BatchEntry {
     pub size: u64,
     pub logical: u64,
+    /// Last write time as a FILETIME, 0 if not known (see [`crate::age`]).
+    pub modified: u64,
     pub flags: NodeFlags,
     name_start: u32,
     name_len: u16,
@@ -447,27 +449,48 @@ impl EntryBatch {
         self.entries.is_empty()
     }
 
-    /// Adds an entry whose name is (possibly ill-formed) UTF-16.
-    pub fn push_utf16(&mut self, name: &[u16], size: u64, logical: u64, flags: NodeFlags) {
+    /// Adds an entry whose name is (possibly ill-formed) UTF-16, last
+    /// written at `modified` (a FILETIME, 0 if not known).
+    pub fn push_utf16(
+        &mut self,
+        name: &[u16],
+        size: u64,
+        logical: u64,
+        flags: NodeFlags,
+        modified: u64,
+    ) {
         let start = self.names.len();
         wtf8::push_utf16(&mut self.names, name);
-        self.push_raw(start, size, logical, flags);
+        self.push_raw(start, size, logical, flags, modified);
     }
 
-    /// Adds an entry whose name is already WTF-8 (or UTF-8).
+    /// Adds an entry whose name is already WTF-8 (or UTF-8), with no time.
     pub fn push_wtf8(&mut self, name: &[u8], size: u64, logical: u64, flags: NodeFlags) {
+        self.push_wtf8_at(name, size, logical, flags, 0);
+    }
+
+    /// [`EntryBatch::push_wtf8`], last written at `modified` (a FILETIME).
+    pub fn push_wtf8_at(
+        &mut self,
+        name: &[u8],
+        size: u64,
+        logical: u64,
+        flags: NodeFlags,
+        modified: u64,
+    ) {
         let start = self.names.len();
         self.names.extend_from_slice(name);
-        self.push_raw(start, size, logical, flags);
+        self.push_raw(start, size, logical, flags, modified);
     }
 
-    fn push_raw(&mut self, start: usize, size: u64, logical: u64, flags: NodeFlags) {
+    fn push_raw(&mut self, start: usize, size: u64, logical: u64, flags: NodeFlags, modified: u64) {
         let len = self.names.len() - start;
         let name_len = u16::try_from(len).expect("name too long");
         let code = crate::category::name_code(&self.names[start..]);
         self.entries.push(BatchEntry {
             size,
             logical,
+            modified,
             flags: flags.with_name_cat(code),
             name_start: start as u32,
             name_len,
@@ -487,6 +510,12 @@ impl EntryBatch {
 /// The whole scanned tree.
 pub struct Tree {
     pub(crate) nodes: ChunkedVec<Slot>,
+    /// One [`crate::age`] byte per node, by index: when a file was last
+    /// written, as seen at `age_now`. Folders keep [`crate::age::UNKNOWN`]
+    /// (their age comes from their files, see the layout).
+    pub(crate) ages: ChunkedVec<u8>,
+    /// The FILETIME the ages count back from: when the tree was made.
+    age_now: u64,
     /// The records of the wide nodes, in the order they became wide.
     pub(crate) wide: ChunkedVec<Wide>,
     /// The volume's cluster size minus one (see [`Tree::set_cluster_size`]).
@@ -496,7 +525,20 @@ pub struct Tree {
     pub(crate) changed: u64,
     /// See [`Tree::touched_since`].
     pub(crate) journal: Journal,
+    /// See [`Tree::redated_since`].
+    redated: Redated,
 }
+
+/// The folders of the last [`REDATED_LEN`] files whose age changed after
+/// they had one (a write to an old file); see [`Tree::redated_since`].
+#[derive(Default)]
+struct Redated {
+    ring: Vec<NodeId>,
+    seq: u64,
+}
+
+/// How many re-dated files [`Tree::redated_since`] reaches back to (4 KiB).
+pub const REDATED_LEN: usize = 1024;
 
 /// How many folder changes the journal keeps (16 KiB).
 pub const JOURNAL_LEN: usize = 4096;
@@ -508,14 +550,20 @@ pub(crate) struct Journal {
     ring: Vec<NodeId>,
     /// Entries ever recorded.
     seq: u64,
+    /// The highest position [`Tree::change_seq`] handed out.
+    seen: std::sync::atomic::AtomicU64,
 }
 
 impl Journal {
     #[inline]
     fn record(&mut self, dir: NodeId) {
         const LEN: u64 = JOURNAL_LEN as u64;
-        // a folder filled or grown in steps is one entry
-        if self.seq > 0 && self.ring[((self.seq - 1) % LEN) as usize] == dir {
+        // a folder filled or grown in steps is one entry, unless someone has
+        // read the position since: they would miss the later steps
+        if self.seq > 0
+            && *self.seen.get_mut() < self.seq
+            && self.ring[((self.seq - 1) % LEN) as usize] == dir
+        {
             return;
         }
         let i = (self.seq % LEN) as usize;
@@ -537,7 +585,7 @@ const DEFAULT_CLUSTER: u64 = 4096;
 /// Memory used by a [`Tree`], in bytes.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TreeMemory {
-    /// The nodes, wide records included.
+    /// The nodes, wide records and age bytes included.
     pub nodes: usize,
     /// How many nodes have a wide record (every directory, and the files
     /// whose sizes do not fit a slot).
@@ -572,11 +620,14 @@ impl Tree {
     ) -> Tree {
         let mut t = Tree {
             nodes: ChunkedVec::new(),
+            ages: ChunkedVec::new(),
+            age_now: crate::age::now_filetime(),
             wide: ChunkedVec::new(),
             cluster_mask: DEFAULT_CLUSTER - 1,
             names,
             changed: 0,
             journal: Journal::default(),
+            redated: Redated::default(),
         };
         t.set_cluster_size(cluster);
         t.push_node(
@@ -587,6 +638,7 @@ impl Tree {
             NodeId::NONE,
             root,
             NodeFlags::DIR,
+            crate::age::UNKNOWN,
         );
         t
     }
@@ -659,8 +711,10 @@ impl Tree {
         next_sibling: NodeId,
         name: (u32, u16),
         flags: NodeFlags,
+        age: u8,
     ) -> usize {
         let (flags, val) = self.pack(size, logical, first_child, flags);
+        self.ages.push(age);
         self.nodes.push(Slot {
             parent,
             next_sibling,
@@ -1057,6 +1111,11 @@ impl Tree {
                 next,
                 (name_off, name_len),
                 e.flags,
+                if e.flags.contains(NodeFlags::DIR) {
+                    crate::age::UNKNOWN
+                } else {
+                    self.age_of(e.modified)
+                },
             );
             dsize = dsize.wrapping_add(e.size);
             dlogical = dlogical.wrapping_add(e.logical);
@@ -1078,6 +1137,72 @@ impl Tree {
         let mut b = EntryBatch::new();
         b.push_wtf8(name, size, logical, flags);
         NodeId(self.add_children(parent, &b).start)
+    }
+
+    /// The [`crate::age`] byte of a node: when a file was last written;
+    /// [`crate::age::UNKNOWN`] for folders and files without a time.
+    #[inline]
+    pub fn age(&self, id: NodeId) -> u8 {
+        *self.ages.get(id.index())
+    }
+
+    /// Counts ages back from `now` (a FILETIME) instead of the tree's
+    /// creation, for a builder that worked out age bytes itself.
+    pub(crate) fn set_age_now(&mut self, now: u64) {
+        self.age_now = now;
+    }
+
+    /// The age byte of a FILETIME, as this tree counts ages.
+    pub fn age_of(&self, modified: u64) -> u8 {
+        crate::age::byte_of_filetime(modified, self.age_now)
+    }
+
+    /// Sets when a file was last written (a FILETIME; 0 = not known).
+    /// Returns true if its age byte changed. Folders keep no time.
+    pub fn set_modified(&mut self, id: NodeId, modified: u64) -> bool {
+        let s = *self.slot(id);
+        if s.is_dir() || modified == 0 {
+            return false;
+        }
+        let b = self.age_of(modified);
+        let a = self.ages.get_mut(id.index());
+        if *a == b {
+            return false;
+        }
+        let had = std::mem::replace(a, b) != crate::age::UNKNOWN;
+        let dir = if s.parent.is_none() { id } else { s.parent };
+        self.touch(dir);
+        if had {
+            // ages count from when the tree was made, so a file is re-dated
+            // about once a session: when an old one is written to
+            let r = &mut self.redated;
+            let i = (r.seq % REDATED_LEN as u64) as usize;
+            if i == r.ring.len() {
+                r.ring.push(dir);
+            } else {
+                r.ring[i] = dir;
+            }
+            r.seq += 1;
+        }
+        true
+    }
+
+    /// How many files have been re-dated (their known age changed) so far.
+    pub fn redated_seq(&self) -> u64 {
+        self.redated.seq
+    }
+
+    /// The folders of the files re-dated since [`Tree::redated_seq`] was
+    /// `seq` (a file that is new to the tree is not re-dated: its bytes
+    /// changed too). `None` when that is more than [`REDATED_LEN`] files
+    /// ago, or `seq` is from another tree.
+    pub fn redated_since(&self, seq: u64) -> Option<impl Iterator<Item = NodeId> + '_> {
+        const LEN: u64 = REDATED_LEN as u64;
+        let r = &self.redated;
+        if seq > r.seq || r.seq - seq > LEN {
+            return None;
+        }
+        Some((seq..r.seq).map(move |i| r.ring[(i % LEN) as usize]))
     }
 
     /// Number of live children. Linear in the length of the sibling list
@@ -1131,7 +1256,11 @@ impl Tree {
     /// Position of the change journal; pass it to [`Tree::touched_since`]
     /// later to learn which folders changed in between.
     pub fn change_seq(&self) -> u64 {
-        self.journal.seq
+        let seq = self.journal.seq;
+        self.journal
+            .seen
+            .fetch_max(seq, std::sync::atomic::Ordering::Relaxed);
+        seq
     }
 
     /// The folders whose entries changed (added, removed, resized, renamed,
@@ -1215,7 +1344,7 @@ impl Tree {
     /// Heap memory held by the tree.
     pub fn memory(&self) -> TreeMemory {
         TreeMemory {
-            nodes: self.nodes.heap_bytes() + self.wide.heap_bytes(),
+            nodes: self.nodes.heap_bytes() + self.wide.heap_bytes() + self.ages.heap_bytes(),
             wide: self.wide.len(),
             names: self.names.heap_bytes(),
             names_raw: self.names.raw_bytes(),
@@ -1339,6 +1468,7 @@ mod tests {
             8192,
             8000,
             NodeFlags::NONE,
+            0,
         );
         b.push_wtf8(b"notes.txt", 4096, 12, NodeFlags::NONE);
         t.add_children(NodeId(1), &b);
@@ -1547,6 +1677,16 @@ mod tests {
         assert!(t.mark_deleted(w));
         let got: Vec<NodeId> = t.touched_since(seq).unwrap().collect();
         assert_eq!(got, [w, users, NodeId::ROOT]);
+        // ... unless someone read the position in between
+        let seq = t.change_seq();
+        t.set_file_size(notes, 8192, 5000);
+        let seq2 = t.change_seq();
+        t.set_file_size(notes, 4096, 12);
+        assert_eq!(
+            t.touched_since(seq).unwrap().collect::<Vec<_>>(),
+            [users, users]
+        );
+        assert_eq!(t.touched_since(seq2).unwrap().collect::<Vec<_>>(), [users]);
         // older positions fall out of the ring
         let seq = t.change_seq();
         for i in 0..=JOURNAL_LEN {
@@ -1593,10 +1733,11 @@ mod tests {
         assert_eq!(t.children(NodeId::ROOT).count(), 200_000);
         t.check_invariants().unwrap();
         let m = t.memory();
-        // 200k nodes need 4 chunks of 65,536 nodes; the root is wide.
+        // 200k nodes need 4 chunks of 65,536 nodes (and an age byte
+        // each); the root is wide.
         assert_eq!(m.wide, 1);
         assert!(
-            m.nodes >= 200_001 * 20 && m.nodes < 5 * 65_536 * 20,
+            m.nodes >= 200_001 * 21 && m.nodes < 5 * 65_536 * 21,
             "{m:?}"
         );
     }

@@ -3,6 +3,7 @@
  * lives here; the UI only gets layout buffers and small JSON records, exactly as
  * with the real core (see docs/ipc.md).
  */
+import { AGE_BINS, ageBin, ageByte } from '../../age';
 import { browserChoice, t } from '../../i18n.svelte';
 import { encodeLayout, FREE, groupFolder, isGroupId, UNSCANNED } from '../codec';
 import type {
@@ -60,7 +61,7 @@ export class MockBackend implements Backend {
 
   constructor(platform: Partial<PlatformInfo> = {}, opts: { scanMs?: number } = {}) {
     this.scanMs = opts.scanMs ?? 4600;
-    this.platform = { elevated: false, backdrop: 'none', titleBar: 'native', accent: null, version: '1.2.1', core: false, native: false, ...browserChoice(), ...platform };
+    this.platform = { elevated: false, backdrop: 'none', titleBar: 'native', accent: null, version: '1.3.0', core: false, native: false, ...browserChoice(), ...platform };
   }
 
   /* ------------------------------ helpers ------------------------------ */
@@ -327,6 +328,19 @@ export class MockBackend implements Backend {
     return [...acc].filter(([, b]) => b > 0).map(([cat, bytes]) => ({ cat, bytes })).sort((a, b) => b.bytes - a.bytes);
   }
 
+  async ageStats(view: number, mode: SizeMode): Promise<number[]> {
+    const d = this.d;
+    const hist = new Array<number>(AGE_BINS).fill(0);
+    const walk = (n: MNode) => {
+      if (!n.seen) return;
+      if (n.kids) for (const k of n.kids) walk(d.nodes[k]);
+      else hist[ageBin(ageByte(n.age))] += mode === 'disk' ? n.disk : n.logical;
+    };
+    const v = this.node(view);
+    if (v) walk(v);
+    return hist;
+  }
+
   async recycle(ids: number[]): Promise<DeleteResult> {
     const d = this.d;
     const failed: DeleteResult['failed'] = [];
@@ -473,6 +487,19 @@ export class MockBackend implements Backend {
   async captionButton() {}
   async captionState() {
     return { maximized: false, hover: false, pressed: false };
+  }
+
+  /** the preview remembers nothing between page loads */
+  private settings: Record<string, number | string> = {};
+  async loadSettings() {
+    return { ...this.settings };
+  }
+  async saveSetting(name: string, value: number | string | null) {
+    if (value == null) delete this.settings[name];
+    else this.settings[name] = value;
+  }
+  async clearSettings() {
+    this.settings = {};
   }
 
   async on<K extends keyof BackendEvents>(event: K, cb: (payload: BackendEvents[K]) => void): Promise<Unlisten> {

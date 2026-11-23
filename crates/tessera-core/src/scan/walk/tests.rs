@@ -288,6 +288,7 @@ fn entries_are_classified() {
                 allocated,
                 file_id,
                 reparse_tag,
+                last_write: 0,
             });
         }
         sink.flush();

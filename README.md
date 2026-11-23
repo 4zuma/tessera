@@ -35,8 +35,11 @@ Scan a drive, see every folder as a treemap, and delete what you don't need.</p>
   press Backspace to go back.
 * **Live.** Files that change after the scan show up in the map within about half
   a second.
-* **Searchable.** Press Ctrl+F and type part of a name, a file type like `.iso`, or a
-  size like `>1GB`. What matches stays bright and the rest of the map dims.
+* **Searchable.** Press Ctrl+F and type part of a name, a file type like `.iso`, a
+  size like `>1GB`, or an age like `>1y`. What matches stays bright and the rest of
+  the map dims.
+* **Colour by age.** Switch the legend from type to age to see what changed lately
+  (red) and what nobody has touched in years (blue).
 * **Careful with deletion.** Move files to the Recycle Bin and undo with Ctrl+Z,
   or delete permanently after a confirmation. When something is locked or
   protected, Tessera tells you why.
@@ -58,6 +61,10 @@ is nothing to install.
   **More info**, then **Run anyway**.
 * Run it as administrator (or click **Restart as administrator** in Tessera) for
   the fast MFT scan. Without admin rights Tessera walks the folders instead.
+* Tessera writes no files of its own. It remembers its window size and the view
+  options you changed in the registry, under `HKEY_CURRENT_USER\Software\Tessera`,
+  and only once something differs from the default. **⋯ › Clear saved settings**
+  removes the key.
 
 ## Compared with SpaceSniffer
 
@@ -84,7 +91,7 @@ the whole app, WebView2 included, in the default window size.
 | <kbd>Delete</kbd> | Move to the Recycle Bin (<kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes) |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | Delete permanently, after a confirmation |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Copy the selected paths |
-| <kbd>Ctrl</kbd>+<kbd>F</kbd> | Search: name words, `.iso`, `>1GB`, `<500MB` (<kbd>Esc</kbd> clears) |
+| <kbd>Ctrl</kbd>+<kbd>F</kbd> | Search: name words, `.iso`, `>1GB`, `<500MB`, `>1y`, `<2w` (<kbd>Esc</kbd> clears) |
 | <kbd>F5</kbd> | Scan again |
 | Right-click | Tessera's menu, with Explorer's menu under **Show more options** |
 

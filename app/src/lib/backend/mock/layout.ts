@@ -7,13 +7,14 @@ import { CAT_COUNT } from '../categories';
 import type { LayoutStyle, SizeMode } from '../types';
 import type { Drive, MNode } from './drive';
 import { shareOf } from './search';
+import { AGE_UNKNOWN, ageByte } from '../../age';
 
 interface Item {
   s: number;
   rk: number;
   n?: MNode;
   special?: 'free' | 'unscanned';
-  group?: { count: number; cat: number; hit: number };
+  group?: { count: number; cat: number; hit: number; age: number };
 }
 
 export interface LayoutInput {
@@ -68,7 +69,12 @@ export function flagsOf(drive: Drive, n: MNode): number {
   return f;
 }
 
-export function squarify<T extends { s: number }>(items: T[], x: number, y: number, w: number, h: number, out: [T, number, number, number, number][]) {
+/**
+ * With `min` > 0 (rule 2's minSide + gap), an item that would come out shorter than `min`
+ * along a row that is already `min` thick starts the next row instead, so small items do
+ * not line up as slivers beside a big one.
+ */
+export function squarify<T extends { s: number }>(items: T[], x: number, y: number, w: number, h: number, out: [T, number, number, number, number][], min = 0) {
   let total = 0;
   for (const it of items) total += it.s;
   if (total <= 0 || w <= 0 || h <= 0) return;
@@ -89,6 +95,7 @@ export function squarify<T extends { s: number }>(items: T[], x: number, y: numb
       const nmax = Math.max(amax, a);
       const wr = Math.max((s2 * nmax) / (ns * ns), (ns * ns) / (s2 * nmin));
       if (wr > best) break;
+      if (min > 0 && sum >= min * short && nmin * short < min * ns) break;
       sum = ns;
       amin = nmin;
       amax = nmax;
@@ -132,8 +139,34 @@ function rank(c: Item): number {
 
 export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: number } {
   const { drive, style: o, sizeMode } = inp;
+  const cats = new Map<number, number>();
+  const folderCat = (n: MNode): number => {
+    let c = cats.get(n.id);
+    if (c === undefined) cats.set(n.id, (c = mainCat(drive, n, sizeMode)));
+    return c;
+  };
   const hits = inp.hits ?? null;
   const hitOf = (n: MNode) => (hits ? hits[n.id] ?? 0 : 0);
+  // age bytes: a file's own, a folder's the size-weighted mean over what it holds
+  const ages = new Map<number, number>();
+  const ageOf = (n: MNode): number => {
+    if (!n.kids) return ageByte(n.age);
+    let a = ages.get(n.id);
+    if (a !== undefined) return a;
+    let sum = 0;
+    let w = 0;
+    for (const k of visibleKids(drive, n, sizeMode)) {
+      const b = ageOf(k);
+      const s = sizeOf(k, sizeMode);
+      if (b !== AGE_UNKNOWN && s > 0) {
+        sum += b * s;
+        w += s;
+      }
+    }
+    a = w > 0 ? Math.round(sum / w) : AGE_UNKNOWN;
+    ages.set(n.id, a);
+    return a;
+  };
   const hitPart = (n: MNode, s: number) => {
     const h = hitOf(n);
     return h === 255 ? s : (s * h) / 254;
@@ -161,29 +194,124 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     let total = 0;
     for (const c of items) total += c.s;
     const k = (w * h) / total;
-    const list: Item[] = [];
+    // unscanned first, then the folder's items by rank, the group of small ones, free space last
+    const head: Item[] = [];
+    const nodes: Item[] = [];
+    const tail: Item[] = [];
+    // A tile narrower or shorter than minSide is hard to see as a tile at all, and a folder
+    // narrower than minWidth has no room for its name (rule 2). Items too small to ever be
+    // that big go to the group at once; after a layout, the first tile that came out below
+    // minSide, every smaller one and every folder before it that is only narrower than
+    // minWidth join the group and the folder is laid out again. A group (or a lone left-over
+    // item), or a free / unscanned tile, that is itself too thin is not drawn: the others
+    // take its room. A tile still too thin after the last pass is left out and its room stays
+    // empty.
+    // barely enough area seldom comes out square enough, so ask for 30 % more up front
+    const ROOM = 1.3;
+    const side = o.minSide > 0 ? o.minSide + o.gap : 0;
+    const wide = o.minWidth > 0 ? o.minWidth + o.gap : 0;
+    const sized = side > 0 || wide > 0;
+    const isDir = (c: Item) => !!c.n?.kids;
+    // 0 fits, 1 a folder only too narrow, 2 below minSide
+    const fit = (cw: number, ch: number, dir: boolean) => (Math.min(cw, ch) < side ? 2 : dir && cw < wide ? 1 : 0);
     let rest = 0;
     let restN = 0;
     let restHit = 0;
+    let restAge = 0;
+    let restAgeW = 0;
     const votes = new Map<number, number>();
+    // a folder in the group votes with all its bytes for what fills it most (rule 6)
+    const vote = (m: Map<number, number>, c: Item) => {
+      const ct = c.n!.kids ? folderCat(c.n!) : c.n!.cat;
+      m.set(ct, (m.get(ct) || 0) + c.s);
+    };
     for (const c of items) {
-      if (c.special || (c.s * k >= o.minArea && list.length < o.maxPerDir)) list.push(c);
+      if (c.special === 'unscanned') head.push(c);
+      else if (c.special) tail.push(c);
+      else if (c.s * k >= Math.max(o.minArea, ROOM * side * (isDir(c) ? Math.max(side, wide) : side)) && nodes.length < o.maxPerDir) nodes.push(c);
       else {
         rest += c.s;
         restN++;
         restHit += hitPart(c.n!, c.s);
-        const ct = c.n!.kids ? CAT_NONE : c.n!.cat;
-        votes.set(ct, (votes.get(ct) || 0) + c.s);
+        const a = ageOf(c.n!);
+        if (a !== AGE_UNKNOWN) {
+          restAge += a * c.s;
+          restAgeW += c.s;
+        }
+        vote(votes, c);
       }
     }
-    if (rest > 0) {
-      let best = CAT_NONE;
-      let bb = -1;
-      for (const [ct, v] of votes) if (ct !== CAT_NONE && v > bb) { bb = v; best = ct; }
-      list.push({ s: rest, rk: 0, group: { count: restN, cat: best, hit: shareOf(restHit, rest) } });
+    let cut = nodes.length;
+    let noGroup = false;
+    const gone = new Set<Item>();
+    let rs: [Item, number, number, number, number][] = [];
+    for (let pass = 0; pass < 12; pass++) {
+      let gs = rest;
+      let gn = restN;
+      let gh = restHit;
+      let ga = restAge;
+      let gw = restAgeW;
+      const gv = new Map(votes);
+      for (let i = cut; i < nodes.length; i++) {
+        gs += nodes[i].s;
+        gn++;
+        gh += hitPart(nodes[i].n!, nodes[i].s);
+        const a = ageOf(nodes[i].n!);
+        if (a !== AGE_UNKNOWN) {
+          ga += a * nodes[i].s;
+          gw += nodes[i].s;
+        }
+        vote(gv, nodes[i]);
+      }
+      const mid = nodes.slice(0, cut);
+      let grp: Item | null = null;
+      // a group of one would hide a name for nothing
+      if (gn === 1) grp = cut < nodes.length ? nodes[cut] : items.find(c => !c.special && !nodes.includes(c))!;
+      else if (gn > 1) {
+        let best = CAT_NONE;
+        let bb = -1;
+        for (const [ct, v] of gv) if (ct !== CAT_NONE && v > bb) { bb = v; best = ct; }
+        grp = { s: gs, rk: gs, group: { count: gn, cat: best, hit: shareOf(gh, gs), age: gw > 0 ? Math.round(ga / gw) : AGE_UNKNOWN } };
+      }
+      if (grp && !noGroup) {
+        // with minSide the group takes its place by size, not the strip left at the end
+        let at = sized ? mid.findIndex(c => c.rk < grp.rk) : -1;
+        if (at < 0) at = mid.length;
+        mid.splice(at, 0, grp);
+      }
+      const list = [...head, ...mid, ...tail].filter(c => !gone.has(c));
+      rs = [];
+      squarify(list, x, y, w, h, rs, side);
+      if (!sized) break;
+      let first = -1;
+      const narrow = new Set<Item>();
+      let grpThin = false;
+      let dropped = false;
+      for (const [c, , , cw, ch] of rs) {
+        const f = fit(cw, ch, isDir(c));
+        if (!f) continue;
+        if (c === grp) grpThin = true;
+        else if (c.special) {
+          gone.add(c);
+          dropped = true;
+        } else {
+          const i = nodes.indexOf(c);
+          if (i < 0 || i >= cut) continue;
+          if (f === 1) narrow.add(c);
+          else if (first < 0 || i < first) first = i;
+        }
+      }
+      if (first >= 0 || narrow.size) {
+        // the narrow folders move behind the ones kept, in the same order
+        const end = first >= 0 ? first : cut;
+        const head = nodes.slice(0, end);
+        const kept = head.filter(c => !narrow.has(c));
+        nodes.splice(0, end, ...kept, ...head.filter(c => narrow.has(c)));
+        cut = kept.length;
+        noGroup = false;
+      } else if (grpThin && !noGroup) noGroup = true;
+      else if (!dropped) break;
     }
-    const rs: [Item, number, number, number, number][] = [];
-    squarify(list, x, y, w, h, rs);
     const g = o.gap / 2;
     const named = (rw: number, rh: number) => rw >= o.labelMinW && rh >= o.labelMinH;
     for (const [c, rx0, ry0, rw0, rh0] of rs) {
@@ -191,8 +319,8 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       const ry = ry0 + g;
       const rw = rw0 - 2 * g;
       const rh = rh0 - 2 * g;
-      if (rw < 1 || rh < 1) continue;
-      const base = { x: rx, y: ry, w: rw, h: rh, depth, parent: pid, count: 0, header: 0, hit: c.n ? hitOf(c.n) : (c.group?.hit ?? 0) };
+      if (rw < 1 || rh < 1 || (sized && fit(rw0, rh0, isDir(c)))) continue;
+      const base = { x: rx, y: ry, w: rw, h: rh, depth, parent: pid, count: 0, header: 0, hit: c.n ? hitOf(c.n) : (c.group?.hit ?? 0), age: c.n ? ageOf(c.n) : (c.group?.age ?? AGE_UNKNOWN) };
       if (c.group) {
         const id = groupId(parent.id);
         out.push({ ...base, id, target: parent.id, count: c.group.count, size: c.s, name: '', kind: Kind.Group, cat: c.group.cat, flags: 0 });
@@ -231,7 +359,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
           place(deep, kidsOf.map(m => ({ n: m, s: sizeOf(m, sizeMode), rk: 0 })), ix, iy, iw, ih, depth + 1, n.id);
         }
       }
-      if (r.kind === Kind.DirLeaf) r.cat = mainCat(drive, n, sizeMode);
+      if (r.kind === Kind.DirLeaf) r.cat = folderCat(n);
       if (r.header || named(rw, rh)) r.name = name;
     }
   }

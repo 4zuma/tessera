@@ -6,7 +6,7 @@
 export const MAGIC = 0x4c525354; // "TSRL"
 export const VERSION = 1;
 export const HEADER_SIZE = 36;
-export const RECORD_SIZE = 52;
+export const RECORD_SIZE = 56;
 
 export const NONE = 0xffffffff;
 export const FREE = 0xfffffffe;
@@ -56,6 +56,8 @@ export interface Rect {
   header: number;
   /** with a search: how much of it matches, 0 (none) to 255 (all); 0 without one */
   hit: number;
+  /** how long ago it was modified, as an age byte (see ../age.ts); folders and groups: by size */
+  age: number;
 }
 
 export interface Layout {
@@ -127,6 +129,7 @@ export function decodeLayout(buf: ArrayBuffer): Layout {
       flags: dv.getUint8(o + 49),
       header: dv.getUint8(o + 50),
       hit: dv.getUint8(o + 51),
+      age: dv.getUint8(o + 52),
     };
   }
   return { view, rev, bytesPerPx, search, rects };
@@ -180,6 +183,7 @@ export function encodeLayout(l: Layout): ArrayBuffer {
     dv.setUint8(o + 49, r.flags);
     dv.setUint8(o + 50, Math.min(255, Math.round(r.header)));
     dv.setUint8(o + 51, Math.max(0, Math.min(255, Math.round(r.hit))));
+    dv.setUint8(o + 52, Math.max(0, Math.min(255, Math.round(r.age ?? 0))));
     o += RECORD_SIZE;
   });
   const pool = new Uint8Array(buf, o, namesLen);

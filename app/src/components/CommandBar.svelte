@@ -19,6 +19,11 @@
     drivesOpen = false;
     void app.startScan(root);
   }
+  function openAppMenu(e: MouseEvent) {
+    const b = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    // under the button, right edges lined up (the menu flips left when it meets the window edge)
+    app.openAppMenu(b.right, b.bottom + 4);
+  }
   function onDocDown(e: PointerEvent) {
     if (drivesOpen && !(e.target as HTMLElement).closest('.drives-fly, .drive-btn')) drivesOpen = false;
   }
@@ -94,6 +99,9 @@
       <Icon name="pane" />
     </button>
   {/if}
+  <button class="sbtn app-menu" aria-haspopup="menu" onclick={openAppMenu} title={t('cmd.moreTip')} aria-label={t('cmd.more')}>
+    <Icon name="more" />
+  </button>
 </div>
 
 <style>
@@ -202,67 +210,9 @@
     min-width: 140px;
     margin-right: 4px;
   }
-  /*
-   * Segmented control, as Windows 11 draws it (Community Toolkit "Segmented"): a sunken
-   * track, the chosen segment raised like a button with a short accent pill under its label.
-   * The raised segment covers the track's border, so no edge is drawn twice, and both labels
-   * keep the primary text colour: the surface says which one is on, not the ink.
-   */
+  /* the segmented control (app.css): with the bar's 4 px gap, 8 px to the neighbours on both sides */
   .seg {
-    display: inline-flex;
-    flex: none;
-    height: 32px;
-    /* with the bar's 4 px gap: 8 px to the neighbours on both sides */
     margin: 0 4px;
-    border: 1px solid var(--ctl-stroke);
-    border-radius: var(--r-ctl);
-    background: var(--ctl-alt);
-  }
-  .seg button {
-    position: relative;
-    margin: -1px;
-    padding: 0 12px;
-    border: 1px solid transparent;
-    border-radius: var(--r-ctl);
-    background: transparent;
-    color: var(--text);
-    white-space: nowrap;
-    transition: background var(--t-fast) linear, border-color var(--t-fast) linear;
-  }
-  .seg button:hover:not(.on) {
-    background: var(--subtle-hover);
-  }
-  .seg button:active:not(.on) {
-    background: var(--subtle-press);
-    color: var(--text-2);
-  }
-  .seg button.on {
-    z-index: 1;
-    background: var(--ctl);
-    border-color: var(--ctl-stroke);
-    border-bottom-color: var(--ctl-stroke-2);
-  }
-  /* the pill grows from 4 to 16 px when a segment is chosen, and shrinks while it is pressed */
-  .seg button::after {
-    content: '';
-    position: absolute;
-    left: 50%;
-    bottom: 1px;
-    width: 16px;
-    height: 3px;
-    margin-left: -8px;
-    border-radius: 1.5px;
-    background: var(--accent);
-    opacity: 0;
-    transform: scaleX(0.25);
-    transition: transform var(--t-fast) var(--ease-decel), opacity var(--t-fast) linear;
-  }
-  .seg button.on::after {
-    opacity: 1;
-    transform: none;
-  }
-  .seg button.on:active::after {
-    transform: scaleX(0.5);
   }
   .sbtn[aria-pressed='true'] {
     color: var(--accent);

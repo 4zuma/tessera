@@ -89,6 +89,8 @@ pub(crate) struct Stat {
     pub size: u64,
     /// Logical length.
     pub logical: u64,
+    /// Last write time, a FILETIME (0 if not known).
+    pub modified: u64,
 }
 
 impl Stat {
@@ -504,6 +506,9 @@ impl Applier<'_> {
             self.tree.set_file_size(id, stat.size, stat.logical);
             changed = true;
         }
+        if !n.is_dir() && self.tree.set_modified(id, stat.modified) {
+            changed = true;
+        }
         if changed {
             self.t.modified += 1;
             self.t.dirs.insert(n.parent);
@@ -531,6 +536,7 @@ impl Applier<'_> {
             logical,
             flags,
         );
+        self.tree.set_modified(id, stat.modified);
         self.t.created += 1;
         self.t.dirs.insert(parent);
         if scan && stat.is_dir() && !flags.contains(NodeFlags::REPARSE) {
@@ -1302,6 +1308,7 @@ pub(crate) mod tests {
             reparse_tag: 0,
             size: size.div_ceil(4096) * 4096,
             logical: size,
+            modified: 0,
         }
     }
 
@@ -1413,7 +1420,7 @@ pub(crate) mod tests {
                 } else {
                     (stat.size, stat.logical)
                 };
-                b.push_wtf8(name, s, l, flags);
+                b.push_wtf8_at(name, s, l, flags, stat.modified);
                 if stat.is_dir() && !stat.flags().contains(NodeFlags::REPARSE) {
                     subdirs.push(path.clone());
                 }
@@ -1631,6 +1638,39 @@ pub(crate) mod tests {
         // Nothing changed: nothing applied.
         let r = run(&shared, &mut fs, vec![changed("docs\\a.txt")]);
         assert_eq!(r.applied, 0);
+    }
+
+    #[test]
+    fn files_keep_when_they_were_written() {
+        let mut fs = sample();
+        let shared = tree_of(&fs);
+        let now = crate::age::now_filetime();
+        let day = 864_000_000_000u64;
+        let at = |days: u64, size: u64| Stat {
+            modified: now - days * day,
+            ..file(size)
+        };
+        fs.put("docs\\old.log", at(400, 10));
+        fs.put("docs\\a.txt", at(40, 100));
+        let r = run(
+            &shared,
+            &mut fs,
+            vec![changed("docs\\old.log"), changed("docs\\a.txt")],
+        );
+        assert_eq!((r.created, r.modified), (1, 1));
+        let age = |rel: &str| {
+            let t = shared.read().unwrap();
+            t.age(t.lookup_relative(rel.as_bytes()).unwrap())
+        };
+        assert_eq!(age("docs\\old.log"), crate::age::byte_of_days(400.0));
+        // only the time changed: still applied, so the colour follows
+        assert_eq!(age("docs\\a.txt"), crate::age::byte_of_days(40.0));
+        fs.put("docs\\a.txt", at(2, 100));
+        let r = run(&shared, &mut fs, vec![changed("docs\\a.txt")]);
+        assert_eq!(r.modified, 1);
+        assert_eq!(age("docs\\a.txt"), crate::age::byte_of_days(2.0));
+        // folders have no age of their own
+        assert_eq!(age("docs"), crate::age::UNKNOWN);
     }
 
     #[test]

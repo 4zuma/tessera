@@ -40,6 +40,10 @@ export interface LayoutStyle {
   header: number;
   minHeaderW: number;
   minArea: number;
+  /** no tile narrower or shorter than this (CSS px, gap not counted); 0 = off */
+  minSide: number;
+  /** no folder tile narrower than this (CSS px, gap not counted), so its name fits; 0 = off */
+  minWidth: number;
   recurse: number;
   openShare: number;
   maxDepth: number;
@@ -166,6 +170,11 @@ export interface Backend {
   details(id: number, view: number, sizeMode: SizeMode): Promise<Details | null>;
   nav(id: number): Promise<NavInfo>;
   catStats(view: number, sizeMode: SizeMode): Promise<CatStat[]>;
+  /**
+   * the legend by age: bytes of the files in `view` per age bin (AGE_BINS entries, 0 = date
+   * not known; see ageBin in lib/age.ts)
+   */
+  ageStats(view: number, sizeMode: SizeMode): Promise<number[]>;
   recycle(ids: number[]): Promise<DeleteResult>;
   restore(token: number): Promise<DeleteResult>;
   purge(ids: number[]): Promise<DeleteResult>;
@@ -187,6 +196,12 @@ export interface Backend {
   /** where the maximize button is (CSS px, from the window's right edge) */
   captionButton(rect: { right: number; top: number; width: number; height: number }): Promise<void>;
   captionState(): Promise<CaptionState>;
+  /** the view options saved in the registry (see lib/settings.ts) */
+  loadSettings(): Promise<Record<string, number | string>>;
+  /** saves one value; `null` deletes it */
+  saveSetting(name: string, value: number | string | null): Promise<void>;
+  /** deletes everything Tessera saved, the window's place and size too */
+  clearSettings(): Promise<void>;
   on<K extends keyof BackendEvents>(event: K, cb: (payload: BackendEvents[K]) => void): Promise<Unlisten>;
   /** preview-only helpers (live-update demo); absent on the real backend */
   demo?: { startDownload(): boolean };

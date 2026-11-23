@@ -23,6 +23,7 @@ All sizes are bytes. All ids are `u32` node indices into the core's arena unless
 | `details` | `{ id: u32, view: u32, sizeMode }` | `Details \| null` (null when the id no longer exists) |
 | `nav` | `{ id: u32 }` | `{ crumbs: {id, name}[], up: u32 \| null }` |
 | `cat_stats` | `{ view: u32, sizeMode }` | `{ cat: u8, bytes: u64 }[]`, largest first |
+| `age_stats` | `{ view: u32, sizeMode }` | `u64[]`: the bytes of the files below `view` in each of the 14 [age bins](#ages-age), bin 0 = time not known; `[]` when `view` is not a folder |
 | `recycle` | `{ ids: u32[] }` | `DeleteResult` (with `undo` token) |
 | `restore` | `{ token: u32 }` | `DeleteResult` – undo of a `recycle` |
 | `purge` | `{ ids: u32[] }` | `DeleteResult` |
@@ -35,6 +36,9 @@ All sizes are bytes. All ids are `u32` node indices into the core's arena unless
 | `caption` | `{ action: "min" \| "max" \| "close" }` | `()` – the custom title bar's buttons (`"max"` maximizes or restores) |
 | `caption_button` | `{ right, top, width, height: f64 }` | `()` – where the custom title bar's maximize button is, in CSS px (`right` = distance from the window's right edge), so Windows 11 can open its snap layouts there |
 | `caption_state` | – | `CaptionState` |
+| `settings_load` | – | `{ [name]: number \| string }` – the view options saved in `HKEY_CURRENT_USER\Software\Tessera` (REG_DWORD as numbers, REG_SZ as text), without the window's own `Window` value |
+| `settings_save` | `{ name: string, value: number \| string \| bool \| null }` | `()` – `name` is 1–32 ASCII letters and digits; `null` deletes the value (the setting is back at its default), and the key goes once it is empty |
+| `settings_clear` | – | `()` – deletes the key; the window's current place is not saved on closing unless it moves first |
 
 ```ts
 type SizeMode = "disk" | "logical";        // allocated size (default) | file length
@@ -52,6 +56,8 @@ interface LayoutRequest {
     header: f32;        // folder header band height (21)
     minHeaderW: f32;    // a folder narrower than this gets no header (60)
     minArea: f32;       // px²; smaller siblings are merged into one group (110)
+    minSide: f32;       // no tile narrower or shorter than this, gap not counted (24); 0 = off
+    minWidth: f32;      // no folder tile narrower than this, gap not counted (44); 0 = off
     recurse: f32;       // a folder opens only if area > minArea * recurse (60, so 6,600 px²)
     openShare: f32;     // ... and only if area > openShare * the map's area (0.0025); 0 = off
     maxDepth: u8;       // (14)
@@ -116,7 +122,9 @@ one `layout` call in flight; there is no polling and no timer when nothing chang
 the last layout it sent and how many bytes changed since (`Tree::changed_bytes`). Below one
 px² of the shown view it stays silent; past that it lays the view out again and sends the
 event only when some edge moved by more than 0.5 px or a tile, colour or size label changed
-(`layout::same_picture`). Changes Windows keeps making on a system drive (logs, caches) thus
+(`layout::same_picture`). A batch that renamed something in sight, or re-dated a file (about
+once per file a session, since ages count from when the tree was made), skips the bytes
+bound and goes straight to the comparison. Changes Windows keeps making on a system drive (logs, caches) thus
 cost no IPC, no layout in the WebView and no frame. While a search is shown, a change is
 sent anyway when it touches what the search found or would find now (`Hits::touched_by`: a
 folder that matched, a child that was found, or a child that matches now), so the count and
@@ -124,7 +132,7 @@ the bytes follow small changes too. `bytesDelta` covers everything since the las
 
 ## Layout buffer
 
-Little-endian. A 36-byte header, `count` records of 52 bytes, then the UTF-8 name pool.
+Little-endian. A 36-byte header, `count` records of 56 bytes, then the UTF-8 name pool.
 Readers take the header and record sizes from the header, so fields can be added at the end.
 
 ```
@@ -133,14 +141,14 @@ header (36 bytes)
   4  u16  version     1
   6  u16  headerSize  36
   8  u32  count       number of records
- 12  u32  recordSize  52
+ 12  u32  recordSize  56
  16  u32  namesLen    bytes in the name pool
  20  u32  view        echo of the request
  24  u32  rev         tree revision this layout was computed from
  28  f32  bytesPerPx  bytes represented by one px² at this view
  32  u32  search      id of the search whose hits are in `hit`, 0 = no search
 
-record (52 bytes)
+record (56 bytes)
   0  u32  id          node id, or a special id (below)
   4  u32  parent      id of the enclosing rect, NONE at the top level
   8  u32  target      what a double-click zooms into: the deepest folder of a folded
@@ -166,6 +174,10 @@ record (52 bytes)
  51  u8   hit         what the search found in it, 0 when there is no search: 255 = all
                       of it (a match, or inside a matching folder), 0 = nothing, else
                       1..254 = that share of its bytes (folders and groups)
+ 52  u8   age         how long ago it was written, see Ages; 0 = not known. FILE: its
+                      own; DIR_LEAF, open DIR and GROUP: the mean of the files in it,
+                      weighted by their bytes; 0 for pseudo tiles
+ 53  u8[3] reserved   0
 ```
 
 Records are in paint order: a folder always comes before its children.
@@ -181,6 +193,23 @@ can tween it. Real node ids must therefore stay below `0x80000000`.
 `crates/tessera-core/src/category.rs`; `app/src/lib/backend/categories.ts` is a copy of it
 for the mock. A `.ts` file under 1 MiB is `dev` (TypeScript), otherwise `video`.
 
+### Ages (`age`)
+
+One byte per node says how long ago a file was last written (`$STANDARD_INFORMATION`'s
+modified time in the MFT, `LastWriteTime` in the walk and the watcher), counted from when
+the tree was created: 0 = not known, 1 = under a day (or in the future), then a log scale,
+`1 + floor(ln(days) / (ln(30 × 365.25) / 254))`, up to 255 for 30 years or more, about
+3.7 % per step. A byte stands for the start of its step: `days = exp((b − 1) × step)`.
+`crates/tessera-core/src/age.rs` has the scale and `app/src/lib/age.ts` a copy. Folders
+store 0; a folder's or a group's byte is the size-weighted mean of the bytes of the files
+in it, files without a time left out.
+
+The legend by age counts bytes in 14 fixed bins: bin 0 = not known, then one per span
+between two of the band edges a user can pick (1, 3, 7, 14, 30, 91, 182, 365, 730, 1095,
+1826 and 3652 days): bin `1 + (the number of edges at or below the byte's days)`. Any
+choice of bands is then a sum of bins, so `age_stats` does not depend on the bands. The
+core keeps these bins with the other totals of big folders (`totals.rs`).
+
 ### Layout rules the core implements
 
 These are what make the map calm while it changes, and they were tuned in the prototypes.
@@ -189,7 +218,25 @@ These are what make the map calm while it changes, and they were tuned in the pr
    each node remembers the size it was ranked at, and only re-ranks when its size moved by
    more than 25 %. A growing scan therefore does not reshuffle the map on every update.
 2. Siblings whose area would be below `minArea`, or beyond the first `maxPerDir`, are merged
-   into one GROUP tile; its `cat` is the category with the most bytes among them.
+   into one GROUP tile; its `cat` is the category with the most bytes among them, a folder
+   among them counting all its bytes for its own main category (rule 6). A single
+   small sibling is shown as itself, not as a group of one.
+   With `minSide`, every tile is at least that wide and tall, since a thin sliver hardly
+   reads as a tile (24 px is a little more than Windows' 13 × 20 px arrow pointer); with
+   `minWidth`, every folder tile is at least that wide, since a folder is known by its name,
+   which is written across (44 px is `labelMinW`, so every folder gets its name). A file is
+   known by its colour, so its tile can be as small as `minSide` either way. Siblings whose
+   area would be below `1.3 × (minSide + gap)²`, or for a folder `1.3 × (minSide + gap) ×
+   (max(minSide, minWidth) + gap)`, go to the group at once (barely enough area seldom comes
+   out square enough), and the group takes its place among the others by its size instead
+   of coming last. While squarifying, an item that would come out shorter than `minSide +
+   gap` along a row already that thick starts the next row instead, so small items do not
+   line up as slivers beside a big one. After squarifying, the first sibling (in rank
+   order) that came out below `minSide` and every one after it join the group, and so does
+   every folder before it that is only narrower than `minWidth`; the folder is laid out
+   again. A group (or a single left-over sibling), UNSCANNED or FREE tile that is still too
+   small is left out and the others take its room. This repeats at most 12 times; a tile
+   still too small then is not drawn and its room stays empty.
 3. Squarified treemap (Bruls et al. 2000) into the parent's inner box. Every rect is inset
    by `gap / 2`; rects smaller than 1 px in either direction are dropped.
 4. **Folded chains**: a folder whose only visible child is a folder is merged with it into
@@ -207,8 +254,10 @@ These are what make the map calm while it changes, and they were tuned in the pr
    is inset by `pad` (by `header` at the top). If the inner box is smaller than 3 × 3 px
    it stays DIR_LEAF.
 6. A DIR_LEAF's `cat` is the category with the most bytes among all files below it (lower
-   category on a tie), so the UI can tint closed folders by what fills them. The core
-   caches it per folder and walks the folder again only when its size moved by over 1/8.
+   category on a tie), so the UI can tint closed folders by what fills them; its `age` comes
+   from the same walk. The core caches both per folder and walks the folder again only when
+   its size moved by over 1/8, or a file below it was re-dated (an old file written to,
+   `Tree::redated_since`), which can move its age without moving its size.
 7. At the volume root, two pseudo children are added: UNSCANNED (`used - scanned`, while
    scanning and above 64 MiB) ranked first, and FREE (the volume's free bytes) ranked last.
 8. With a search set, every record's `hit` says how much of it the search found. A GROUP
@@ -225,10 +274,12 @@ in `app/src/lib/backend/mock/search.ts`). Words are separated by spaces and all 
 | `report` | a file or folder whose name contains it, ignoring case as Windows does |
 | `"tax 2024"` | the same, with spaces in it |
 | `.iso`, `*.iso` | files ending in `.iso`; with several extension words, any of them |
-| `>1GB`, `>=1.5g`, `<500MB`, `<=4k` | a size bound in the searched size mode; binary units (`k` = 1024), `b k kb kib m mb mib g gb gib t tb tib`, any case, decimals allowed. A word that starts with `<` or `>` and is not a size rejects the query |
+| `>1GB`, `>=1.5g`, `<500MB`, `<=4k` | a size bound in the searched size mode; binary units (`k` = 1024), `b k kb kib m mb mib g gb gib t tb tib`, any case, decimals allowed |
+| `>1y`, `<2w`, `>=6mo`, `<3d` | files written longer ago than / within that time (see [Ages](#ages-age)), compared on the start of the file's age step; units `d day days 天`, `w wk week weeks 周` (7 days), `mo month months 月 个月` (30 days), `y yr year years 年` (365 days), any case, decimals allowed. Files whose time is not known never match. A word that reads as a size is a size: `>1m` is a MiB, `>1mo` a month |
 
-A folder matches only through name words, and not when the query has an extension word
-(`.iso` finds files only). Everything inside a matching folder counts as found and is lit,
+A word that starts with `<` or `>` and is neither a size nor an age rejects the query.
+A folder matches only through name words, and not when the query has an extension or an
+age word (`.iso` and `>1y` find files only). Everything inside a matching folder counts as found and is lit,
 but only the folder is counted. Deleted nodes and nodes that are not attached yet are
 skipped. A search over 3.3 M nodes takes about 70 ms on 4 cores: one parallel pass marks
 the matches (a node's name is folded once per distinct name), a second pass walks the tree
