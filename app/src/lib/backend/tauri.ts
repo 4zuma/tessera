@@ -46,6 +46,9 @@ export class TauriBackend implements Backend {
   catStats(view: number, sizeMode: SizeMode) {
     return invoke<CatStat[]>('cat_stats', { view, sizeMode });
   }
+  ageStats(view: number, sizeMode: SizeMode) {
+    return invoke<number[]>('age_stats', { view, sizeMode });
+  }
   recycle(ids: number[]) {
     return invoke<DeleteResult>('recycle', { ids });
   }

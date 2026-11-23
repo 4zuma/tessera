@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acrylicBlend } from './theme';
+import { acrylicBlend, ageBases, AGE_RAMP, mixLch } from './theme';
 
 type Rgb = [number, number, number];
 const lum = (c: Rgb) => 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2];
@@ -63,5 +63,32 @@ describe('acrylicBlend', () => {
       expect(r).toBeCloseTo(g, 6);
       expect(g).toBeCloseTo(b, 6);
     }
+  });
+});
+
+describe('age colours', () => {
+  it('run from the first colour of the ramp to the last, evenly', () => {
+    expect(ageBases(2)).toEqual([...AGE_RAMP]);
+    expect(ageBases(3)[1]).toBe(mixLch(AGE_RAMP[0], AGE_RAMP[1], 0.5));
+    for (let n = 2; n <= 13; n++) {
+      const b = ageBases(n);
+      expect(b).toHaveLength(n);
+      expect(b[0]).toBe(AGE_RAMP[0]);
+      expect(b[n - 1]).toBe(AGE_RAMP[AGE_RAMP.length - 1]);
+      expect(new Set(b).size).toBe(n);
+      for (const c of b) expect(c).toMatch(/^#[0-9a-f]{6}$/i);
+    }
+  });
+
+  it('blend in OKLCH without drifting', () => {
+    expect(mixLch('#0063b1', '#0063b1', 0.5)).toBe('#0063b1');
+    expect(mixLch('#d13438', '#0063b1', 0)).toBe('#d13438');
+    expect(mixLch('#d13438', '#0063b1', 1)).toBe('#0063b1');
+  });
+
+  it('stay vivid between red and blue: the middle is purple, not grey', () => {
+    const [r, g, b] = [1, 3, 5].map(i => parseInt(mixLch('#d13438', '#0063b1', 0.5).slice(i, i + 2), 16));
+    // a vivid purple: red and blue well above green
+    expect(Math.min(r, b) - g).toBeGreaterThan(60);
   });
 });

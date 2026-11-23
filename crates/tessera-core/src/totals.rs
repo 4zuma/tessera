@@ -1,5 +1,6 @@
 //! Recursive totals below a folder (files, folders, bytes per file
-//! category), for the details card and the legend by type.
+//! category and per age bin), for the details card and the legends by type
+//! and by age.
 //!
 //! Counting a whole system drive walks millions of nodes (about 0.1 s), and
 //! the UI asks again after every live change it draws. [`TotalsCache`]
@@ -11,6 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::age;
 use crate::category;
 use crate::layout::SizeMode;
 use crate::{NodeId, Tree};
@@ -24,6 +26,10 @@ pub struct Totals {
     pub disk: [u64; category::COUNT],
     /// File lengths, per category.
     pub logical: [u64; category::COUNT],
+    /// Bytes on disk of the files, per [`age::bin`].
+    pub age_disk: [u64; age::BINS],
+    /// File lengths, per [`age::bin`].
+    pub age_logical: [u64; age::BINS],
 }
 
 impl Totals {
@@ -35,6 +41,14 @@ impl Totals {
         }
     }
 
+    /// Bytes per age bin in `mode`.
+    pub fn age_bytes(&self, mode: SizeMode) -> &[u64; age::BINS] {
+        match mode {
+            SizeMode::Disk => &self.age_disk,
+            SizeMode::Logical => &self.age_logical,
+        }
+    }
+
     fn add(&mut self, o: &Totals) {
         self.files += o.files;
         self.dirs += o.dirs;
@@ -42,11 +56,27 @@ impl Totals {
             self.disk[c] += o.disk[c];
             self.logical[c] += o.logical[c];
         }
+        for b in 0..age::BINS {
+            self.age_disk[b] += o.age_disk[b];
+            self.age_logical[b] += o.age_logical[b];
+        }
+    }
+
+    fn add_file(&mut self, tree: &Tree, id: NodeId, size: u64, logical: u64) {
+        self.files += 1;
+        let cat = category::of_node(tree, id) as usize;
+        if cat < category::COUNT {
+            self.disk[cat] += size;
+            self.logical[cat] += logical;
+        }
+        let b = age::bin(tree.age(id));
+        self.age_disk[b] += size;
+        self.age_logical[b] += logical;
     }
 }
 
 /// Folders with at least this many entries below them keep their totals
-/// (on a full system drive a few thousand folders, well under 1 MB).
+/// (on a full system drive a few thousand folders, about 1 MB).
 pub const MEMO_MIN: u64 = 4096;
 
 /// [`Totals`] of big folders, kept valid through the tree's change journal.
@@ -150,12 +180,7 @@ impl TotalsCache {
                     acc: Totals::default(),
                 });
             } else {
-                top.acc.files += 1;
-                let cat = category::of_node(tree, c) as usize;
-                if cat < category::COUNT {
-                    top.acc.disk[cat] += n.size();
-                    top.acc.logical[cat] += n.logical();
-                }
+                top.acc.add_file(tree, c, n.size(), n.logical());
             }
         }
     }
@@ -181,6 +206,9 @@ mod tests {
                     let cat = category::of_node(tree, c) as usize;
                     t.disk[cat] += n.size();
                     t.logical[cat] += n.logical();
+                    let b = age::bin(tree.age(c));
+                    t.age_disk[b] += n.size();
+                    t.age_logical[b] += n.logical();
                 }
             }
         }
@@ -252,6 +280,13 @@ mod tests {
         // a rename changes the category, not the bytes
         assert!(t.move_node(f0, a, b"f0.zip"));
         check(&mut c, &t, &all);
+        // a write changes the age, not the bytes
+        assert!(t.set_modified(f0, crate::age::now_filetime() - 864_000_000_000 * 500));
+        check(&mut c, &t, &all);
+        assert_ne!(
+            c.get(&t, a).age_disk[0],
+            c.get(&t, a).disk.iter().sum::<u64>()
+        );
         // a move between folders
         let f1 = t.find_child(b, b"f1.mp4").unwrap();
         assert!(t.move_node(f1, small, b"f1.mp4"));

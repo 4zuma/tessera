@@ -27,6 +27,7 @@ export const ICONS = {
   dismiss: 'M6 6l12 12 M18 6 6 18',
   more: 'M5.5 12h.01 M12 12h.01 M18.5 12h.01',
   download: 'M12 4v11 M7 10.5l5 5 5-5 M5 20h14',
+  edit: 'M15 5.5l3.5 3.5L8.5 19H5v-3.5z M13 7.5l3.5 3.5',
 } as const;
 
 export type IconName = keyof typeof ICONS;

@@ -157,6 +157,8 @@ struct Shown {
     /// [`Tree::changed_bytes`] and the free space at that point.
     changes: u64,
     free: u64,
+    /// [`Tree::redated_seq`] at that point.
+    redated: u64,
 }
 
 impl Session {
@@ -243,7 +245,7 @@ impl Session {
     }
 
     /// Remembers the layout just sent to the window.
-    fn record_shown(&self, req: LayoutRequest, buf: &[u8], changes: u64) {
+    fn record_shown(&self, req: LayoutRequest, buf: &[u8], changes: u64, redated: u64) {
         let mut g = lock(&self.shown);
         g.req = Some(req);
         g.buf.clear();
@@ -251,6 +253,7 @@ impl Session {
         g.bytes_per_px = layout::header_bytes_per_px(buf).map_or(0.0, f64::from);
         g.changes = changes;
         g.free = self.free.load(Relaxed);
+        g.redated = redated;
         self.stale.store(false, Relaxed);
     }
 
@@ -260,14 +263,17 @@ impl Session {
     /// one on screen. Changes Windows makes all the time on a system drive
     /// (logs, caches) mostly stop at the first step and cost no redraw.
     /// Renames change no bytes, so a batch that renamed or moved something
-    /// in a folder drawn open goes straight to the comparison.
+    /// in a folder drawn open goes straight to the comparison; so does one
+    /// that re-dated a file (a write to an old file, about once per file a
+    /// session), whose age band may show.
     fn needs_redraw(&self, core: &Core, rep: &BatchReport) -> bool {
         let t = self.tree();
         let now = t.changed_bytes();
-        let (req, since, free, bytes_per_px) = {
+        let redated = t.redated_seq();
+        let (req, since, free, bytes_per_px, dated) = {
             let g = lock(&self.shown);
             match g.req {
-                Some(req) => (req, g.changes, g.free, g.bytes_per_px),
+                Some(req) => (req, g.changes, g.free, g.bytes_per_px, g.redated),
                 None => return true,
             }
         };
@@ -289,6 +295,7 @@ impl Session {
             && bytes_per_px.is_finite()
             && bytes < bytes_per_px * REDRAW_PX2
             && !(rep.moved > 0 && self.renamed_in_sight(view, &rep.dirs))
+            && redated == dated
         {
             return false;
         }
@@ -308,6 +315,7 @@ impl Session {
             // picture on screen, so small changes cannot creep past unseen
             g.changes = now;
             g.free = self.free.load(Relaxed);
+            g.redated = redated;
             return false;
         }
         true
@@ -712,9 +720,9 @@ pub async fn layout(core: State<'_, Core>, req: LayoutReq) -> Result<Response, S
     let rev = s.rev.load(Relaxed);
     let hits = lock(&s.hits).clone();
     let buf = lock(&core.engine).layout_with(&t, &req, extras, rev, hits.as_deref());
-    let changes = t.changed_bytes();
+    let (changes, redated) = (t.changed_bytes(), t.redated_seq());
     drop(t);
-    s.record_shown(req, &buf, changes);
+    s.record_shown(req, &buf, changes, redated);
     Ok(Response::new(buf))
 }
 
@@ -1049,6 +1057,26 @@ fn cat_stats_of(s: &Session, view: NodeId, mode: SizeMode) -> Vec<CatStat> {
     out
 }
 
+#[tauri::command]
+pub async fn age_stats(
+    core: State<'_, Core>,
+    view: u32,
+    size_mode: Mode,
+) -> Result<Vec<u64>, String> {
+    let s = core.current()?;
+    Ok(age_stats_of(&s, NodeId(view), size_mode.into()))
+}
+
+/// Bytes below `view` per legend bin of [`tessera_core::age::bin`] (bin 0:
+/// files whose time is not known); empty when `view` is not a folder.
+fn age_stats_of(s: &Session, view: NodeId, mode: SizeMode) -> Vec<u64> {
+    let t = s.tree();
+    if view.index() >= t.len() || t.is_deleted(view) || !t.node(view).is_dir() {
+        return Vec::new();
+    }
+    totals(s, &t, view).age_bytes(mode).to_vec()
+}
+
 // ---------------------------------------------------------------------------
 // Deleting
 
@@ -1371,6 +1399,24 @@ mod tests {
         );
         let me = id_of(&s, &[b"Users", b"me"]);
         assert_eq!(cat_stats_of(&s, me, SizeMode::Disk).len(), 3);
+    }
+
+    #[test]
+    fn ages_below_a_view() {
+        use tessera_core::age;
+        let s = sample();
+        let me = id_of(&s, &[b"Users", b"me"]);
+        let a = id_of(&s, &[b"Users", b"me", b"a.mp4"]);
+        let year_ago = age::now_filetime() - 400 * 864_000_000_000;
+        assert!(s.tree.write().unwrap().set_modified(a, year_ago));
+        let bins = age_stats_of(&s, me, SizeMode::Logical);
+        assert_eq!(bins.len(), age::BINS);
+        let old = age::bin(age::byte_of_days(400.0));
+        assert_eq!(bins[old], 400_000);
+        assert_eq!(bins[0], 900 + 8000, "b.ts and c.pdf have no time");
+        assert_eq!(bins.iter().sum::<u64>(), 400_000 + 900 + 8000);
+        assert!(age_stats_of(&s, a, SizeMode::Disk).is_empty());
+        assert!(age_stats_of(&s, NodeId(9999), SizeMode::Disk).is_empty());
     }
 
     #[test]

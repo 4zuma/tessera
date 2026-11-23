@@ -8,6 +8,7 @@
   --ease-decel: cubic-bezier(0, 0, 0, 1);
   --ease-fast: cubic-bezier(0.1, 0.9, 0.2, 1);
   --ease-accel: cubic-bezier(0.7, 0, 1, 0.5);
+  --t-faster: 83ms;
   --t-fast: 167ms;
   --t-norm: 250ms;
   --t-slow: 333ms;
@@ -168,6 +169,70 @@ kbd {
 }
 .sbtn:disabled {
   color: var(--text-dis);
+}
+
+/*
+ * Segmented control, as Windows 11 draws it (Community Toolkit "Segmented"): a sunken
+ * track, the chosen segment raised like a button with a short accent pill under its label.
+ * The raised segment covers the track's border, so no edge is drawn twice, and both labels
+ * keep the primary text colour: the surface says which one is on, not the ink.
+ * Its motion is the Toolkit's too: nothing slides; each segment's surface fades in 83 ms
+ * (SegmentedItemBackgroundBrushTransition), and the pill of the chosen one grows in 167 ms
+ * on the decelerate curve while the old one goes at once.
+ */
+.seg {
+  display: inline-flex;
+  flex: none;
+  height: 32px;
+  border: 1px solid var(--ctl-stroke);
+  border-radius: var(--r-ctl);
+  background: var(--ctl-alt);
+}
+.seg button {
+  position: relative;
+  margin: -1px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: var(--r-ctl);
+  background: transparent;
+  color: var(--text);
+  white-space: nowrap;
+  transition: background var(--t-faster) linear, border-color var(--t-faster) linear;
+}
+.seg button:hover:not(.on) {
+  background: var(--subtle-hover);
+}
+.seg button:active:not(.on) {
+  background: var(--subtle-press);
+  color: var(--text-2);
+}
+.seg button.on {
+  z-index: 1;
+  background: var(--ctl);
+  border-color: var(--ctl-stroke);
+  border-bottom-color: var(--ctl-stroke-2);
+}
+/* the pill grows from 4 to 16 px when a segment is chosen, and shrinks while it is pressed */
+.seg button::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 1px;
+  width: 16px;
+  height: 3px;
+  margin-left: -8px;
+  border-radius: 1.5px;
+  background: var(--accent);
+  opacity: 0;
+  transform: scaleX(0.25);
+}
+.seg button.on::after {
+  opacity: 1;
+  transform: none;
+  transition: transform var(--t-fast) var(--ease-decel), opacity var(--t-fast) var(--ease-decel);
+}
+.seg button.on:active::after {
+  transform: scaleX(0.5);
 }
 
 .card {

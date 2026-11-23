@@ -128,6 +128,10 @@
 //!                       255 (all), see [`crate::search::share_of`]; for a
 //!                       group, over the items in it; 0 for pseudo tiles
 //!                       and without a search
+//!  52  u8   age         when it was last written, see [`crate::age`]; for
+//!                       folders and groups the size-weighted mean over the
+//!                       files in them; 0 = not known, and for pseudo tiles
+//!  53  u8[3]            reserved, 0
 //! ```
 //!
 //! Records are in paint order: a folder always comes before its children.
@@ -144,6 +148,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{BinaryHeap, HashMap};
 use std::hash::{BuildHasherDefault, Hasher};
 
+use crate::age::{self, Mean};
 use crate::search::{Hits, share_of};
 use crate::tree::Node;
 use crate::{Error, NodeFlags, NodeId, Result, Tree, category, wtf8};
@@ -152,7 +157,7 @@ use crate::{Error, NodeFlags, NodeId, Result, Tree, category, wtf8};
 pub const MAGIC: u32 = 0x4C52_5354;
 pub const VERSION: u16 = 1;
 pub const HEADER_SIZE: usize = 36;
-pub const RECORD_SIZE: usize = 52;
+pub const RECORD_SIZE: usize = 56;
 /// Safety cap on the number of records in one layout. Never reached with
 /// sane styles (a 4K canvas holds at most ~75,000 tiles of 110 px²).
 /// `maxPerDir` is clamped to `MAX_RECORDS - 3` so the top level fits too.
@@ -343,8 +348,11 @@ pub struct RootExtras {
 #[derive(Default)]
 pub struct LayoutEngine {
     ranks: HashMap<u32, Rank, BuildHasherDefault<IdHasher>>,
-    /// Main category of closed folders (rule 6), by folder id.
+    /// Main category and age of closed folders (rule 6) and of folders in
+    /// groups, by folder id.
     tints: HashMap<u32, Tint, BuildHasherDefault<IdHasher>>,
+    /// [`Tree::redated_seq`] at the last layout.
+    redated: u64,
     generation: u32,
     /// Protected node ids (sorted) and the tree length they were found at.
     protected: Option<(usize, Vec<u32>)>,
@@ -360,12 +368,13 @@ struct Rank {
     used: u32,
 }
 
-/// A closed folder's main category, and the size it was found at.
+/// A closed folder's main category and age, and the size they were found at.
 #[derive(Clone, Copy)]
 struct Tint {
     size: u64,
     mode: SizeMode,
     cat: u8,
+    age: u8,
     used: u32,
 }
 
@@ -378,7 +387,31 @@ impl LayoutEngine {
     pub fn reset(&mut self) {
         self.ranks.clear();
         self.tints.clear();
+        self.redated = 0;
         self.protected = None;
+    }
+
+    /// Forgets the tints of the folders above files whose age changed
+    /// since the last layout (a write that keeps a file's size would not
+    /// move a folder's size enough to refresh its tint).
+    fn forget_redated(&mut self, tree: &Tree) {
+        let now = tree.redated_seq();
+        if now == self.redated {
+            return;
+        }
+        match tree.redated_since(self.redated) {
+            Some(dirs) => {
+                for d in dirs {
+                    let mut cur = d;
+                    while !cur.is_none() && cur.index() < tree.len() {
+                        self.tints.remove(&cur.0);
+                        cur = tree.node(cur).parent;
+                    }
+                }
+            }
+            None => self.tints.clear(),
+        }
+        self.redated = now;
     }
 
     /// Lays out `req.view` and returns the encoded buffer (see the module
@@ -405,6 +438,7 @@ impl LayoutEngine {
         hits: Option<&Hits>,
     ) -> Vec<u8> {
         self.generation = self.generation.wrapping_add(1);
+        self.forget_redated(tree);
         let protected = match self.protected.take() {
             Some((len, ids)) if len == tree.len() => ids,
             _ => crate::delete::protected_nodes(tree),
@@ -601,6 +635,7 @@ enum ItemKind {
         count: u32,
         cat: u8,
         hit: u8,
+        age: u8,
     },
     Free,
     Unscanned,
@@ -627,6 +662,7 @@ struct Rec {
     flags: u8,
     header: u8,
     hit: u8,
+    age: u8,
 }
 
 /// A folder tile waiting to be opened.
@@ -670,6 +706,7 @@ struct Rest {
     /// Bytes of it the search found ([`hit_part`]).
     hit: u64,
     tally: [u64; category::COUNT],
+    age: Mean,
     unscanned: u64,
     free: u64,
 }
@@ -682,6 +719,7 @@ impl Default for Rest {
             sum: 0,
             hit: 0,
             tally: [0; category::COUNT],
+            age: Mean::default(),
             unscanned: 0,
             free: 0,
         }
@@ -701,6 +739,8 @@ struct Scratch {
     recs: Vec<Rec>,
     heap: BinaryHeap<Pending>,
     stack: Vec<NodeId>,
+    /// Per record: the ages of what an open folder holds.
+    means: Vec<Mean>,
 }
 
 /// One layout in progress.
@@ -775,10 +815,50 @@ impl Run<'_> {
             let r = &self.s.recs[i];
             if r.kind == kind::DIR_LEAF {
                 let (id, size) = (NodeId(r.id), r.size);
-                self.s.recs[i].cat = self.tint(id, size);
+                let (cat, age) = self.tint(id, size);
+                (self.s.recs[i].cat, self.s.recs[i].age) = (cat, age);
             }
         }
+        self.open_folder_ages();
         total as f64 / area
+    }
+
+    /// The age of each open folder from the records inside it, which cover
+    /// all it holds: children follow their folder, so one backward pass
+    /// sums them up.
+    fn open_folder_ages(&mut self) {
+        let s = &mut self.s;
+        let n = s.recs.len();
+        let mut at: HashMap<u32, usize, BuildHasherDefault<IdHasher>> = HashMap::default();
+        for (i, r) in s.recs.iter().enumerate() {
+            if r.kind == kind::DIR {
+                at.insert(r.id, i);
+            }
+        }
+        if at.is_empty() {
+            return;
+        }
+        s.means.clear();
+        s.means.resize(n, Mean::default());
+        for i in (0..n).rev() {
+            if s.recs[i].kind == kind::DIR {
+                s.recs[i].age = s.means[i].byte();
+            }
+            let r = &s.recs[i];
+            if let Some(&p) = at.get(&r.parent) {
+                s.means[p].add(r.age, r.size);
+            }
+        }
+    }
+
+    /// The age byte of a node of `size`: a file's own, a folder's from the
+    /// files below it (cached with its tint).
+    fn age_of(&mut self, id: NodeId, n: &Node, size: u64) -> u8 {
+        if n.is_dir() {
+            self.tint(id, size).1
+        } else {
+            self.tree.age(id)
+        }
     }
 
     /// Lays out the children of a folder tile. Returns false at the cap.
@@ -840,26 +920,27 @@ impl Run<'_> {
     /// what fills them too.
     fn member_cat(&mut self, id: NodeId, n: &Node, size: u64) -> u8 {
         if n.is_dir() {
-            self.tint(id, size)
+            self.tint(id, size).0
         } else {
             category::of(n)
         }
     }
 
     /// The category with the most bytes below a closed folder of `size`
-    /// (rule 6), from the cache while the size stays within 1/8 of the size
-    /// it was found at.
-    fn tint(&mut self, dir: NodeId, size: u64) -> u8 {
+    /// (rule 6) and the size-weighted age of its files, from the cache while
+    /// the size stays within 1/8 of the size they were found at.
+    fn tint(&mut self, dir: NodeId, size: u64) -> (u8, u8) {
         let (mode, generation) = (self.mode, self.generation);
         if let Some(t) = self.tints.get_mut(&dir.0)
             && t.mode == mode
             && size.abs_diff(t.size) <= t.size / 8
         {
             t.used = generation;
-            return t.cat;
+            return (t.cat, t.age);
         }
         let tree = self.tree;
         let mut tally = [0u64; category::COUNT];
+        let mut ages = Mean::default();
         let stack = &mut self.s.stack;
         stack.clear();
         stack.push(dir);
@@ -872,25 +953,28 @@ impl Run<'_> {
                         stack.push(c);
                     } else {
                         let cat = category::of(&n);
+                        let bytes = mode.of(&n);
                         if let Some(t) = tally.get_mut(cat as usize) {
-                            *t += mode.of(&n);
+                            *t += bytes;
                         }
+                        ages.add(tree.age(c), bytes);
                     }
                 }
                 c = n.next_sibling;
             }
         }
-        let cat = main_category(&tally);
+        let (cat, age) = (main_category(&tally), ages.byte());
         self.tints.insert(
             dir.0,
             Tint {
                 size,
                 mode,
                 cat,
+                age,
                 used: generation,
             },
         );
-        cat
+        (cat, age)
     }
 
     /// Fills `s.items` with what `folder` shows in a box of `area` px², in
@@ -913,6 +997,7 @@ impl Run<'_> {
         let hits = self.hits;
         let mut lone = None;
         let mut tally = [0u64; category::COUNT];
+        let mut ages = Mean::default();
         let mut c = dir.first_child;
         while !c.is_none() {
             // Siblings added in one batch have consecutive ids; stepping
@@ -941,6 +1026,8 @@ impl Run<'_> {
                         if (cat as usize) < category::COUNT {
                             tally[cat as usize] += size;
                         }
+                        let a = self.age_of(c, &n, size);
+                        ages.add(a, size);
                     }
                 }
                 let next = n.next_sibling;
@@ -955,6 +1042,7 @@ impl Run<'_> {
             // A group of one would hide a name for nothing.
             self.s.kids.extend(lone);
             (small_n, small_sum, small_hit, tally) = (0, 0, 0, [0; category::COUNT]);
+            ages = Mean::default();
         }
         let mut kids = std::mem::take(&mut self.s.kids);
         for k in kids.iter_mut() {
@@ -967,10 +1055,13 @@ impl Run<'_> {
                 small_n += 1;
                 small_sum = small_sum.saturating_add(k.size);
                 small_hit = small_hit.saturating_add(hit_part(hits, k.node, k.size));
-                let cat = self.member_cat(k.node, &tree.node(k.node), k.size);
+                let n = tree.node(k.node);
+                let cat = self.member_cat(k.node, &n, k.size);
                 if (cat as usize) < category::COUNT {
                     tally[cat as usize] += k.size;
                 }
+                let a = self.age_of(k.node, &n, k.size);
+                ages.add(a, k.size);
             }
             kids.truncate(keep);
         }
@@ -982,6 +1073,7 @@ impl Run<'_> {
             sum: small_sum,
             hit: small_hit,
             tally,
+            age: ages,
             unscanned,
             free,
         };
@@ -1004,6 +1096,7 @@ impl Run<'_> {
                     count: small_n,
                     cat: main_category(&tally),
                     hit: share_of(small_hit, small_sum),
+                    age: ages.byte(),
                 },
                 node: folder,
                 size: small_sum,
@@ -1148,10 +1241,13 @@ impl Run<'_> {
     ) -> (usize, Option<usize>) {
         let tree = self.tree;
         let hits = self.hits;
+        let mut ages = self.s.rest.age;
         let mut tally = self.s.rest.tally;
         for i in cut..self.s.kids.len() {
             let k = self.s.kids[i];
-            let cat = self.member_cat(k.node, &tree.node(k.node), k.size);
+            let n = tree.node(k.node);
+            ages.add(self.age_of(k.node, &n, k.size), k.size);
+            let cat = self.member_cat(k.node, &n, k.size);
             if (cat as usize) < category::COUNT {
                 tally[cat as usize] += k.size;
             }
@@ -1159,6 +1255,7 @@ impl Run<'_> {
         let s = &mut self.s;
         let r = &s.rest;
         let mut rest = *r;
+        rest.age = ages;
         rest.tally = tally;
         for k in &s.kids[cut..] {
             rest.n += 1;
@@ -1181,6 +1278,7 @@ impl Run<'_> {
                     count: rest.n,
                     cat: main_category(&rest.tally),
                     hit: share_of(rest.hit, rest.sum),
+                    age: rest.age.byte(),
                 },
                 node: rest.folder,
                 size: rest.sum,
@@ -1248,6 +1346,7 @@ impl Run<'_> {
                 flags: 0,
                 header: 0,
                 hit: 0,
+                age: age::UNKNOWN,
             };
             match it.kind {
                 ItemKind::Free => {
@@ -1257,9 +1356,15 @@ impl Run<'_> {
                     (rec.id, rec.target, rec.kind) =
                         (ids::UNSCANNED, ids::UNSCANNED, kind::UNSCANNED);
                 }
-                ItemKind::Group { count, cat, hit } => {
+                ItemKind::Group {
+                    count,
+                    cat,
+                    hit,
+                    age,
+                } => {
                     rec.id = ids::GROUP_BIT | it.node.0;
                     (rec.count, rec.cat, rec.kind, rec.hit) = (count, cat, kind::GROUP, hit);
+                    rec.age = age;
                 }
                 ItemKind::Node => {
                     let n = tree.node(it.node);
@@ -1296,6 +1401,7 @@ impl Run<'_> {
                         }
                     } else {
                         rec.cat = category::of(&n);
+                        rec.age = tree.age(it.node);
                     }
                 }
             }
@@ -1362,6 +1468,7 @@ impl Run<'_> {
             out.extend_from_slice(&off.to_le_bytes());
             out.extend_from_slice(&len.to_le_bytes());
             out.extend_from_slice(&[r.depth, r.kind, r.cat, r.flags, r.header, r.hit]);
+            out.extend_from_slice(&[r.age, 0, 0, 0]);
         }
         out[16..20].copy_from_slice(&(names.len() as u32).to_le_bytes());
         out.extend_from_slice(&names);
@@ -1577,6 +1684,7 @@ pub struct Record {
     pub flags: u8,
     pub header: u8,
     pub hit: u8,
+    pub age: u8,
 }
 
 /// Parses and validates a layout buffer.
@@ -1635,6 +1743,7 @@ pub fn decode(buf: &[u8]) -> Result<Decoded> {
             flags: buf[o + 49],
             header: buf[o + 50],
             hit: buf[o + 51],
+            age: buf[o + 52],
         });
     }
     Ok(Decoded {
@@ -1655,7 +1764,7 @@ pub fn header_bytes_per_px(buf: &[u8]) -> Option<f32> {
 
 /// True when two encoded layouts draw the same picture: the same search,
 /// the same rects in the same order, with the same ids, names, kinds,
-/// categories, flags, headers, hits and item counts, the same size labels
+/// categories, flags, headers, hits, ages and item counts, the same size labels
 /// (see [`size_label`]), and no edge more than `tolerance` CSS px from
 /// where it was. The revision and `bytesPerPx` are not compared. Live updates use it to skip redraws that
 /// would not change a single visible pixel by more than `tolerance`.
@@ -1679,6 +1788,7 @@ pub fn same_picture(a: &[u8], b: &[u8], tolerance: f32) -> bool {
                 && r.flags == s.flags
                 && r.header == s.header
                 && r.hit == s.hit
+                && r.age == s.age
                 && r.name == s.name
                 // only named rects show their size
                 && (r.name.is_none() || size_label(r.size) == size_label(s.size))

@@ -71,6 +71,7 @@ pub fn run() {
             backend::details,
             backend::nav,
             backend::cat_stats,
+            backend::age_stats,
             backend::recycle,
             backend::restore,
             backend::purge,

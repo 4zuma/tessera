@@ -3,7 +3,8 @@ import { contentOf, decodeLayout, encodeLayout, FREE, GROUP_BIT, isNodeId, Kind,
 import { categoryOf, Cat } from './categories';
 import { t } from '../i18n.svelte';
 import { MockBackend } from './mock';
-import { BadSize, parseQuery } from './mock/search';
+import { AGE_BINS, AGE_EDGE_CHOICES, AGE_UNKNOWN, ageBand, ageBin, ageByte, bandTotals } from '../age';
+import { ageTable, BadSize, parseQuery } from './mock/search';
 import type { LayoutRequest, ScanProgress } from './types';
 
 const STYLE = { outer: 6, pad: 3, gap: 2, header: 21, minHeaderW: 60, minArea: 110, minSide: 0, minWidth: 0, recurse: 60, openShare: 0.0025, maxDepth: 14, maxPerDir: 400, labelMinW: 44, labelMinH: 20 };
@@ -18,9 +19,9 @@ async function scanned(b: MockBackend, root = 'C:\\') {
 describe('codec', () => {
   it('round-trips records, big sizes and UTF-8 names', () => {
     const rects: Rect[] = [
-      { id: 7, parent: NONE, target: 9, count: 0, x: 1.5, y: 2, w: 300, h: 200, size: Math.round(499.8 * 2 ** 30), name: '屏幕截图 › archive', depth: 1, kind: Kind.Dir, cat: 255, flags: 1, header: 21, hit: 0 },
-      { id: GROUP_BIT + 7, parent: 7, target: 7, count: 42, x: 4, y: 30, w: 10, h: 10, size: 12345, name: '', depth: 2, kind: Kind.Group, cat: 4, flags: 0, header: 0, hit: 127 },
-      { id: FREE, parent: NONE, target: FREE, count: 0, x: 0, y: 0, w: 5, h: 5, size: 2 ** 40 + 3, name: '', depth: 1, kind: Kind.Free, cat: 255, flags: 0, header: 0, hit: 255 },
+      { id: 7, parent: NONE, target: 9, count: 0, x: 1.5, y: 2, w: 300, h: 200, size: Math.round(499.8 * 2 ** 30), name: '屏幕截图 › archive', depth: 1, kind: Kind.Dir, cat: 255, flags: 1, header: 21, hit: 0, age: 0 },
+      { id: GROUP_BIT + 7, parent: 7, target: 7, count: 42, x: 4, y: 30, w: 10, h: 10, size: 12345, name: '', depth: 2, kind: Kind.Group, cat: 4, flags: 0, header: 0, hit: 127, age: 200 },
+      { id: FREE, parent: NONE, target: FREE, count: 0, x: 0, y: 0, w: 5, h: 5, size: 2 ** 40 + 3, name: '', depth: 1, kind: Kind.Free, cat: 255, flags: 0, header: 0, hit: 255, age: 1 },
     ];
     const buf = encodeLayout({ view: 3, rev: 99, bytesPerPx: 1024, search: 5, rects });
     expect(buf.byteLength).toBe(HEADER_SIZE + 3 * RECORD_SIZE + new TextEncoder().encode(rects[0].name).length);
@@ -32,7 +33,7 @@ describe('codec', () => {
   });
 
   it('points a tile at the folder whose contents it shows', () => {
-    const r = (kind: Kind, id: number, target: number): Rect => ({ id, parent: NONE, target, count: 0, x: 0, y: 0, w: 9, h: 9, size: 1, name: '', depth: 1, kind, cat: 255, flags: 0, header: 0, hit: 0 });
+    const r = (kind: Kind, id: number, target: number): Rect => ({ id, parent: NONE, target, count: 0, x: 0, y: 0, w: 9, h: 9, size: 1, name: '', depth: 1, kind, cat: 255, flags: 0, header: 0, hit: 0, age: 0 });
     expect(contentOf(r(Kind.Dir, 7, 9))).toBe(9); // a › b › c: c
     expect(contentOf(r(Kind.DirLeaf, 7, 9))).toBe(9);
     expect(contentOf(r(Kind.Dir, 7, 7))).toBe(7);
@@ -175,11 +176,54 @@ describe('mock backend', () => {
         ['>=', 1.5 * 2 ** 30],
         ['<', 2 ** 31],
       ],
+      ages: [],
     });
+    expect(parseQuery('>1y <=6mo >2W <3天 >1年')!.ages).toEqual([
+      ['>', 365],
+      ['<=', 180],
+      ['>', 14],
+      ['<', 3],
+      ['>', 365],
+    ]);
+    expect(() => parseQuery('>1h')).toThrow(BadSize);
     expect(parseQuery('. ..')!.words).toEqual(['.', '..']);
     expect(() => parseQuery('>')).toThrow(BadSize);
     expect(() => parseQuery('<5 apples')).not.toThrow();
     expect(() => parseQuery('<5apples')).toThrow(BadSize);
+  });
+
+  it('finds files by age, in the bands the legend shows', async () => {
+    const t1 = ageTable([['>', 365]]);
+    for (let b = 0; b < 256; b++) expect(t1[b]).toBe(ageBand(b, [365]) === 1);
+    const t2 = ageTable([['<', 7]]);
+    expect(t2[1]).toBe(true);
+    expect(t2[AGE_UNKNOWN]).toBe(false);
+    expect(t2[ageByte(30)]).toBe(false);
+    const b = new MockBackend({}, { scanMs: 300 });
+    await scanned(b);
+    const old = (await b.search('>1y', 'disk'))!;
+    const recent = (await b.search('<1y', 'disk'))!;
+    const all = (await b.search('>=0d', 'disk'))!;
+    expect(old.count).toBeGreaterThan(0);
+    expect(recent.count).toBeGreaterThan(0);
+    // files only, so the two halves add up (no folder is counted for its own sake)
+    expect(old.count + recent.count).toBe(all.count);
+    expect(old.bytes + recent.bytes).toBe(all.bytes);
+    const hist = await b.ageStats(0, 'disk');
+    expect(hist).toHaveLength(AGE_BINS);
+    expect(bandTotals(hist, [365])[1]).toBe(old.bytes);
+    expect(bandTotals(hist, [365])[0]).toBe(recent.bytes);
+  });
+
+  it('bins ages so that any choice of edges sums them as the tiles are coloured', () => {
+    const edges = [3, 30, 1095];
+    for (let b = 1; b < 256; b++) {
+      const bins = new Array<number>(AGE_BINS).fill(0);
+      bins[ageBin(b)] = 1;
+      expect(bandTotals(bins, edges)[ageBand(b, edges)]).toBe(1);
+    }
+    expect(ageBin(AGE_UNKNOWN)).toBe(0);
+    expect(ageBin(255)).toBe(AGE_EDGE_CHOICES.length + 1);
   });
 
   it('recycles into $Recycle.Bin, restores, and purges', async () => {

@@ -170,6 +170,11 @@ export interface Backend {
   details(id: number, view: number, sizeMode: SizeMode): Promise<Details | null>;
   nav(id: number): Promise<NavInfo>;
   catStats(view: number, sizeMode: SizeMode): Promise<CatStat[]>;
+  /**
+   * the legend by age: bytes of the files in `view` per age bin (AGE_BINS entries, 0 = date
+   * not known; see ageBin in lib/age.ts)
+   */
+  ageStats(view: number, sizeMode: SizeMode): Promise<number[]>;
   recycle(ids: number[]): Promise<DeleteResult>;
   restore(token: number): Promise<DeleteResult>;
   purge(ids: number[]): Promise<DeleteResult>;
