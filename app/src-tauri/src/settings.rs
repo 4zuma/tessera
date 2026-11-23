@@ -453,8 +453,10 @@ mod imp {
             Some(Stored::Dword(u32::from_le_bytes([b[0], b[1], b[2], b[3]])))
         } else if ty == REG_SZ {
             let w: Vec<u16> = b
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_le_bytes(*c))
                 .collect();
             let end = w.iter().position(|&u| u == 0).unwrap_or(w.len());
             Some(Stored::Text(String::from_utf16_lossy(&w[..end])))
