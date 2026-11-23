@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acrylicBlend, ageBases, AGE_LIFT, AGE_RAMP, mixLch } from './theme';
+import { acrylicBlend, ageBases, AGE_RAMP, mixLch } from './theme';
 
 type Rgb = [number, number, number];
 const lum = (c: Rgb) => 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2];
@@ -69,7 +69,7 @@ describe('acrylicBlend', () => {
 describe('age colours', () => {
   it('run from the first colour of the ramp to the last, evenly', () => {
     expect(ageBases(2)).toEqual([...AGE_RAMP]);
-    expect(ageBases(3)[1]).toBe(mixLch(AGE_RAMP[0], AGE_RAMP[1], 0.5, AGE_LIFT));
+    expect(ageBases(3)[1]).toBe(mixLch(AGE_RAMP[0], AGE_RAMP[1], 0.5));
     for (let n = 2; n <= 13; n++) {
       const b = ageBases(n);
       expect(b).toHaveLength(n);
@@ -90,13 +90,5 @@ describe('age colours', () => {
     const [r, g, b] = [1, 3, 5].map(i => parseInt(mixLch('#d13438', '#0063b1', 0.5).slice(i, i + 2), 16));
     // a vivid purple: red and blue well above green
     expect(Math.min(r, b) - g).toBeGreaterThan(60);
-  });
-
-  it('lift the middle of the age ramp, not its ends', () => {
-    const lum = (h: string) => [1, 3, 5].reduce((s, i) => s + parseInt(h.slice(i, i + 2), 16), 0);
-    const mid = ageBases(3)[1];
-    expect(lum(mid)).toBeGreaterThan(lum(mixLch(AGE_RAMP[0], AGE_RAMP[1], 0.5)));
-    expect(mixLch(AGE_RAMP[0], AGE_RAMP[1], 0, AGE_LIFT)).toBe(AGE_RAMP[0].toLowerCase());
-    expect(mixLch(AGE_RAMP[0], AGE_RAMP[1], 1, AGE_LIFT)).toBe(AGE_RAMP[1].toLowerCase());
   });
 });

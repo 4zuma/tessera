@@ -222,26 +222,18 @@ function fromLch(L: number, C: number, H: number): string {
   return fromLab(at(lo));
 }
 
-/** how far a blend bows up in the middle: added lightness and chroma at its midpoint */
-export interface Lift {
-  L: number;
-  C: number;
-}
-
 /**
  * `a` blended toward `b` by `t` in OKLCH: lightness and chroma move evenly and the hue turns
  * the shorter way round, so the colours in between stay as vivid as the ends (a blend in
- * OKLab or sRGB goes grey in the middle when the hues are far apart). `lift` raises the
- * middle along a half sine, 0 at both ends.
+ * OKLab or sRGB goes grey in the middle when the hues are far apart).
  */
-export function mixLch(a: string, b: string, t: number, lift: Lift = { L: 0, C: 0 }): string {
+export function mixLch(a: string, b: string, t: number): string {
   const [L1, C1, H1] = toLch(a);
   const [L2, C2, H2] = toLch(b);
   let d = H2 - H1;
   if (d > Math.PI) d -= 2 * Math.PI;
   if (d < -Math.PI) d += 2 * Math.PI;
-  const bow = Math.sin(Math.PI * t);
-  return fromLch(L1 + (L2 - L1) * t + lift.L * bow, C1 + (C2 - C1) * t + lift.C * bow, H1 + d * t);
+  return fromLch(L1 + (L2 - L1) * t, C1 + (C2 - C1) * t, H1 + d * t);
 }
 
 export function rgba(h: string, a: number): string {
@@ -275,10 +267,7 @@ export function tones(scheme: Scheme, bases: readonly string[]): Tones {
  */
 export const AGE_RAMP: readonly string[] = ['#D13438', '#0063B1'];
 
-/** the age ramp's middle is a little lighter and more vivid than its ends (pink to lilac), so it reads clean, not dusky */
-export const AGE_LIFT: Lift = { L: 0.05, C: 0.02 };
-
-/** `n` base colours along {@link AGE_RAMP}, newest first (blended in OKLCH: red, rose, purple, violet, blue; see {@link AGE_LIFT}) */
+/** `n` base colours along {@link AGE_RAMP}, newest first (blended in OKLCH: red, rose, purple, violet, blue) */
 export function ageBases(n: number): string[] {
   const k = AGE_RAMP.length - 1;
   const out: string[] = [];
@@ -286,7 +275,7 @@ export function ageBases(n: number): string[] {
     const p = n === 1 ? 0 : (i * k) / (n - 1);
     const j = Math.min(k - 1, Math.floor(p));
     const f = p - j;
-    out.push(f < 1e-6 ? AGE_RAMP[j] : f > 1 - 1e-6 ? AGE_RAMP[j + 1] : mixLch(AGE_RAMP[j], AGE_RAMP[j + 1], f, AGE_LIFT));
+    out.push(f < 1e-6 ? AGE_RAMP[j] : f > 1 - 1e-6 ? AGE_RAMP[j + 1] : mixLch(AGE_RAMP[j], AGE_RAMP[j + 1], f));
   }
   return out;
 }
