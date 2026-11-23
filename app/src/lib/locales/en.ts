@@ -102,7 +102,6 @@ export const en = {
   /* search box (Ctrl+F) */
   'search.placeholder': 'Search {drive}',
   'search.label': 'Search files and folders',
-  'search.tip': 'Ctrl+F. Every word must be in the name. .mp4 or *.mp4 finds a file type (any of several), >1GB or <500MB a size, >1y or <2w files by when they were last changed (d, w, mo, y). Put words with spaces in quotes.',
   'search.clear': 'Clear search',
   /** count and total size of what the search found */
   'search.found': '{items} · {size}',

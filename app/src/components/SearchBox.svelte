@@ -53,7 +53,6 @@
     spellcheck="false"
     autocomplete="off"
     placeholder={t('search.placeholder', { drive: app.volume?.root.slice(0, 2) ?? '' })}
-    title={t('search.tip')}
     aria-label={t('search.label')}
     aria-describedby="search-summary"
     value={s.text}
