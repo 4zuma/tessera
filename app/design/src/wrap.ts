@@ -80,7 +80,9 @@ export function wrap(name: string, Comp: Component<any>, opts: WrapOpts = {}) {
       if (!opts.standalone) void apply(page);
     });
     const style = { ...(opts.host ?? { display: 'contents' }), ...(props.style ?? {}) };
-    return React.createElement('div', { ref, className: 'tessera-host', 'data-tessera': name, style, ...(opts.attrs?.(props) ?? {}) });
+    // a standalone piece (an icon, the logo) sits inside the caller's markup and takes its
+    // colour and font from there, as the app's own icons take the button's
+    return React.createElement('div', { ref, className: opts.standalone ? 'tessera-inline' : 'tessera-host', 'data-tessera': name, style, ...(opts.attrs?.(props) ?? {}) });
   }
   Shell.displayName = name;
   return Shell;
