@@ -315,6 +315,16 @@ impl Session {
 
     /// True when one of `dirs` (folders whose entries changed) is the view or
     /// a folder whose entries are drawn, so a rename there may show.
+    /// A search is shown and the batch changed something it found or would
+    /// find now. Its count and bytes must follow even when the map does not
+    /// change enough to draw again.
+    fn search_touched(&self, rep: &BatchReport) -> bool {
+        let Some(h) = lock(&self.hits).clone() else {
+            return false;
+        };
+        h.touched_by(&self.tree(), &rep.dirs)
+    }
+
     fn renamed_in_sight(&self, view: NodeId, dirs: &[NodeId]) -> bool {
         if dirs.contains(&view) {
             return true;
@@ -666,7 +676,7 @@ fn on_batch(app: &AppHandle, s: &Weak<Session>, rep: &BatchReport) {
         }
         return;
     }
-    if s.needs_redraw(&core, rep) {
+    if s.search_touched(rep) || s.needs_redraw(&core, rep) {
         s.send_changed(app);
     }
 }
