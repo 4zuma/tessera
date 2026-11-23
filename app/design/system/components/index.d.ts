@@ -55,9 +55,9 @@ export interface PageProps {
   /** treemap: open-folder corner radius, px (app: 4) */
   folderRadius?: number;
   /**
-   * treemap: how folders are drawn. "classic" as shipped (app). "band": the 1.3.1 candidate,
-   * one frame for every folder, a closed folder's colour as a band along its bottom; pad and
-   * header then follow from the band props and are ignored.
+   * treemap: how folders are drawn. "band" as shipped since 1.3.1 (app): one frame for every
+   * folder, a closed folder's colour as a band along its bottom; pad and header then follow
+   * from the band props and are ignored. "classic": the look up to 1.3.0, for comparison.
    */
   folderLook?: 'classic' | 'band';
   /** band look: white margin round a folder's content on all four sides, px (4) */
@@ -66,15 +66,11 @@ export interface PageProps {
   ring?: 'on' | 'off';
   /** band look: height of a closed folder's colour band, px (5) */
   foot?: number;
-  /** band look: the colour band, 0 = the file colour, 1-2 lighter, 3 = the 1.3.0 closed-folder tint (0) */
+  /** band look: the colour band, 0 = the file colour, 1-2 lighter, 3 = the 1.3.0 closed-folder tint (1) */
   tone?: number;
-  /** band look: at the seams where the side ring meets the colour band, the colour runs up the ring, fading out over this many px; 0 = a hard edge (0) */
-  fade?: number;
-  /** band look: "on": a closed folder's size always sits in its white area, and one too small for it has no white area (grey down to its colour band) ("off") */
-  compact?: 'on' | 'off';
   /** band look: the least white area a folder gets, px; the folder minimum height (band + this + foot + 1) follows. 18 holds a closed folder's size line (6) */
   minWhite?: number;
-  /** band look: every folder gets room for its own size label on one line: its least width follows the label (never narrower than minWidth), its least height is 45 (minWhite no longer applies) ("off") */
+  /** band look: every folder gets room for its own size label on one line: its least width follows the label (never narrower than minWidth), its least height is 45 (minWhite no longer applies) ("on") */
   fitSize?: 'on' | 'off';
   /** the host element's style: where the component sits in its slot */
   style?: Record<string, string | number>;

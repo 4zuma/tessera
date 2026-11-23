@@ -5,7 +5,9 @@
  * RTX 4060, while the GPU path draws the same frame at 60.
  *
  * Each instance is a box in device pixels with a corner radius, a fill, an optional
- * inside stroke and an optional bottom clip (for header bands). The fragment shader turns
+ * inside stroke, an optional bottom and top clip (header bands, a closed folder's colour
+ * band) and an optional rounded hole (a folder's white area, which its band runs round).
+ * The fragment shader turns
  * a signed distance into antialiased coverage, so the boxes match the 2D painter's to
  * within a step of edge antialiasing. Text and textures stay on the 2D canvas above.
  */
@@ -16,12 +18,14 @@ layout(location=1) in vec4 rect;
 layout(location=2) in vec4 shape;
 layout(location=3) in vec4 fill;
 layout(location=4) in vec4 stroke;
+layout(location=5) in vec4 hole;
 uniform vec2 view;
 out vec2 vP;
 flat out vec4 vRect;
 flat out vec4 vShape;
 flat out vec4 vFill;
 flat out vec4 vStroke;
+flat out vec4 vHole;
 void main() {
   vec2 p = rect.xy - 1.0 + corner * (rect.zw + 2.0);
   vP = p;
@@ -29,6 +33,7 @@ void main() {
   vShape = shape;
   vFill = fill;
   vStroke = stroke;
+  vHole = hole;
   gl_Position = vec4(p / view * vec2(2.0, -2.0) + vec2(-1.0, 1.0), 0.0, 1.0);
 }`;
 
@@ -39,6 +44,7 @@ flat in vec4 vRect;
 flat in vec4 vShape;
 flat in vec4 vFill;
 flat in vec4 vStroke;
+flat in vec4 vHole;
 out vec4 o;
 float box(vec2 p, vec2 b, float r) {
   vec2 q = abs(p) - b + r;
@@ -48,7 +54,13 @@ void main() {
   vec2 hb = vRect.zw * 0.5;
   float r = min(vShape.x, min(hb.x, hb.y));
   float d = box(vP - vRect.xy - hb, hb, r);
-  float clip = clamp(vShape.z - vP.y + 0.5, 0.0, 1.0);
+  float clip = clamp(vShape.z - vP.y + 0.5, 0.0, 1.0) * clamp(vP.y - vShape.w + 0.5, 0.0, 1.0);
+  // the hole: inset (sides, top, bottom) from the box, corner radius; none when the radius < 0
+  vec2 hs = vec2(vRect.z - 2.0 * vHole.x, vRect.w - vHole.y - vHole.z) * 0.5;
+  if (vHole.w >= 0.0 && hs.x > 0.0 && hs.y > 0.0) {
+    float hd = box(vP - vRect.xy - vHole.xy - hs, hs, min(vHole.w, min(hs.x, hs.y)));
+    clip *= clamp(0.5 + hd, 0.0, 1.0);
+  }
   float sw = vShape.y;
   float outer = clamp(0.5 - d, 0.0, 1.0) * clip;
   float inner = clamp(0.5 - (d + sw), 0.0, 1.0) * clip;
@@ -58,9 +70,13 @@ void main() {
   o = s + vFill * fc * (1.0 - s.a);
 }`;
 
-/** floats per instance: rect, shape, fill, stroke */
-const FLOATS = 16;
+/** floats per instance: rect, shape, fill, stroke, hole */
+const FLOATS = 20;
 export const NONE: RGBA = [0, 0, 0, 0];
+const NO_HOLE: Hole = [0, 0, 0, -1];
+
+/** a rounded hole in a box, in device px: inset of each side, of the top, of the bottom; radius */
+export type Hole = readonly [number, number, number, number];
 
 /** premultiplied */
 export type RGBA = readonly [number, number, number, number];
@@ -142,7 +158,7 @@ export class BoxBatch {
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
     this.inst = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.inst);
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 5; i++) {
       gl.enableVertexAttribArray(1 + i);
       gl.vertexAttribPointer(1 + i, 4, gl.FLOAT, false, FLOATS * 4, i * 16);
       gl.vertexAttribDivisor(1 + i, 1);
@@ -168,9 +184,10 @@ export class BoxBatch {
 
   /**
    * A box in device px with corner radius `r`. A stroke of width `sw` runs along the inside
-   * of the edge with the fill reaching half way into it; `clipY` cuts off what lies below.
+   * of the edge with the fill reaching half way into it; `clipY` cuts off what lies below,
+   * `clipTop` what lies above, and `hole` leaves out a rounded box inside it.
    */
-  push(x: number, y: number, w: number, h: number, r: number, fill: RGBA, stroke: RGBA | null = null, sw = 0, clipY = 1e9) {
+  push(x: number, y: number, w: number, h: number, r: number, fill: RGBA, stroke: RGBA | null = null, sw = 0, clipY = 1e9, clipTop = -1e9, hole: Hole | null = null) {
     if ((this.n + 1) * FLOATS > this.data.length) {
       const d = new Float32Array(this.data.length * 2);
       d.set(this.data);
@@ -180,9 +197,11 @@ export class BoxBatch {
     const s = stroke ?? NONE;
     let i = this.n++ * FLOATS;
     d[i++] = x; d[i++] = y; d[i++] = w; d[i++] = h;
-    d[i++] = r; d[i++] = stroke ? sw : 0; d[i++] = clipY; d[i++] = 0;
+    d[i++] = r; d[i++] = stroke ? sw : 0; d[i++] = clipY; d[i++] = clipTop;
     d[i++] = fill[0]; d[i++] = fill[1]; d[i++] = fill[2]; d[i++] = fill[3];
     d[i++] = s[0]; d[i++] = s[1]; d[i++] = s[2]; d[i++] = s[3];
+    const o = hole ?? NO_HOLE;
+    d[i++] = o[0]; d[i++] = o[1]; d[i++] = o[2]; d[i++] = o[3];
   }
 
   /** clear the canvas and draw everything pushed since begin() */

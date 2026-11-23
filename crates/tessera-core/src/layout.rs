@@ -26,18 +26,25 @@
 //!    and with `minWidth` every folder tile is at least that wide, since a
 //!    folder is known by its name, which is written across (a file is known
 //!    by its colour and can be as small as `minSide` either way):
+//!    `minHeight` likewise makes every folder tile at least that tall. With
+//!    `sizeFit` a folder tile instead has room for its own size label on
+//!    one line: it is at least as wide as the label (and `minWidth`) and
+//!    `sizeFit.height` tall; the label's width follows from the size as the
+//!    UI writes it and the glyph widths the UI measured (see
+//!    [`SizeFit`]). Below, a folder's least width and height are these:
 //!    * siblings whose area would be below `1.3 x (minSide + gap)²`, or
-//!      for a folder `1.3 x (minSide + gap) x (max(minSide, minWidth) +
-//!      gap)`, go to the group at once (a tile with barely enough area
-//!      seldom comes out square enough), and the group takes its place
-//!      among the others by its size instead of coming last;
+//!      for a folder `1.3 x (max(minSide, least width) + gap) x
+//!      (max(minSide, least height) + gap)`, go to the group at once (a
+//!      tile with barely enough area seldom comes out square enough), and
+//!      the group takes its place among the others by its size instead of
+//!      coming last;
 //!    * squarifying (rule 3), an item that would come out shorter than
 //!      `minSide + gap` along a row already that thick starts the next row
 //!      instead, so small items do not line up as slivers beside a big one;
 //!    * after squarifying, the first sibling (in rank order) that came out
 //!      shorter or narrower than `minSide` and every one after it join the
-//!      group, and so does every folder before it that is only narrower
-//!      than `minWidth`; the folder is laid out again;
+//!      group, and so does every folder before it that is only below its
+//!      least width or height; the folder is laid out again;
 //!    * a group (or a single left-over sibling), an UNSCANNED or a FREE
 //!      tile that is still too thin is left out, and the others take its
 //!      room;
@@ -284,6 +291,12 @@ pub struct LayoutStyle {
     /// so it has room for a few letters of its name (rule 2). 0 turns it
     /// off.
     pub min_width: f32,
+    /// No folder tile is shorter than this (CSS px, the gap not counted;
+    /// rule 2). 0 turns it off; `size_fit` replaces it.
+    pub min_height: f32,
+    /// Every folder tile has room for its own size label on one line
+    /// (rule 2). `None` turns it off.
+    pub size_fit: Option<SizeFit>,
     /// A folder opens only if its area is above `min_area * recurse`.
     pub recurse: f32,
     /// A folder opens only if its area is above this share (0 to 1) of the
@@ -296,6 +309,52 @@ pub struct LayoutStyle {
     /// folder with a header).
     pub label_min_w: f32,
     pub label_min_h: f32,
+}
+
+/// Rule 2's size fit: what the UI needs to write a folder's size on one
+/// line, in CSS px, measured in its own font. The label is the size as the
+/// UI formats it: `5.00 TB`, `12.3 GB` / `123 GB`, `4.5 MB` / `45 MB`,
+/// `123 KB`, `1,023 bytes` (units of 1,024). Its width is the number's
+/// digits at `digit` each and its separators at `dot` each, then `space`
+/// and the unit, plus `inset`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SizeFit {
+    /// The widest digit.
+    pub digit: f32,
+    /// The wider of `.` and `,`.
+    pub dot: f32,
+    /// The space between the number and the unit.
+    pub space: f32,
+    /// The unit: bytes, KB, MB, GB, TB.
+    pub units: [f32; 5],
+    /// Room the folder leaves round the label, on both sides together.
+    pub inset: f32,
+    /// The least height of a folder tile with the label.
+    pub height: f32,
+}
+
+impl SizeFit {
+    /// The width of `bytes`' label plus the inset.
+    pub fn width(&self, bytes: u64) -> f32 {
+        // the label's number as [`size_label`] has it, its unit and decimals
+        let (key, n) = size_label(bytes);
+        let (unit, places) = [(4, 2), (3, 0), (3, 1), (2, 0), (2, 1), (1, 0), (0, 0)][key as usize];
+        let digits = (n / 10u64.pow(places))
+            .checked_ilog10()
+            .map_or(1, |d| d + 1)
+            + places;
+        let dots = if unit == 0 {
+            // bytes, with thousands separators
+            (digits - 1) / 3
+        } else {
+            u32::from(places > 0)
+        };
+        digits as f32 * self.digit
+            + dots as f32 * self.dot
+            + self.space
+            + self.units[unit]
+            + self.inset
+    }
 }
 
 /// Default `recurse`: with `min_area` 110, a folder must be over 6,600 px²
@@ -336,6 +395,8 @@ impl Default for LayoutStyle {
             min_area: 110.0,
             min_side: MIN_SIDE,
             min_width: MIN_WIDTH,
+            min_height: 0.0,
+            size_fit: None,
             recurse: RECURSE,
             open_share: OPEN_SHARE,
             max_depth: 14,
@@ -575,6 +636,12 @@ struct Style {
     /// `min_width` plus the gap: the least width of a folder's cell; 0 when
     /// off.
     min_cell_w: f64,
+    /// `min_height` plus the gap: the least height of a folder's cell; 0
+    /// when off.
+    min_cell_h: f64,
+    /// Rule 2's size fit, with its height plus the gap.
+    size_fit: Option<(SizeFit, f64)>,
+    gap: f64,
     /// `min_area * recurse`.
     open_min: f64,
     open_share: f64,
@@ -607,6 +674,15 @@ impl Style {
             min_area,
             min_cell: with_gap(v(s.min_side)),
             min_cell_w: with_gap(v(s.min_width)),
+            min_cell_h: with_gap(v(s.min_height)),
+            size_fit: s
+                .size_fit
+                .filter(|f| {
+                    let w = [f.digit, f.dot, f.space, f.inset, f.height];
+                    w.iter().chain(&f.units).all(|x| x.is_finite() && *x >= 0.0)
+                })
+                .map(|f| (f, with_gap(v(f.height)))),
+            gap: v(s.gap),
             open_min: min_area * v(s.recurse),
             open_share: v(s.open_share).min(1.0),
             open_area: 0.0,
@@ -619,46 +695,62 @@ impl Style {
         }
     }
 
-    /// Rule 2's `minSide` / `minWidth` are on.
+    /// Rule 2's `minSide` / `minWidth` / `minHeight` / `sizeFit` are on.
     fn min_size(&self) -> bool {
-        self.min_cell > 0.0 || self.min_cell_w > 0.0
+        self.min_cell > 0.0
+            || self.min_cell_w > 0.0
+            || self.min_cell_h > 0.0
+            || self.size_fit.is_some()
     }
 
-    /// Whether a cell (before the inset) is big enough for a tile: at
-    /// least `minSide` either way, and `minWidth` wide for a folder.
-    fn fit(&self, c: &BoxF, folder: bool) -> Fit {
-        if c.w.min(c.h) < self.min_cell {
-            Fit::Small
-        } else if folder && c.w < self.min_cell_w {
-            Fit::Narrow
-        } else {
-            Fit::Ok
+    /// The least width and height of the cell of a folder of `size`
+    /// bytes: `minWidth` by `minHeight`, or with the size fit room for its
+    /// size label (and still `minWidth`).
+    fn folder_cell(&self, size: u64) -> (f64, f64) {
+        match &self.size_fit {
+            Some((f, h)) => (self.min_cell_w.max(f.width(size) as f64 + self.gap), *h),
+            None => (self.min_cell_w, self.min_cell_h),
         }
     }
 
+    /// Whether a cell (before the inset) is big enough for a tile: at
+    /// least `minSide` either way, and for a folder (`Some` of its size)
+    /// its least width and height.
+    fn fit(&self, c: &BoxF, folder: Option<u64>) -> Fit {
+        if c.w.min(c.h) < self.min_cell {
+            return Fit::Small;
+        }
+        if let Some(size) = folder {
+            let (w, h) = self.folder_cell(size);
+            if c.w < w || c.h < h {
+                return Fit::Narrow;
+            }
+        }
+        Fit::Ok
+    }
+
     /// The least area a sibling can have before it goes to the group at
-    /// once: `min_area`, and room for a cell of `minSide` (by `minWidth`
-    /// for a folder) with [`MIN_SIDE_ROOM`] to spare.
-    fn least_area(&self, folder: bool) -> f64 {
-        let w = if folder {
-            self.min_cell.max(self.min_cell_w)
-        } else {
-            self.min_cell
-        };
-        self.min_area.max(self.min_cell * w * MIN_SIDE_ROOM)
+    /// once: `min_area`, and room for a cell of `minSide` either way (and
+    /// for a folder, `Some` of its size, its least width and height) with
+    /// [`MIN_SIDE_ROOM`] to spare.
+    fn least_area(&self, folder: Option<u64>) -> f64 {
+        let (w, h) = folder.map_or((0.0, 0.0), |size| self.folder_cell(size));
+        self.min_area
+            .max(self.min_cell.max(w) * self.min_cell.max(h) * MIN_SIDE_ROOM)
     }
 }
 
-/// Whether an item is a folder's tile, for rule 2's `minWidth`.
-fn is_folder(tree: &Tree, it: &Item) -> bool {
-    matches!(it.kind, ItemKind::Node) && tree.node(it.node).is_dir()
+/// An item's size if it is a folder's tile, for rule 2's folder minimum.
+fn folder_size(tree: &Tree, it: &Item) -> Option<u64> {
+    (matches!(it.kind, ItemKind::Node) && tree.node(it.node).is_dir()).then_some(it.size)
 }
 
-/// How a cell meets rule 2's `minSide` / `minWidth`.
+/// How a cell meets rule 2's minimum sizes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Fit {
     Ok,
-    /// A folder at least `minSide` either way but narrower than `minWidth`.
+    /// A folder at least `minSide` either way but below its least width
+    /// or height.
     Narrow,
     /// Shorter or narrower than `minSide`.
     Small,
@@ -1086,9 +1178,16 @@ impl Run<'_> {
         // children), so one pass over the siblings sorts them out; the
         // areas use the sum actually seen.
         let expect = mode.of(&dir).saturating_add(unscanned).saturating_add(free);
-        // The least area a tile can have (rule 2), as a size.
-        let at_least = |folder| (self.st.least_area(folder) * expect as f64 / area).ceil() as u64;
-        let (file_min, folder_min) = (at_least(false), at_least(true));
+        // The least area a tile can have (rule 2), as a size; with the
+        // size fit, each folder's depends on its own size.
+        let scale = expect as f64 / area;
+        let at_least = |st: &Style, folder| (st.least_area(folder) * scale).ceil() as u64;
+        let file_min = at_least(&self.st, None);
+        let folder_min = self
+            .st
+            .size_fit
+            .is_none()
+            .then(|| at_least(&self.st, Some(0)));
         self.s.kids.clear();
         self.s.items.clear();
         let mut total = unscanned.saturating_add(free);
@@ -1109,7 +1208,12 @@ impl Run<'_> {
                 let size = mode.of(&n);
                 if size > 0 && !n.is_deleted() {
                     total = total.saturating_add(size);
-                    if size >= if n.is_dir() { folder_min } else { file_min } {
+                    let least = if !n.is_dir() {
+                        file_min
+                    } else {
+                        folder_min.unwrap_or_else(|| at_least(&self.st, Some(size)))
+                    };
+                    if size >= least {
                         self.s.kids.push(Kid {
                             size,
                             rank: 0,
@@ -1189,7 +1293,9 @@ impl Run<'_> {
         // shrinks as more are kept, so the first that fails ends it.
         let (mut keep, mut kept, mut room) = (0, 0u64, f64::INFINITY);
         for k in kids.iter().take(self.st.max_per_dir) {
-            let least = self.st.least_area(tree.node(k.node).is_dir());
+            let least = self
+                .st
+                .least_area(tree.node(k.node).is_dir().then_some(k.size));
             let r = room.min(k.size as f64 / least);
             let sum = kept.saturating_add(k.size);
             let drawn = (total as f64).min(sum as f64 / (1.0 - LEVEL_GROUP_SHARE));
@@ -1255,7 +1361,7 @@ impl Run<'_> {
         {
             // the group's share of the box is w / (others + w)
             let most = others as f64 * LEVEL_GROUP_SHARE / (1.0 - LEVEL_GROUP_SHARE);
-            let folder = lone && self.tree.node(rest.one).is_dir();
+            let folder = (lone && self.tree.node(rest.one).is_dir()).then_some(rest.sum);
             let least = self.st.least_area(folder) * self.level_boost;
             let least = if area > 2.0 * least {
                 others as f64 * least / (area - least)
@@ -1315,7 +1421,9 @@ impl Run<'_> {
                 w: c.w - 2.0 * g,
                 h: c.h - 2.0 * g,
             };
-            if r.w >= 1.0 && r.h >= 1.0 && !(min_size && st.fit(c, is_folder(tree, it)) != Fit::Ok)
+            if r.w >= 1.0
+                && r.h >= 1.0
+                && !(min_size && st.fit(c, folder_size(tree, it)) != Fit::Ok)
             {
                 s.cells.push((*it, r));
             }
@@ -1362,7 +1470,7 @@ impl Run<'_> {
             let mut group_thin = false;
             let mut dropped = false;
             for (i, (it, c)) in self.s.items.iter().zip(&self.s.boxes).enumerate() {
-                let fit = self.st.fit(c, is_folder(tree, it));
+                let fit = self.st.fit(c, folder_size(tree, it));
                 if fit == Fit::Ok {
                     continue;
                 }

@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State, ipc::Response};
-use tessera_core::layout::{self, LayoutEngine, LayoutRequest, LayoutStyle, RootExtras, SizeMode};
+use tessera_core::layout::{
+    self, LayoutEngine, LayoutRequest, LayoutStyle, RootExtras, SizeFit, SizeMode,
+};
 use tessera_core::scan::{self, ScanOptions, ScanProgress};
 use tessera_core::search::{self, Hits, Query, QueryError};
 use tessera_core::totals::{Totals, TotalsCache};
@@ -469,12 +471,39 @@ struct StyleReq {
     min_area: f32,
     min_side: f32,
     min_width: f32,
+    #[serde(default)]
+    min_height: f32,
+    #[serde(default)]
+    size_fit: Option<SizeFitReq>,
     recurse: f32,
     open_share: f32,
     max_depth: u8,
     max_per_dir: u32,
     label_min_w: f32,
     label_min_h: f32,
+}
+
+#[derive(Deserialize, Clone, Copy)]
+struct SizeFitReq {
+    digit: f32,
+    dot: f32,
+    space: f32,
+    units: [f32; 5],
+    inset: f32,
+    height: f32,
+}
+
+impl From<SizeFitReq> for SizeFit {
+    fn from(f: SizeFitReq) -> Self {
+        SizeFit {
+            digit: f.digit,
+            dot: f.dot,
+            space: f.space,
+            units: f.units,
+            inset: f.inset,
+            height: f.height,
+        }
+    }
 }
 
 impl From<&LayoutReq> for LayoutRequest {
@@ -494,6 +523,8 @@ impl From<&LayoutReq> for LayoutRequest {
                 min_area: s.min_area,
                 min_side: s.min_side,
                 min_width: s.min_width,
+                min_height: s.min_height,
+                size_fit: s.size_fit.map(Into::into),
                 recurse: s.recurse,
                 open_share: s.open_share,
                 max_depth: s.max_depth,
@@ -1374,6 +1405,15 @@ mod tests {
         let q = LayoutRequest::from(&r);
         assert_eq!(q.size_mode, SizeMode::Logical);
         assert_eq!(q.style, LayoutStyle::default());
+        // the band look's minimum height and size fit
+        let r: LayoutReq = serde_json::from_str(
+            r#"{"view":0,"width":800,"height":600,"sizeMode":"disk","style":{"outer":6,"pad":5,"gap":2,"header":24,"minHeaderW":60,"minArea":110,"minSide":24,"minWidth":44,"minHeight":33,"sizeFit":{"digit":6.9,"dot":3,"space":3.3,"units":[32,13.7,17.2,15.1,13.3],"inset":16,"height":45},"recurse":60,"openShare":0.0025,"maxDepth":14,"maxPerDir":400,"labelMinW":44,"labelMinH":20}}"#,
+        )
+        .unwrap();
+        let q = LayoutRequest::from(&r);
+        assert_eq!(q.style.min_height, 33.0);
+        let f = q.style.size_fit.unwrap();
+        assert_eq!((f.units[3], f.height), (15.1, 45.0));
     }
 
     /// C:\ with Users\me\{a.mp4, b.ts (TypeScript), Docs\c.pdf} and pagefile.sys

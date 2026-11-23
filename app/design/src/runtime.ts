@@ -37,9 +37,9 @@ export interface PageProps {
   radius?: number;
   folderRadius?: number;
   /**
-   * The folder look (paintStyle.folders): 'classic' as shipped, 'band' the 1.3.1 candidate.
-   * With 'band' the layout's pad, header and folder minimum height follow from the band
-   * props below, and the pad / header props are ignored.
+   * The folder look (paintStyle.folders): 'band' as shipped since 1.3.1, 'classic' the look up
+   * to 1.3.0. With 'band' the layout's pad, header and folder minimum height follow from the
+   * band props below, and the pad / header props are ignored.
    */
   folderLook?: 'classic' | 'band';
   /** band look: white margin round a folder's content, px */
@@ -50,10 +50,6 @@ export interface PageProps {
   foot?: number;
   /** band look: 0 = the file colour .. 3 = the 1.3.0 closed-folder tint */
   tone?: number;
-  /** band look: the colour runs up the side ring from its seam with the colour band, fading out over this many px (0 = none) */
-  fade?: number;
-  /** band look: a closed folder too small to show its size in the white area has no white area ('on' / 'off') */
-  compact?: 'on' | 'off';
   /** band look: the least white area a folder gets, px (6; 18 holds a closed folder's size); the folder minimum height follows */
   minWhite?: number;
   /** band look: every folder gets room for its own size label on one line ('on' / 'off'); its least width follows the label (never under minWidth), minWhite no longer applies */
@@ -135,8 +131,8 @@ export async function apply(p: PageProps) {
   if (mine === run) await play(s, q, () => mine === run);
 }
 
-/** the layout as the app ships it, for going back from the band look */
-const SHIPPED = { pad: fluentLayout.pad, header: fluentLayout.header, minHeight: fluentLayout.minHeight, sizeFit: fluentLayout.sizeFit };
+/** the layout of the classic look (up to 1.3.0), for switching to it from the band look */
+const CLASSIC = { pad: 3, header: 21, minFolderH: 0 };
 
 function applyTreemapStyle(p: PageProps, live: boolean) {
   let paint = false;
@@ -164,7 +160,7 @@ function applyTreemapStyle(p: PageProps, live: boolean) {
     paintStyle.folderRadius = p.folderRadius;
     paint = true;
   }
-  for (const k of ['white', 'foot', 'tone', 'fade', 'minWhite'] as const) {
+  for (const k of ['white', 'foot', 'tone', 'minWhite'] as const) {
     const v = p[k];
     if (typeof v === 'number' && Number.isFinite(v) && paintStyle[k] !== v) {
       paintStyle[k] = v;
@@ -175,21 +171,18 @@ function applyTreemapStyle(p: PageProps, live: boolean) {
     paintStyle.ring = p.ring === 'on';
     paint = true;
   }
-  if ((p.compact === 'on' || p.compact === 'off') && paintStyle.compact !== (p.compact === 'on')) {
-    paintStyle.compact = p.compact === 'on';
-    paint = true;
-  }
+  // the size fit goes with each layout request (paint.ts › layoutSizeFit)
   if ((p.fitSize === 'on' || p.fitSize === 'off') && paintStyle.fitSize !== (p.fitSize === 'on')) {
     paintStyle.fitSize = p.fitSize === 'on';
-    paint = true;
+    layout = true;
   }
-  // the layout the band look needs, or the shipped one back when it is switched off
-  const want = band ? bandLayout() : wasBand ? { pad: p.pad ?? SHIPPED.pad, header: p.header ?? SHIPPED.header, minFolderH: SHIPPED.minHeight, sizeFit: SHIPPED.sizeFit } : null;
-  if (want && (fluentLayout.pad !== want.pad || fluentLayout.header !== want.header || fluentLayout.minHeight !== want.minFolderH || JSON.stringify(fluentLayout.sizeFit) !== JSON.stringify(want.sizeFit))) {
+  if (band !== wasBand) layout = true;
+  // the layout the band look needs, or the classic one when it is switched off
+  const want = band ? bandLayout() : wasBand ? { pad: p.pad ?? CLASSIC.pad, header: p.header ?? CLASSIC.header, minFolderH: CLASSIC.minFolderH } : null;
+  if (want && (fluentLayout.pad !== want.pad || fluentLayout.header !== want.header || fluentLayout.minHeight !== want.minFolderH)) {
     fluentLayout.pad = want.pad;
     fluentLayout.header = want.header;
     fluentLayout.minHeight = want.minFolderH;
-    fluentLayout.sizeFit = want.sizeFit;
     layout = true;
   }
   if (!live) return;

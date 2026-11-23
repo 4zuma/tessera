@@ -459,8 +459,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
         }
       }
       if (r.kind === Kind.DirLeaf) r.cat = folderCat(n);
-      // with sizeFit every folder tile has room for its name over its size, however narrow
-      if (r.header || named(rw, rh) || o.sizeFit) r.name = name;
+      if (r.header || named(rw, rh)) r.name = name;
     }
     return drawn;
   }
