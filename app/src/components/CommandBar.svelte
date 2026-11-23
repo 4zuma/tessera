@@ -1,9 +1,76 @@
 <script lang="ts">
-  import { app } from '../lib/app.svelte';
+  import { app, type MenuRow } from '../lib/app.svelte';
   import { fmtBytes } from '../lib/format';
-  import { t } from '../lib/i18n.svelte';
+  import { t, tn } from '../lib/i18n.svelte';
   import Icon from './Icon.svelte';
   import SearchBox from './SearchBox.svelte';
+
+  /** one step of the path: a folder, or a level of small items inside the last folder */
+  interface Step {
+    key: string;
+    name: string;
+    level: boolean;
+    go: () => void;
+  }
+  const steps = $derived<Step[]>([
+    ...app.crumbs.map(c => ({ key: `n${c.id}`, name: c.name, level: false, go: () => void app.zoomTo(c.id) })),
+    ...app.levels.map((l, i) => ({ key: `l${i}`, name: tn('smallItems', l.count), level: true, go: () => app.backToLevel(i + 1) })),
+  ]);
+
+  // As in Explorer, a path too long for the bar folds from the left into a "…" step, which
+  // takes the first folder's place: the drive stays first (C: › … › deeper › current), and
+  // "…" lists the folded steps, nearest first. A hidden copy of every step measures them.
+  let nav: HTMLElement | undefined = $state();
+  let meas: HTMLElement | undefined = $state();
+  /** how many steps at the end show after "…"; null: the whole path fits */
+  let tail = $state<number | null>(null);
+  const shown = $derived(tail == null || steps.length <= 2 ? steps : [steps[0], ...steps.slice(steps.length - tail)]);
+  const folded = $derived(tail == null || steps.length <= 2 ? [] : steps.slice(1, steps.length - tail));
+
+  function fit() {
+    if (!nav || !meas) return;
+    const avail = nav.clientWidth;
+    const [sepEl, ellEl, ...stepEls] = [...meas.children] as HTMLElement[];
+    // the separator's 1 px margins
+    const sep = sepEl.offsetWidth + 2;
+    const w = stepEls.map(el => el.offsetWidth);
+    const n = w.length;
+    const full = w.reduce((a, b) => a + b, 0) + sep * Math.max(0, n - 1);
+    if (n <= 2 || full <= avail) {
+      tail = null;
+      return;
+    }
+    // the drive, "…" and as many of the last steps as fit; the current one always shows
+    let used = w[0] + sep + ellEl.offsetWidth;
+    let k = 0;
+    for (let i = n - 1; i >= 1; i--) {
+      if (k > 0 && used + sep + w[i] > avail) break;
+      used += sep + w[i];
+      k++;
+    }
+    tail = Math.min(k, n - 2);
+  }
+
+  $effect(() => {
+    void steps;
+    fit();
+  });
+  $effect(() => {
+    if (!nav) return;
+    const ro = new ResizeObserver(() => fit());
+    ro.observe(nav);
+    return () => ro.disconnect();
+  });
+
+  function openFolded(e: MouseEvent) {
+    const b = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const rows: MenuRow[] = folded
+      .slice()
+      .reverse()
+      .map(s => ({ type: 'item', icon: s.level ? 'tiles' : 'folder', label: s.name, run: s.go }));
+    app.tip = null;
+    app.menu = { x: b.left, y: b.bottom + 4, rows };
+  }
 
   /** `search`: the search box is here, where Windows draws the title bar (Windows 10) */
   let {
@@ -61,20 +128,33 @@
     {/if}
   </div>
 
-  <button class="sbtn" onclick={() => app.zoomOut()} disabled={app.up == null} title={t('cmd.upTip')} aria-label={t('cmd.up')}>
+  <button class="sbtn" onclick={() => app.zoomOut()} disabled={!app.canGoUp} title={t('cmd.upTip')} aria-label={t('cmd.up')}>
     <Icon name="up" />
   </button>
 
-  <nav class="crumbs" aria-label={t('cmd.path')}>
-    {#each app.crumbs as c, i (c.id)}
+  <nav class="crumbs" aria-label={t('cmd.path')} bind:this={nav}>
+    {#each shown as c, i (c.key)}
       {#if i > 0}<span class="sep" aria-hidden="true"><Icon name="chev" size={12} /></span>{/if}
-      <button class="crumb" class:cur={i === app.crumbs.length - 1} onclick={() => app.zoomTo(c.id)} aria-current={i === app.crumbs.length - 1 ? 'location' : undefined}>
-        {c.name}
+      {#if i === 1 && folded.length}
+        <button class="crumb ell" aria-haspopup="menu" onclick={openFolded} title={t('cmd.pathHidden')} aria-label={t('cmd.pathHidden')}>…</button>
+        <span class="sep" aria-hidden="true"><Icon name="chev" size={12} /></span>
+      {/if}
+      {@const cur = i === shown.length - 1}
+      <button class="crumb" class:cur class:lvl={c.level} onclick={c.go} aria-current={cur ? 'location' : undefined}>
+        {#if c.level}<Icon name="tiles" size={14} />{/if}<span class="nm">{c.name}</span>
       </button>
     {/each}
+    <!-- every step at its natural width, for fit() -->
+    <div class="measure" aria-hidden="true" bind:this={meas}>
+      <span class="sep"><Icon name="chev" size={12} /></span>
+      <span class="crumb ell">…</span>
+      {#each steps as c, i (c.key)}
+        <span class="crumb" class:cur={i === steps.length - 1}>
+          {#if c.level}<Icon name="tiles" size={14} />{/if}<span class="nm">{c.name}</span>
+        </span>
+      {/each}
+    </div>
   </nav>
-
-  <span class="sp"></span>
 
   {#if search}<div class="find"><SearchBox /></div>{/if}
 
@@ -164,20 +244,25 @@
     margin: 4px -4px;
     background: var(--divider);
   }
+  /* the path takes the room the other controls leave; fit() folds it to that width */
   .crumbs {
+    position: relative;
+    flex: 1 1 0;
     display: flex;
     align-items: center;
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;
-    margin-left: 4px;
+    margin: 0 8px 0 4px;
   }
   .crumb {
     flex: 0 1 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     min-width: 24px;
     max-width: 220px;
     overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
     border: 0;
     background: none;
@@ -186,14 +271,25 @@
     color: var(--text-2);
     font: 600 14px/20px var(--font);
   }
+  .nm {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .crumb:hover {
     background: var(--subtle-hover);
     color: var(--text);
   }
+  /* the steps before it fold away first (fit()); it gives way only when even
+     "C: › … › current" does not fit */
   .crumb.cur {
-    flex-shrink: 0;
     max-width: 320px;
     color: var(--text);
+  }
+  .ell {
+    flex: none;
+    min-width: 0;
+    letter-spacing: 1px;
   }
   .sep {
     flex: none;
@@ -201,9 +297,17 @@
     color: var(--text-3);
     margin: 0 1px;
   }
-  .sp {
-    flex: 1;
-    min-width: 8px;
+  .measure {
+    position: absolute;
+    left: 0;
+    top: 0;
+    display: flex;
+    width: max-content;
+    visibility: hidden;
+    pointer-events: none;
+  }
+  .measure .crumb {
+    flex: none;
   }
   .find {
     flex: 0 1 260px;

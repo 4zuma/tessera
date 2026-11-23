@@ -152,6 +152,8 @@ struct Session {
 #[derive(Default)]
 struct Shown {
     req: Option<LayoutRequest>,
+    /// The level shown, if any: the ids it hides (sorted).
+    hide: Option<Vec<u32>>,
     buf: Vec<u8>,
     bytes_per_px: f64,
     /// [`Tree::changed_bytes`] and the free space at that point.
@@ -245,9 +247,17 @@ impl Session {
     }
 
     /// Remembers the layout just sent to the window.
-    fn record_shown(&self, req: LayoutRequest, buf: &[u8], changes: u64, redated: u64) {
+    fn record_shown(
+        &self,
+        req: LayoutRequest,
+        hide: Option<Vec<u32>>,
+        buf: &[u8],
+        changes: u64,
+        redated: u64,
+    ) {
         let mut g = lock(&self.shown);
         g.req = Some(req);
+        g.hide = hide;
         g.buf.clear();
         g.buf.extend_from_slice(buf);
         g.bytes_per_px = layout::header_bytes_per_px(buf).map_or(0.0, f64::from);
@@ -270,10 +280,17 @@ impl Session {
         let t = self.tree();
         let now = t.changed_bytes();
         let redated = t.redated_seq();
-        let (req, since, free, bytes_per_px, dated) = {
+        let (req, hide, since, free, bytes_per_px, dated) = {
             let g = lock(&self.shown);
             match g.req {
-                Some(req) => (req, g.changes, g.free, g.bytes_per_px, g.redated),
+                Some(req) => (
+                    req,
+                    g.hide.clone(),
+                    g.changes,
+                    g.free,
+                    g.bytes_per_px,
+                    g.redated,
+                ),
                 None => return true,
             }
         };
@@ -301,16 +318,20 @@ impl Session {
         }
         let extras = self.extras(&t, &req);
         let hits = lock(&self.hits).clone();
-        let buf = lock(&core.engine).layout_with(
+        let buf = lock(&core.engine).layout_level(
             &t,
             &req,
+            hide.as_deref(),
             extras,
             self.rev.load(Relaxed),
             hits.as_deref(),
         );
         drop(t);
         let mut g = lock(&self.shown);
-        if g.req == Some(req) && layout::same_picture(&g.buf, &buf, REDRAW_TOLERANCE_PX) {
+        if g.req == Some(req)
+            && g.hide == hide
+            && layout::same_picture(&g.buf, &buf, REDRAW_TOLERANCE_PX)
+        {
             // count again from here; later checks still compare with the
             // picture on screen, so small changes cannot creep past unseen
             g.changes = now;
@@ -432,6 +453,9 @@ pub struct LayoutReq {
     height: f32,
     size_mode: Mode,
     style: StyleReq,
+    /// A level of the view: the ids it leaves out (see `layout_level`).
+    #[serde(default)]
+    hide: Option<Vec<u32>>,
 }
 
 #[derive(Deserialize)]
@@ -712,18 +736,30 @@ pub fn window_state(app: &AppHandle, focused: Option<bool>, minimized: Option<bo
 #[tauri::command]
 pub async fn layout(core: State<'_, Core>, req: LayoutReq) -> Result<Response, String> {
     let s = core.current()?;
+    let hide = req.hide.clone().map(sorted);
     let mut req = LayoutRequest::from(&req);
     let t = s.tree();
     // the layout echoes the view it drew, so the UI follows when it falls back
-    req.view = live_view(&t, req.view);
+    let view = live_view(&t, req.view);
+    // a level of a folder that is gone: the folder it falls back to is shown whole
+    let hide = hide.filter(|_| view == req.view);
+    req.view = view;
     let extras = s.extras(&t, &req);
     let rev = s.rev.load(Relaxed);
     let hits = lock(&s.hits).clone();
-    let buf = lock(&core.engine).layout_with(&t, &req, extras, rev, hits.as_deref());
+    let buf =
+        lock(&core.engine).layout_level(&t, &req, hide.as_deref(), extras, rev, hits.as_deref());
     let (changes, redated) = (t.changed_bytes(), t.redated_seq());
     drop(t);
-    s.record_shown(req, &buf, changes, redated);
+    s.record_shown(req, hide, &buf, changes, redated);
     Ok(Response::new(buf))
+}
+
+/// Ids sorted and without repeats, as `hide` lists are used.
+fn sorted(mut ids: Vec<u32>) -> Vec<u32> {
+    ids.sort_unstable();
+    ids.dedup();
+    ids
 }
 
 // ---------------------------------------------------------------------------
@@ -1032,18 +1068,26 @@ pub async fn cat_stats(
     core: State<'_, Core>,
     view: u32,
     size_mode: Mode,
+    hide: Option<Vec<u32>>,
 ) -> Result<Vec<CatStat>, String> {
     let s = core.current()?;
-    Ok(cat_stats_of(&s, NodeId(view), size_mode.into()))
+    let hide = hide.map(sorted);
+    Ok(cat_stats_of(
+        &s,
+        NodeId(view),
+        size_mode.into(),
+        hide.as_deref(),
+    ))
 }
 
-/// Bytes per file category below `view`, largest first.
-fn cat_stats_of(s: &Session, view: NodeId, mode: SizeMode) -> Vec<CatStat> {
+/// Bytes per file category below `view` (in a level, below what it holds),
+/// largest first.
+fn cat_stats_of(s: &Session, view: NodeId, mode: SizeMode, hide: Option<&[u32]>) -> Vec<CatStat> {
     let t = s.tree();
     if view.index() >= t.len() || t.is_deleted(view) || !t.node(view).is_dir() {
         return Vec::new();
     }
-    let bytes = *totals(s, &t, view).bytes(mode);
+    let bytes = *level_totals(s, &t, view, hide).bytes(mode);
     let mut out: Vec<CatStat> = bytes
         .iter()
         .enumerate()
@@ -1062,19 +1106,35 @@ pub async fn age_stats(
     core: State<'_, Core>,
     view: u32,
     size_mode: Mode,
+    hide: Option<Vec<u32>>,
 ) -> Result<Vec<u64>, String> {
     let s = core.current()?;
-    Ok(age_stats_of(&s, NodeId(view), size_mode.into()))
+    let hide = hide.map(sorted);
+    Ok(age_stats_of(
+        &s,
+        NodeId(view),
+        size_mode.into(),
+        hide.as_deref(),
+    ))
 }
 
-/// Bytes below `view` per legend bin of [`tessera_core::age::bin`] (bin 0:
-/// files whose time is not known); empty when `view` is not a folder.
-fn age_stats_of(s: &Session, view: NodeId, mode: SizeMode) -> Vec<u64> {
+/// Bytes below `view` (in a level, below what it holds) per legend bin of
+/// [`tessera_core::age::bin`] (bin 0: files whose time is not known); empty
+/// when `view` is not a folder.
+fn age_stats_of(s: &Session, view: NodeId, mode: SizeMode, hide: Option<&[u32]>) -> Vec<u64> {
     let t = s.tree();
     if view.index() >= t.len() || t.is_deleted(view) || !t.node(view).is_dir() {
         return Vec::new();
     }
-    totals(s, &t, view).age_bytes(mode).to_vec()
+    level_totals(s, &t, view, hide).age_bytes(mode).to_vec()
+}
+
+/// What is below `view`, or with `hide` below what a level of it holds.
+fn level_totals(s: &Session, t: &Tree, view: NodeId, hide: Option<&[u32]>) -> Totals {
+    match hide {
+        Some(h) => lock(&s.totals).get_except(t, view, h),
+        None => totals(s, t, view),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1386,7 +1446,7 @@ mod tests {
     #[test]
     fn categories_below_a_view() {
         let s = sample();
-        let stats = cat_stats_of(&s, NodeId::ROOT, SizeMode::Disk);
+        let stats = cat_stats_of(&s, NodeId::ROOT, SizeMode::Disk, None);
         let cats: Vec<u8> = stats.iter().map(|c| c.cat).collect();
         assert_eq!(
             cats,
@@ -1398,7 +1458,18 @@ mod tests {
             ]
         );
         let me = id_of(&s, &[b"Users", b"me"]);
-        assert_eq!(cat_stats_of(&s, me, SizeMode::Disk).len(), 3);
+        assert_eq!(cat_stats_of(&s, me, SizeMode::Disk, None).len(), 3);
+        // a level of me without a.mp4 (the list need not be sorted)
+        let a = id_of(&s, &[b"Users", b"me", b"a.mp4"]);
+        let docs = id_of(&s, &[b"Users", b"me", b"Docs"]);
+        let hide = sorted(vec![docs.0, a.0, a.0]);
+        let cats: Vec<u8> = cat_stats_of(&s, me, SizeMode::Disk, Some(&hide[..1]))
+            .iter()
+            .map(|c| c.cat)
+            .collect();
+        assert_eq!(cats, [category::DOC, category::DEV]);
+        let only = cat_stats_of(&s, me, SizeMode::Disk, Some(&hide));
+        assert_eq!((only.len(), only[0].cat), (1, category::DEV));
     }
 
     #[test]
@@ -1409,14 +1480,14 @@ mod tests {
         let a = id_of(&s, &[b"Users", b"me", b"a.mp4"]);
         let year_ago = age::now_filetime() - 400 * 864_000_000_000;
         assert!(s.tree.write().unwrap().set_modified(a, year_ago));
-        let bins = age_stats_of(&s, me, SizeMode::Logical);
+        let bins = age_stats_of(&s, me, SizeMode::Logical, None);
         assert_eq!(bins.len(), age::BINS);
         let old = age::bin(age::byte_of_days(400.0));
         assert_eq!(bins[old], 400_000);
         assert_eq!(bins[0], 900 + 8000, "b.ts and c.pdf have no time");
         assert_eq!(bins.iter().sum::<u64>(), 400_000 + 900 + 8000);
-        assert!(age_stats_of(&s, a, SizeMode::Disk).is_empty());
-        assert!(age_stats_of(&s, NodeId(9999), SizeMode::Disk).is_empty());
+        assert!(age_stats_of(&s, a, SizeMode::Disk, None).is_empty());
+        assert!(age_stats_of(&s, NodeId(9999), SizeMode::Disk, None).is_empty());
     }
 
     #[test]

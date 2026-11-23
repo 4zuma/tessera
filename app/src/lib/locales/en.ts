@@ -62,6 +62,8 @@ export const en = {
   'kind.group': 'Small items, grouped',
   'kind.groupShort': 'Small items',
   'kind.currentFolder': 'Current folder',
+  'kind.levelIn': 'In {folder}',
+  'kind.notToScale': 'not to scale',
 
   /* why something can't be deleted (from the layout flags) */
   'lock.inUse': "Windows is using this file, so it can't be deleted",
@@ -88,6 +90,7 @@ export const en = {
   'cmd.up': 'Up one level',
   'cmd.upTip': 'Up one level (Backspace)',
   'cmd.path': 'Path',
+  'cmd.pathHidden': 'Hidden part of the path',
   'cmd.stop': 'Stop',
   'cmd.rescan': 'Rescan',
   'cmd.rescanTip': 'Rescan (F5)',
@@ -220,7 +223,7 @@ export const en = {
   'core.freeHint': 'Space on this drive that nothing uses yet',
   'core.unscannedHint': "Used space the scan hasn't reached yet. It shrinks as the scan goes on.",
   'core.group': 'Small items',
-  'core.groupHint': 'Items too small to draw, merged into one tile. Zoom into the folder to see them.',
+  'core.groupHint': 'Items too small to draw, merged into one tile. Double-click it to see them.',
   'core.hiberfil': 'To free it, turn off hibernation: run powercfg /h off in an administrator terminal.',
   'core.pagefile': 'Change it under Advanced system settings › Performance › Virtual memory.',
   'core.windowsOld': 'A backup of your previous Windows. Removing it with Disk Cleanup is safest.',

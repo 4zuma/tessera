@@ -242,7 +242,9 @@ export class MockBackend implements Backend {
     const view = this.node(req.view) && this.attached(this.node(req.view)) ? req.view : 0;
     const unscanned = this.scanning ? Math.max(0, this.used(d) - d.nodes[0].dT) : null;
     const hits = this.hits;
-    const L = layoutDrive({ drive: d, view, width: req.width, height: req.height, sizeMode: req.sizeMode, style: req.style, free: this.free(d), unscanned, hits: hits?.share });
+    // a level of a folder that is gone: the folder it falls back to is shown whole
+    const hide = req.hide && view === req.view ? new Set(req.hide) : null;
+    const L = layoutDrive({ drive: d, view, width: req.width, height: req.height, sizeMode: req.sizeMode, style: req.style, free: this.free(d), unscanned, hits: hits?.share, hide });
     return encodeLayout({ view, rev: this.rev, bytesPerPx: L.bytesPerPx, search: hits?.id ?? 0, rects: L.rects });
   }
 
@@ -315,29 +317,30 @@ export class MockBackend implements Backend {
     return { crumbs, up: p >= 0 ? p : null };
   }
 
-  async catStats(view: number, mode: SizeMode): Promise<CatStat[]> {
+  /** walks what is below `view`, or with `hide` below what a level of it holds */
+  private walkBelow(view: number, hide: number[] | undefined, file: (n: MNode) => void) {
     const d = this.d;
-    const acc = new Map<number, number>();
     const walk = (n: MNode) => {
       if (!n.seen) return;
       if (n.kids) for (const k of n.kids) walk(d.nodes[k]);
-      else acc.set(n.cat, (acc.get(n.cat) || 0) + (mode === 'disk' ? n.disk : n.logical));
+      else file(n);
     };
     const v = this.node(view);
-    if (v) walk(v);
+    if (!v) return;
+    if (!hide) return walk(v);
+    const skip = new Set(hide);
+    for (const k of v.kids ?? []) if (!skip.has(k)) walk(d.nodes[k]);
+  }
+
+  async catStats(view: number, mode: SizeMode, hide?: number[]): Promise<CatStat[]> {
+    const acc = new Map<number, number>();
+    this.walkBelow(view, hide, n => acc.set(n.cat, (acc.get(n.cat) || 0) + (mode === 'disk' ? n.disk : n.logical)));
     return [...acc].filter(([, b]) => b > 0).map(([cat, bytes]) => ({ cat, bytes })).sort((a, b) => b.bytes - a.bytes);
   }
 
-  async ageStats(view: number, mode: SizeMode): Promise<number[]> {
-    const d = this.d;
+  async ageStats(view: number, mode: SizeMode, hide?: number[]): Promise<number[]> {
     const hist = new Array<number>(AGE_BINS).fill(0);
-    const walk = (n: MNode) => {
-      if (!n.seen) return;
-      if (n.kids) for (const k of n.kids) walk(d.nodes[k]);
-      else hist[ageBin(ageByte(n.age))] += mode === 'disk' ? n.disk : n.logical;
-    };
-    const v = this.node(view);
-    if (v) walk(v);
+    this.walkBelow(view, hide, n => (hist[ageBin(ageByte(n.age))] += mode === 'disk' ? n.disk : n.logical));
     return hist;
   }
 

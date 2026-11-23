@@ -61,7 +61,8 @@ export class Item {
   private dur = 1;
   private ease: (t: number) => number = t => t;
   constructor(
-    readonly id: number,
+    /** the record's id; an old tile renewed by `ApplyOpts.renew` gets a key no record has */
+    public id: number,
     public r: Rect,
   ) {}
 
@@ -181,6 +182,12 @@ export interface ApplyOpts {
   cam?: (rects: Rect[]) => { A: Box; B: Box } | null;
   /** existing tiles slide with the reflow curve after a short delay (deletes) */
   reflow?: boolean;
+  /**
+   * ids whose tiles on screen are not the ones the new layout means, though the ids are the
+   * same (a level's group and the next level's): the old tile leaves and the new one comes
+   * in, instead of one tile moving into the other's place
+   */
+  renew?: readonly number[];
 }
 
 export interface EngineStats {
@@ -213,6 +220,8 @@ export function nearlySame(a: Box, b: Box): boolean {
 
 export class TreemapEngine {
   readonly items = new Map<number, Item>();
+  /** keys for renewed tiles (see ApplyOpts.renew): below 0, where no record's id is */
+  private renewed = 0;
   drawList: Item[] = [];
   W = 0;
   H = 0;
@@ -355,6 +364,13 @@ export class TreemapEngine {
     const m = M[kind] ?? M.update;
     const cam = opt.cam ? opt.cam(rects) : null;
     const instant = kind === 'instant' || this.host.reduced;
+    for (const id of opt.renew ?? []) {
+      const it = this.items.get(id);
+      if (!it) continue;
+      this.items.delete(id);
+      it.id = --this.renewed;
+      this.items.set(it.id, it);
+    }
     const seen = new Set<number>();
     for (let i = 0; i < rects.length; i++) {
       const r = rects[i];

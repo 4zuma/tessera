@@ -26,6 +26,8 @@ export const ICONS = {
   pane: 'M3.5 5.5h17v13h-17z M14.5 5.5v13',
   dismiss: 'M6 6l12 12 M18 6 6 18',
   more: 'M5.5 12h.01 M12 12h.01 M18.5 12h.01',
+  /** small items: a group's tile, a level's crumb */
+  tiles: 'M4.5 4.5h6v6h-6z M13.5 4.5h6v6h-6z M4.5 13.5h6v6h-6z M13.5 13.5h6v6h-6z',
   download: 'M12 4v11 M7 10.5l5 5 5-5 M5 20h14',
   edit: 'M15 5.5l3.5 3.5L8.5 19H5v-3.5z M13 7.5l3.5 3.5',
 } as const;

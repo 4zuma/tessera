@@ -99,6 +99,28 @@ impl TotalsCache {
         self.walk(tree, dir)
     }
 
+    /// The totals below `dir` without its children in `hide` (sorted
+    /// ascending) and what is below them: what a level of `dir` holds
+    /// ([`crate::layout::LayoutEngine::layout_level`]).
+    pub fn get_except(&mut self, tree: &Tree, dir: NodeId, hide: &[u32]) -> Totals {
+        self.catch_up(tree);
+        let mut acc = Totals::default();
+        for c in tree.children(dir) {
+            let n = tree.node(c);
+            if n.is_deleted() || hide.binary_search(&c.0).is_ok() {
+                continue;
+            }
+            if n.is_dir() {
+                acc.dirs += 1;
+                let t = self.walk(tree, c);
+                acc.add(&t);
+            } else {
+                acc.add_file(tree, c, n.size(), n.logical());
+            }
+        }
+        acc
+    }
+
     /// Number of folders whose totals are kept.
     pub fn len(&self) -> usize {
         self.memo.len()
@@ -336,5 +358,24 @@ mod tests {
         assert_eq!(after.files, before.files + 1);
         assert_eq!(after.disk[category::VDISK as usize], 7);
         assert_eq!(c.get(&t, big), brute(&t, big));
+    }
+
+    #[test]
+    fn a_level_counts_what_is_not_hidden() {
+        let (mut t, big, _, _, small) = sample();
+        let loose = file(&mut t, NodeId::ROOT, "loose.zip", 5);
+        let mut c = TotalsCache::new();
+        let mut hide = vec![big.0, loose.0];
+        hide.sort_unstable();
+        let got = c.get_except(&t, NodeId::ROOT, &hide);
+        let mut want = brute(&t, small);
+        want.dirs += 1;
+        assert_eq!(got, want);
+        hide.retain(|&h| h != loose.0);
+        assert_eq!(c.get_except(&t, NodeId::ROOT, &hide).files, want.files + 1);
+        hide.extend([small.0, loose.0]);
+        hide.sort_unstable();
+        assert_eq!(c.get_except(&t, NodeId::ROOT, &hide), Totals::default());
+        assert_eq!(c.get_except(&t, NodeId::ROOT, &[]), c.get(&t, NodeId::ROOT));
     }
 }

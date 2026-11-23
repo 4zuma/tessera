@@ -2,7 +2,7 @@
  * Squarified treemap with the rules from docs/ipc.md ("Layout rules the core
  * implements"). This is the reference the Rust layout module follows.
  */
-import { CAT_NONE, FREE, Flag, Kind, NONE, UNSCANNED, groupId, type Rect } from '../codec';
+import { CAT_NONE, FREE, Flag, Kind, NONE, Note, UNSCANNED, groupId, type Rect } from '../codec';
 import { CAT_COUNT } from '../categories';
 import type { LayoutStyle, SizeMode } from '../types';
 import type { Drive, MNode } from './drive';
@@ -10,7 +10,10 @@ import { shareOf } from './search';
 import { AGE_UNKNOWN, ageByte } from '../../age';
 
 interface Item {
+  /** what the area is laid out from: the size, but not for a level's group (rule 9) */
   s: number;
+  /** the size, when `s` is not it */
+  size?: number;
   rk: number;
   n?: MNode;
   special?: 'free' | 'unscanned';
@@ -29,7 +32,12 @@ export interface LayoutInput {
   unscanned: number | null;
   /** a search's share per node (see ./search), for the records' `hit` */
   hits?: Uint8Array | null;
+  /** a level of the view (rule 9): the children it leaves out */
+  hide?: ReadonlySet<number> | null;
 }
+
+/** rule 9: in a level, the group takes at most this share of the map */
+export const LEVEL_GROUP_SHARE = 1 / 3;
 
 export const sizeOf = (n: MNode, mode: SizeMode) => (mode === 'disk' ? n.dT : n.dL);
 
@@ -174,8 +182,11 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
   const N = drive.nodes;
   const view = N[inp.view];
   const out: Rect[] = [];
-  const kids: Item[] = visibleKids(drive, view, sizeMode).map(n => ({ n, s: sizeOf(n, sizeMode), rk: 0 }));
-  if (inp.view === 0) {
+  const hide = inp.hide ?? null;
+  const kids: Item[] = visibleKids(drive, view, sizeMode)
+    .filter(n => !hide?.has(n.id))
+    .map(n => ({ n, s: sizeOf(n, sizeMode), rk: 0 }));
+  if (inp.view === 0 && !hide) {
     if (inp.unscanned != null && inp.unscanned > 64 * 1024 * 1024) kids.push({ special: 'unscanned', s: inp.unscanned, rk: 0 });
     if (inp.free != null && inp.free > 0) kids.push({ special: 'free', s: inp.free, rk: 0 });
   }
@@ -184,11 +195,13 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
   const H = inp.height - 2 * o.outer;
   // a folder opens only above both thresholds (rule 5)
   const openArea = Math.max(o.minArea * o.recurse, o.openShare * W * H);
-  place(view, kids, o.outer, o.outer, W, H, 1, NONE);
-  return { rects: out, bytesPerPx: total / Math.max(1, W * H) };
+  const drawn = place(view, kids, o.outer, o.outer, W, H, 1, NONE, !!hide);
+  // a level's map stands for what was laid out, its group at its weight
+  return { rects: out, bytesPerPx: (hide ? drawn : total) / Math.max(1, W * H) };
 
-  function place(parent: MNode, items: Item[], x: number, y: number, w: number, h: number, depth: number, pid: number) {
-    if (w < 1 || h < 1 || !items.length) return;
+  /** lays out `items` in the box; returns the bytes (weights) it stands for */
+  function place(parent: MNode, items: Item[], x: number, y: number, w: number, h: number, depth: number, pid: number, level = false): number {
+    if (w < 1 || h < 1 || !items.length) return 0;
     for (const c of items) c.rk = rank(c);
     items.sort((a, b) => b.rk - a.rk);
     let total = 0;
@@ -225,10 +238,27 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       const ct = c.n!.kids ? folderCat(c.n!) : c.n!.cat;
       m.set(ct, (m.get(ct) || 0) + c.s);
     };
+    const least = (dir: boolean) => Math.max(o.minArea, ROOM * side * (dir ? Math.max(side, wide) : side));
+    // in a level (rule 9) the group takes at most LEVEL_GROUP_SHARE of the box, so the box
+    // stands for min(total, kept / (1 - share)) bytes; an item keeps its tile while every
+    // one kept so far still gets its least area at that scale, and the first that fails ends it
+    let kept = 0;
+    let room = Infinity;
+    let open = true;
+    const keeps = (c: Item): boolean => {
+      if (!level) return c.s * k >= least(isDir(c)) && nodes.length < o.maxPerDir;
+      if (!open || nodes.length >= o.maxPerDir) return (open = false);
+      const r = Math.min(room, c.s / least(isDir(c)));
+      const sum = kept + c.s;
+      if (r * w * h < Math.min(total, sum / (1 - LEVEL_GROUP_SHARE))) return (open = false);
+      kept = sum;
+      room = r;
+      return true;
+    };
     for (const c of items) {
       if (c.special === 'unscanned') head.push(c);
       else if (c.special) tail.push(c);
-      else if (c.s * k >= Math.max(o.minArea, ROOM * side * (isDir(c) ? Math.max(side, wide) : side)) && nodes.length < o.maxPerDir) nodes.push(c);
+      else if (keeps(c)) nodes.push(c);
       else {
         rest += c.s;
         restN++;
@@ -243,8 +273,11 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     }
     let cut = nodes.length;
     let noGroup = false;
+    // a level's group is never left out: while too thin it gets twice its least area
+    let boost = 1;
     const gone = new Set<Item>();
     let rs: [Item, number, number, number, number][] = [];
+    let drawn = 0;
     for (let pass = 0; pass < 12; pass++) {
       let gs = rest;
       let gn = restN;
@@ -265,13 +298,28 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       }
       const mid = nodes.slice(0, cut);
       let grp: Item | null = null;
-      // a group of one would hide a name for nothing
-      if (gn === 1) grp = cut < nodes.length ? nodes[cut] : items.find(c => !c.special && !nodes.includes(c))!;
-      else if (gn > 1) {
+      // a group of one would hide a name for nothing; in a level the one left over is weighed
+      // like the group, so it is drawn big enough to be pointed at (a group of one would only
+      // ask for another level)
+      const lone = gn === 1 ? (cut < nodes.length ? nodes[cut] : items.find(c => !c.special && !nodes.includes(c))!) : null;
+      if (lone && !level) grp = lone;
+      else if (gn >= 1) {
         let best = CAT_NONE;
         let bb = -1;
         for (const [ct, v] of gv) if (ct !== CAT_NONE && v > bb) { bb = v; best = ct; }
-        grp = { s: gs, rk: gs, group: { count: gn, cat: best, hit: shareOf(gh, gs), age: gw > 0 ? Math.round(ga / gw) : AGE_UNKNOWN } };
+        // in a level, beside `others` bytes of tiles: at most LEVEL_GROUP_SHARE of the box and at
+        // least the least area of a tile (its share of the box is weight / (others + weight))
+        let weight = gs;
+        const others = mid.reduce((a, c) => a + c.s, 0);
+        if (level && others > 0) {
+          const most = (others * LEVEL_GROUP_SHARE) / (1 - LEVEL_GROUP_SHARE);
+          const l = least(!!lone && isDir(lone)) * boost;
+          const fewest = w * h > 2 * l ? (others * l) / (w * h - l) : 0;
+          weight = Math.max(1, Math.round(Math.min(Math.max(gs, fewest), Math.max(most, fewest))));
+        }
+        grp = lone
+          ? { ...lone, s: weight, size: gs, rk: weight }
+          : { s: weight, size: gs, rk: weight, group: { count: gn, cat: best, hit: shareOf(gh, gs), age: gw > 0 ? Math.round(ga / gw) : AGE_UNKNOWN } };
       }
       if (grp && !noGroup) {
         // with minSide the group takes its place by size, not the strip left at the end
@@ -280,6 +328,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
         mid.splice(at, 0, grp);
       }
       const list = [...head, ...mid, ...tail].filter(c => !gone.has(c));
+      drawn = list.reduce((a, c) => a + c.s, 0);
       rs = [];
       squarify(list, x, y, w, h, rs, side);
       if (!sized) break;
@@ -309,7 +358,8 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
         nodes.splice(0, end, ...kept, ...head.filter(c => narrow.has(c)));
         cut = kept.length;
         noGroup = false;
-      } else if (grpThin && !noGroup) noGroup = true;
+      } else if (grpThin && level && boost < 16) boost *= 2;
+      else if (grpThin && !noGroup) noGroup = true;
       else if (!dropped) break;
     }
     const g = o.gap / 2;
@@ -323,7 +373,8 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       const base = { x: rx, y: ry, w: rw, h: rh, depth, parent: pid, count: 0, header: 0, hit: c.n ? hitOf(c.n) : (c.group?.hit ?? 0), age: c.n ? ageOf(c.n) : (c.group?.age ?? AGE_UNKNOWN) };
       if (c.group) {
         const id = groupId(parent.id);
-        out.push({ ...base, id, target: parent.id, count: c.group.count, size: c.s, name: '', kind: Kind.Group, cat: c.group.cat, flags: 0 });
+        const size = c.size ?? c.s;
+        out.push({ ...base, id, target: parent.id, count: c.group.count, size, name: '', kind: Kind.Group, cat: c.group.cat, flags: 0, note: size !== c.s ? Note.NotToScale : 0 });
         continue;
       }
       if (c.special) {
@@ -331,8 +382,11 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
         continue;
       }
       const n = c.n!;
+      // a level's lone left-over item is laid out from its weight (rule 9)
+      const size = c.size ?? c.s;
+      const note = size !== c.s ? Note.NotToScale : 0;
       if (!n.kids) {
-        out.push({ ...base, id: n.id, target: n.id, size: c.s, name: named(rw, rh) ? n.name : '', kind: Kind.File, cat: n.cat, flags: flagsOf(drive, n) });
+        out.push({ ...base, id: n.id, target: n.id, size, name: named(rw, rh) ? n.name : '', kind: Kind.File, cat: n.cat, flags: flagsOf(drive, n), note });
         continue;
       }
       // fold chains of single sub-folders into one tile: "archive › pc › content"
@@ -344,7 +398,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
         name += ' › ' + deep.name;
         kidsOf = visibleKids(drive, deep, sizeMode);
       }
-      const r: Rect = { ...base, id: n.id, target: deep.id, size: c.s, name: '', kind: Kind.DirLeaf, cat: CAT_NONE, flags: flagsOf(drive, n) | flagsOf(drive, deep) };
+      const r: Rect = { ...base, id: n.id, target: deep.id, size, name: '', kind: Kind.DirLeaf, cat: CAT_NONE, flags: flagsOf(drive, n) | flagsOf(drive, deep), note };
       out.push(r);
       const hh = rh >= o.header * 2.2 && rw >= o.minHeaderW ? o.header : 0;
       // an open folder always has a header, so it is never a nameless frame
@@ -362,5 +416,6 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       if (r.kind === Kind.DirLeaf) r.cat = folderCat(n);
       if (r.header || named(rw, rh)) r.name = name;
     }
+    return drawn;
   }
 }

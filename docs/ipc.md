@@ -19,11 +19,11 @@ All sizes are bytes. All ids are `u32` node indices into the core's arena unless
 | `list_volumes` | – | `Volume[]` |
 | `scan_start` | `{ root: string }` | `{ scanId: u32, rootId: u32 }` – cancels any running scan |
 | `scan_cancel` | – | `()` |
-| `layout` | `{ req: LayoutRequest }` | **raw bytes** (`tauri::ipc::Response`), see below |
+| `layout` | `{ req: LayoutRequest }` | **raw bytes** (`tauri::ipc::Response`), see below; with `req.hide` a level of the view (rule 9) |
 | `details` | `{ id: u32, view: u32, sizeMode }` | `Details \| null` (null when the id no longer exists) |
 | `nav` | `{ id: u32 }` | `{ crumbs: {id, name}[], up: u32 \| null }` |
-| `cat_stats` | `{ view: u32, sizeMode }` | `{ cat: u8, bytes: u64 }[]`, largest first |
-| `age_stats` | `{ view: u32, sizeMode }` | `u64[]`: the bytes of the files below `view` in each of the 14 [age bins](#ages-age), bin 0 = time not known; `[]` when `view` is not a folder |
+| `cat_stats` | `{ view: u32, sizeMode, hide?: u32[] }` | `{ cat: u8, bytes: u64 }[]`, largest first; with `hide`, only what the level (rule 9) holds |
+| `age_stats` | `{ view: u32, sizeMode, hide?: u32[] }` | `u64[]`: the bytes of the files below `view` (with `hide`, below what the level holds) in each of the 14 [age bins](#ages-age), bin 0 = time not known; `[]` when `view` is not a folder |
 | `recycle` | `{ ids: u32[] }` | `DeleteResult` (with `undo` token) |
 | `restore` | `{ token: u32 }` | `DeleteResult` – undo of a `recycle` |
 | `purge` | `{ ids: u32[] }` | `DeleteResult` |
@@ -65,6 +65,7 @@ interface LayoutRequest {
     labelMinW: f32;     // names are sent only for rects at least this big (44 × 20),
     labelMinH: f32;     //   and for every folder that gets a header
   };
+  hide?: u32[];         // a level of `view` (rule 9): the children left out, any order
 }
 
 interface Details {
@@ -177,7 +178,10 @@ record (56 bytes)
  52  u8   age         how long ago it was written, see Ages; 0 = not known. FILE: its
                       own; DIR_LEAF, open DIR and GROUP: the mean of the files in it,
                       weighted by their bytes; 0 for pseudo tiles
- 53  u8[3] reserved   0
+ 53  u8   note        bit0 NOT_TO_SCALE: its area is not in proportion to its size (a
+                      level's GROUP or lone left-over item, rule 9); the UI
+                      draws it dashed
+ 54  u8[2] reserved   0
 ```
 
 Records are in paint order: a folder always comes before its children.
@@ -263,6 +267,22 @@ These are what make the map calm while it changes, and they were tuned in the pr
 8. With a search set, every record's `hit` says how much of it the search found. A GROUP
    gets the share of the merged items' bytes that matched, so it stays findable when a
    match is too small for its own tile.
+9. **Levels**: a layout request with `hide` shows a level of `view`, a virtual folder of
+   what a group holds: the view's children except the ids in `hide`, which the UI fills
+   with what it drew with tiles of their own on the way down (the folder's, then each
+   level's above). Hidden ids that are not children are ignored. A level is laid out like
+   the folder, without pseudo tiles, except that its group takes at most a third of the
+   map (`LEVEL_GROUP_SHARE`), so the siblings beside it get the rest: siblings keep their
+   own tiles, in rank order, while each still gets rule 2's least area at that scale, and
+   the rest form the group. The group also gets at least rule 2's least area, so it is
+   never left out. A group drawn smaller or bigger than its size has `note` NOT_TO_SCALE.
+   A level never shows a group of one: an item left over alone gets a tile of its own,
+   drawn like the group (at least the least area, NOT_TO_SCALE when that is more than its
+   size would take). A level therefore never shows only its group (on a canvas of any
+   sane size), and opening the group again and again reaches every item. Which items a
+   level holds depends only on `hide`, not on the canvas size. `bytesPerPx` is that of the
+   siblings. The group's id is the same on every level (`0x80000000 | view`), so the UI
+   must not tween the old level's group into the new one's.
 
 ## Search
 

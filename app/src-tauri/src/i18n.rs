@@ -159,8 +159,8 @@ pub mod text {
         UNSCANNED_HINT: "Used space the scan hasn't reached yet. It shrinks as the scan goes on.",
             "已用空间里还没扫描到的部分，会随扫描缩小";
         GROUP: "Small items", "小项合并显示";
-        GROUP_HINT: "Items too small to draw, merged into one tile. Zoom into the folder to see them.",
-            "太小、画不下的项目合并成一块；放大上级文件夹可以看到它们";
+        GROUP_HINT: "Items too small to draw, merged into one tile. Double-click it to see them.",
+            "太小、画不下的项目合并成一块；双击它可以放大查看";
 
         // hints in the details card
         HIBERFIL: "To free it, turn off hibernation: run powercfg /h off in an administrator terminal.",

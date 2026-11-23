@@ -55,3 +55,20 @@ describe('live layouts', () => {
     expect(nearlySame(a, { x: 0.3, y: 0, w: 100.3, h: 50 })).toBe(false); // right edge moved 0.6
   });
 });
+
+describe('levels', () => {
+  it('let a group with the same id leave instead of moving into the new one', () => {
+    const e = engine();
+    const G = 0x80000000 + 5;
+    e.apply(layout([rect(1, 10, 10, 200, 100), rect(G, 210, 10, 100, 100)]), 'instant');
+    const old = e.items.get(G)!;
+    const cam = () => ({ A: { x: 210, y: 10, w: 100, h: 100 }, B: { x: 0, y: 0, w: 400, h: 300 } });
+    e.apply(layout([rect(7, 0, 0, 300, 300), rect(G, 300, 0, 100, 300)]), 'zoom', { cam, renew: [G] });
+    const fresh = e.items.get(G)!;
+    expect(fresh).not.toBe(old);
+    // the old group leaves, growing with the camera to fill the stage
+    expect(old.rm).toBe(true);
+    expect(old.id).toBeLessThan(0);
+    expect(e.items.get(old.id)).toBe(old);
+  });
+});

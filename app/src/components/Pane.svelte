@@ -13,6 +13,7 @@
     if (d.kind === 'file') return catName(d.cat) ?? t('file');
     if (d.kind === 'free') return t('free');
     if (d.kind === 'unscanned') return t('scanning');
+    if (d.kind === 'level') return t('kind.levelIn', { folder: app.crumbs.at(-1)?.name ?? '' });
     return t('kind.groupShort');
   });
   const legendTotal = $derived(app.legend.reduce((a, c) => a + c.bytes, 0) || 1);
@@ -37,7 +38,7 @@
         {#if d}
           <div class="dh">
             <span class="dic" style:background={d.kind === 'file' && d.cat < 12 ? `var(--cat-${d.cat})` : 'var(--ctl)'}>
-              <Icon name={d.kind === 'dir' ? 'folder' : d.kind === 'file' ? (d.flags & Flag.Cloud ? 'cloud' : 'file') : d.kind === 'free' ? 'drive' : 'more'} size={18} />
+              <Icon name={d.kind === 'dir' ? 'folder' : d.kind === 'file' ? (d.flags & Flag.Cloud ? 'cloud' : 'file') : d.kind === 'free' ? 'drive' : d.kind === 'group' || d.kind === 'level' ? 'tiles' : 'more'} size={18} />
             </span>
             <div class="dt">
               <div class="dn" title={d.name}>{d.name}</div>
@@ -65,6 +66,8 @@
                 <dd>{fmtDate(d.modified)}</dd>
               {/if}
             </dl>
+            <div class="path caption">{d.path}</div>
+          {:else if d.kind === 'level'}
             <div class="path caption">{d.path}</div>
           {/if}
           {#if d.lockReason && d.id !== app.view && (d.kind === 'file' || d.kind === 'dir')}

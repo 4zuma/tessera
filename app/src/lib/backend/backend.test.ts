@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { contentOf, decodeLayout, encodeLayout, FREE, GROUP_BIT, isNodeId, Kind, NONE, RECORD_SIZE, HEADER_SIZE, UNSCANNED, type Rect } from './codec';
+import { contentOf, decodeLayout, encodeLayout, FREE, GROUP_BIT, groupId, isNodeId, Kind, NONE, Note, RECORD_SIZE, HEADER_SIZE, UNSCANNED, type Rect } from './codec';
 import { categoryOf, Cat } from './categories';
 import { t } from '../i18n.svelte';
 import { MockBackend } from './mock';
@@ -19,9 +19,9 @@ async function scanned(b: MockBackend, root = 'C:\\') {
 describe('codec', () => {
   it('round-trips records, big sizes and UTF-8 names', () => {
     const rects: Rect[] = [
-      { id: 7, parent: NONE, target: 9, count: 0, x: 1.5, y: 2, w: 300, h: 200, size: Math.round(499.8 * 2 ** 30), name: '屏幕截图 › archive', depth: 1, kind: Kind.Dir, cat: 255, flags: 1, header: 21, hit: 0, age: 0 },
-      { id: GROUP_BIT + 7, parent: 7, target: 7, count: 42, x: 4, y: 30, w: 10, h: 10, size: 12345, name: '', depth: 2, kind: Kind.Group, cat: 4, flags: 0, header: 0, hit: 127, age: 200 },
-      { id: FREE, parent: NONE, target: FREE, count: 0, x: 0, y: 0, w: 5, h: 5, size: 2 ** 40 + 3, name: '', depth: 1, kind: Kind.Free, cat: 255, flags: 0, header: 0, hit: 255, age: 1 },
+      { id: 7, parent: NONE, target: 9, count: 0, x: 1.5, y: 2, w: 300, h: 200, size: Math.round(499.8 * 2 ** 30), name: '屏幕截图 › archive', depth: 1, kind: Kind.Dir, cat: 255, flags: 1, header: 21, hit: 0, age: 0, note: 0 },
+      { id: GROUP_BIT + 7, parent: 7, target: 7, count: 42, x: 4, y: 30, w: 10, h: 10, size: 12345, name: '', depth: 2, kind: Kind.Group, cat: 4, flags: 0, header: 0, hit: 127, age: 200, note: Note.NotToScale },
+      { id: FREE, parent: NONE, target: FREE, count: 0, x: 0, y: 0, w: 5, h: 5, size: 2 ** 40 + 3, name: '', depth: 1, kind: Kind.Free, cat: 255, flags: 0, header: 0, hit: 255, age: 1, note: 0 },
     ];
     const buf = encodeLayout({ view: 3, rev: 99, bytesPerPx: 1024, search: 5, rects });
     expect(buf.byteLength).toBe(HEADER_SIZE + 3 * RECORD_SIZE + new TextEncoder().encode(rects[0].name).length);
@@ -136,6 +136,54 @@ describe('mock backend', () => {
       const groups = on.filter(r => r.kind === Kind.Group);
       expect(groups.length).toBeGreaterThan(0);
       expect(groups.filter(r => r.cat === 255)).toEqual([]);
+    }
+  });
+
+  it('opens a group as a level, again and again, until every item had a tile (rule 9)', async () => {
+    const b = new MockBackend({}, { scanMs: 300 });
+    await scanned(b);
+    const style = { ...STYLE, minSide: 24, minWidth: 44 };
+    const nodes = (b as unknown as { d: { nodes: { id: number; name: string; kids?: number[] }[] } }).d.nodes;
+    const shots = nodes.find(n => n.name === 'Screenshots')!;
+    const all = [...shots.kids!].sort((x, y) => x - y);
+    // 914 x 630 left one item over on the fourth level before it was drawn as itself
+    for (const [W, H] of [
+      [924, 640],
+      [914, 630],
+      [700, 500],
+    ]) {
+      const map = (W - 12) * (H - 12);
+      let hide: number[] | undefined;
+      const seen: number[] = [];
+      for (let level = 0; ; level++) {
+        expect(level).toBeLessThan(60);
+        const l = decodeLayout(await b.layout({ ...req(shots.id), width: W, height: H, style, hide }));
+        const top = l.rects.filter(r => r.parent === NONE);
+        expect(l.view).toBe(shots.id);
+        expect(top.every(r => r.kind !== Kind.Free && r.kind !== Kind.Unscanned)).toBe(true);
+        const tiles = top.filter(r => isNodeId(r.id)).map(r => r.id);
+        expect(tiles.length).toBeGreaterThan(0);
+        for (const id of tiles) expect(seen.includes(id)).toBe(false);
+        seen.push(...tiles);
+        const g = top.find(r => r.kind === Kind.Group);
+        if (hide && g) expect((g.w + 2) * (g.h + 2)).toBeLessThanOrEqual((map / 3) * 1.01);
+        if (!g) break;
+        expect(g.id).toBe(groupId(shots.id));
+        expect(g.count).toBe(all.length - seen.length);
+        // one item left over gets a tile of its own, never a group of one (it would only ask for another level)
+        if (hide) expect(g.count).toBeGreaterThan(1);
+        // the legend counts only what the level holds
+        hide = [...seen];
+        const cats = await b.catStats(shots.id, 'disk', hide);
+        const sizes = new Map(nodes.map(n => [n.id, (n as unknown as { disk: number }).disk]));
+        const left = all.filter(id => !seen.includes(id)).reduce((a, id) => a + (sizes.get(id) ?? 0), 0);
+        expect(cats.reduce((a, c) => a + c.bytes, 0)).toBe(left);
+        // a level's group that would take over a third of the map is drawn smaller
+        const total = top.reduce((a, r) => a + r.size, 0);
+        if (level > 0 && g.size > total * 0.34) expect(g.note).toBe(Note.NotToScale);
+        if (level === 0) expect(g.note).toBe(0);
+      }
+      expect([...seen].sort((x, y) => x - y)).toEqual(all);
     }
   });
 
