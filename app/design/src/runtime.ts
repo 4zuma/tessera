@@ -180,8 +180,9 @@ function applyTreemapStyle(p: PageProps, live: boolean) {
   if (!live) return;
   if (layout) app.requestLayout('update');
   if (paint) {
+    // kick alone only repaints what moved; a new look needs the whole scene again
     app.engine?.painter.reset();
-    app.engine?.kick();
+    app.engine?.invalidate();
   }
 }
 
