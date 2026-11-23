@@ -117,8 +117,10 @@ the last layout it sent and how many bytes changed since (`Tree::changed_bytes`)
 px² of the shown view it stays silent; past that it lays the view out again and sends the
 event only when some edge moved by more than 0.5 px or a tile, colour or size label changed
 (`layout::same_picture`). Changes Windows keeps making on a system drive (logs, caches) thus
-cost no IPC, no layout in the WebView and no frame. `bytesDelta` covers everything since the
-last event.
+cost no IPC, no layout in the WebView and no frame. While a search is shown, a change is
+sent anyway when it touches what the search found or would find now (`Hits::touched_by`: a
+folder that matched, a child that was found, or a child that matches now), so the count and
+the bytes follow small changes too. `bytesDelta` covers everything since the last event.
 
 ## Layout buffer
 
