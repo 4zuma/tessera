@@ -20,6 +20,20 @@
 //!    other siblings; its `cat` is the category with the most bytes among
 //!    its files. A single small sibling is shown as itself rather than as a
 //!    group of one.
+//!
+//!    With `minSide` (CSS px, not counting the gap) every tile drawn is at
+//!    least that wide and tall, since a thin sliver hardly reads as a tile:
+//!    * siblings whose area would be below `(minSide + gap)²` go to the
+//!      group at once, and the group takes its place among the others by
+//!      its size instead of coming last;
+//!    * after squarifying, the first sibling (in rank order) that came out
+//!      too thin and every one after it join the group, and the folder is
+//!      laid out again;
+//!    * a group (or a single left-over sibling), an UNSCANNED or a FREE
+//!      tile that is still too thin is left out, and the others take its
+//!      room;
+//!    * this repeats at most 12 times; a tile still too thin after that is
+//!      not drawn and its room stays empty.
 //! 3. Squarified treemap (Bruls, Huijsing and van Wijk, "Squarified
 //!    Treemaps", 2000) into the parent's inner box: siblings in rank order
 //!    are added to a row along the shorter side of the free space while
@@ -213,6 +227,9 @@ pub struct LayoutStyle {
     pub min_header_w: f32,
     /// Siblings smaller than this (px²) are merged into a group.
     pub min_area: f32,
+    /// No tile is narrower or shorter than this (CSS px, the gap not
+    /// counted): thinner ones join the group (rule 2). 0 turns it off.
+    pub min_side: f32,
     /// A folder opens only if its area is above `min_area * recurse`.
     pub recurse: f32,
     /// A folder opens only if its area is above this share (0 to 1) of the
@@ -231,6 +248,12 @@ pub struct LayoutStyle {
 /// (about 80 x 80 px) to open, so that an open folder has room for a few
 /// labelled tiles under its header.
 pub const RECURSE: f32 = 60.0;
+/// Default `min_side`: a tile is at least 24 px on each side, a little
+/// more than the 13 x 20 px of Windows' standard arrow pointer at the same
+/// scale, so every tile can be pointed at.
+pub const MIN_SIDE: f32 = 24.0;
+/// Times a folder is laid out again at most to get rid of thin tiles.
+const MIN_SIDE_PASSES: usize = 12;
 /// Default `open_share`: a folder must also be over 0.25 % of the map to
 /// open. This only matters on maps over 2.6 million px² (about
 /// 2000 x 1300), where it keeps a very large window from opening more
@@ -246,6 +269,7 @@ impl Default for LayoutStyle {
             header: 21.0,
             min_header_w: 60.0,
             min_area: 110.0,
+            min_side: MIN_SIDE,
             recurse: RECURSE,
             open_share: OPEN_SHARE,
             max_depth: 14,
@@ -430,6 +454,9 @@ struct Style {
     header: f64,
     min_header_w: f64,
     min_area: f64,
+    /// `min_side` plus the gap: the least width and height of a cell
+    /// before it is inset; 0 when the rule is off.
+    min_cell: f64,
     /// `min_area * recurse`.
     open_min: f64,
     open_share: f64,
@@ -452,6 +479,7 @@ impl Style {
             }
         };
         let min_area = v(s.min_area).max(1.0);
+        let min_side = v(s.min_side);
         Style {
             outer: v(s.outer),
             pad: v(s.pad),
@@ -459,6 +487,11 @@ impl Style {
             header: v(s.header).min(255.0),
             min_header_w: v(s.min_header_w),
             min_area,
+            min_cell: if min_side > 0.0 {
+                min_side + v(s.gap)
+            } else {
+                0.0
+            },
             open_min: min_area * v(s.recurse),
             open_share: v(s.open_share).min(1.0),
             open_area: 0.0,
@@ -560,10 +593,40 @@ impl PartialEq for Pending {
 
 impl Eq for Pending {}
 
+/// What `collect` merged into the group, before rule 2's `minSide` adds to
+/// it, and what else the folder shows.
+#[derive(Clone, Copy)]
+struct Rest {
+    folder: NodeId,
+    n: u32,
+    sum: u64,
+    /// Bytes of it the search found ([`hit_part`]).
+    hit: u64,
+    tally: [u64; category::COUNT],
+    unscanned: u64,
+    free: u64,
+}
+
+impl Default for Rest {
+    fn default() -> Self {
+        Rest {
+            folder: NodeId::ROOT,
+            n: 0,
+            sum: 0,
+            hit: 0,
+            tally: [0; category::COUNT],
+            unscanned: 0,
+            free: 0,
+        }
+    }
+}
+
 /// Buffers reused between layouts.
 #[derive(Default)]
 struct Scratch {
+    /// The siblings that get their own tiles, in rank order.
     kids: Vec<Kid>,
+    rest: Rest,
     items: Vec<Item>,
     areas: Vec<f64>,
     boxes: Vec<BoxF>,
@@ -762,7 +825,8 @@ impl Run<'_> {
         // children), so one pass over the siblings sorts them out; the
         // areas use the sum actually seen.
         let expect = mode.of(&dir).saturating_add(unscanned).saturating_add(free);
-        let threshold = (self.st.min_area * expect as f64 / area).ceil() as u64;
+        let min_area = self.st.min_area.max(self.st.min_cell * self.st.min_cell);
+        let threshold = (min_area * expect as f64 / area).ceil() as u64;
         self.s.kids.clear();
         self.s.items.clear();
         let mut total = unscanned.saturating_add(free);
@@ -833,6 +897,15 @@ impl Run<'_> {
         }
         kids.sort_unstable_by(by_rank);
 
+        self.s.rest = Rest {
+            folder,
+            n: small_n,
+            sum: small_sum,
+            hit: small_hit,
+            tally,
+            unscanned,
+            free,
+        };
         let items = &mut self.s.items;
         if unscanned > 0 {
             items.push(Item {
@@ -869,10 +942,36 @@ impl Run<'_> {
     }
 
     /// Squarifies `s.items` into `b`, insets every cell by `gap / 2` and
-    /// keeps those at least 1 px wide and tall in `s.cells` (rule 3).
+    /// keeps those at least 1 px wide and tall in `s.cells` (rule 3), and
+    /// at least `minSide` (rule 2).
     fn place(&mut self, b: BoxF) {
+        if self.st.min_cell > 0.0 {
+            self.fit_min_side(b);
+        } else {
+            self.squarify_items(b);
+        }
         let s = &mut self.s;
         s.cells.clear();
+        let g = self.st.half_gap;
+        let min_cell = self.st.min_cell;
+        for (it, c) in s.items.iter().zip(&s.boxes) {
+            let r = BoxF {
+                x: c.x + g,
+                y: c.y + g,
+                w: c.w - 2.0 * g,
+                h: c.h - 2.0 * g,
+            };
+            if r.w >= 1.0 && r.h >= 1.0 && c.w.min(c.h) >= min_cell {
+                s.cells.push((*it, r));
+            }
+        }
+    }
+
+    /// Squarifies `s.items` into `b`, into `s.boxes` (cells before the
+    /// inset).
+    fn squarify_items(&mut self, b: BoxF) {
+        let s = &mut self.s;
+        s.boxes.clear();
         let total: f64 = s.items.iter().map(|i| i.size as f64).sum();
         if total <= 0.0 {
             return;
@@ -882,18 +981,139 @@ impl Run<'_> {
         s.areas
             .extend(s.items.iter().map(|i| i.size as f64 * scale));
         squarify(&s.areas, b, &mut s.boxes);
-        let g = self.st.half_gap;
-        for (it, c) in s.items.iter().zip(&s.boxes) {
-            let r = BoxF {
-                x: c.x + g,
-                y: c.y + g,
-                w: c.w - 2.0 * g,
-                h: c.h - 2.0 * g,
-            };
-            if r.w >= 1.0 && r.h >= 1.0 {
-                s.cells.push((*it, r));
+    }
+
+    /// Rule 2 with `minSide`: lays `s.items` out again until no sibling is
+    /// too thin, moving the thin ones into the group and leaving out a
+    /// group or pseudo tile that is too thin itself.
+    fn fit_min_side(&mut self, b: BoxF) {
+        let min_cell = self.st.min_cell;
+        let thin = |c: &BoxF| c.w.min(c.h) < min_cell;
+        let mut cut = self.s.kids.len();
+        let mut no_group = false;
+        let (mut no_unscanned, mut no_free) = (false, false);
+        for _ in 0..MIN_SIDE_PASSES {
+            let (head, group) = self.min_side_items(cut, no_group, no_unscanned, no_free);
+            self.squarify_items(b);
+            let mut first = None;
+            let mut group_thin = false;
+            let mut dropped = false;
+            for (i, (it, c)) in self.s.items.iter().zip(&self.s.boxes).enumerate() {
+                if !thin(c) {
+                    continue;
+                }
+                if group == Some(i) {
+                    group_thin = true;
+                    continue;
+                }
+                match it.kind {
+                    ItemKind::Unscanned => (no_unscanned, dropped) = (true, true),
+                    ItemKind::Free => (no_free, dropped) = (true, true),
+                    _ => {
+                        let k = i - head - usize::from(group.is_some_and(|g| i > g));
+                        first = Some(first.map_or(k, |f: usize| f.min(k)));
+                    }
+                }
+            }
+            if let Some(k) = first {
+                (cut, no_group) = (k, false);
+            } else if group_thin && !no_group {
+                no_group = true;
+            } else if !dropped {
+                return;
             }
         }
+    }
+
+    /// Fills `s.items` for [`Self::fit_min_side`]: the siblings before
+    /// `cut` get their own tiles, the rest join the group, which goes in
+    /// among them by its size. Returns how many items come before the
+    /// siblings (UNSCANNED) and where the group is, if any.
+    fn min_side_items(
+        &mut self,
+        cut: usize,
+        no_group: bool,
+        no_unscanned: bool,
+        no_free: bool,
+    ) -> (usize, Option<usize>) {
+        let tree = self.tree;
+        let hits = self.hits;
+        let s = &mut self.s;
+        let r = &s.rest;
+        let mut rest = *r;
+        for k in &s.kids[cut..] {
+            rest.n += 1;
+            rest.sum = rest.sum.saturating_add(k.size);
+            rest.hit = rest.hit.saturating_add(hit_part(hits, k.node, k.size));
+            let cat = category::of(&tree.node(k.node));
+            if (cat as usize) < category::COUNT {
+                rest.tally[cat as usize] += k.size;
+            }
+        }
+        let group = if no_group || rest.n == 0 {
+            None
+        } else if rest.n == 1 && r.n == 0 {
+            // a group of one would hide a name for nothing
+            let k = s.kids[cut];
+            Some(Item {
+                kind: ItemKind::Node,
+                node: k.node,
+                size: k.size,
+            })
+        } else {
+            Some(Item {
+                kind: ItemKind::Group {
+                    count: rest.n,
+                    cat: main_category(&rest.tally),
+                    hit: share_of(rest.hit, rest.sum),
+                },
+                node: rest.folder,
+                size: rest.sum,
+            })
+        };
+        let items = &mut s.items;
+        items.clear();
+        let mut head = 0;
+        if rest.unscanned > 0 && !no_unscanned {
+            items.push(Item {
+                kind: ItemKind::Unscanned,
+                node: rest.folder,
+                size: rest.unscanned,
+            });
+            head = 1;
+        }
+        let kids = &s.kids[..cut];
+        let at = group.map(|g| {
+            let rank = if matches!(g.kind, ItemKind::Node) {
+                s.kids[cut].rank
+            } else {
+                g.size
+            };
+            kids.iter()
+                .position(|k| k.rank < rank)
+                .unwrap_or(kids.len())
+        });
+        for (i, k) in kids.iter().enumerate() {
+            if at == Some(i) {
+                items.extend(group);
+            }
+            items.push(Item {
+                kind: ItemKind::Node,
+                node: k.node,
+                size: k.size,
+            });
+        }
+        if at == Some(kids.len()) {
+            items.extend(group);
+        }
+        if rest.free > 0 && !no_free {
+            items.push(Item {
+                kind: ItemKind::Free,
+                node: rest.folder,
+                size: rest.free,
+            });
+        }
+        (head, at.map(|a| head + a))
     }
 
     /// Appends records for `cells` and queues the folders that open.

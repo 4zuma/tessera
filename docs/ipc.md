@@ -52,6 +52,7 @@ interface LayoutRequest {
     header: f32;        // folder header band height (21)
     minHeaderW: f32;    // a folder narrower than this gets no header (60)
     minArea: f32;       // px²; smaller siblings are merged into one group (110)
+    minSide: f32;       // no tile narrower or shorter than this, gap not counted (24); 0 = off
     recurse: f32;       // a folder opens only if area > minArea * recurse (60, so 6,600 px²)
     openShare: f32;     // ... and only if area > openShare * the map's area (0.0025); 0 = off
     maxDepth: u8;       // (14)
@@ -187,7 +188,17 @@ These are what make the map calm while it changes, and they were tuned in the pr
    each node remembers the size it was ranked at, and only re-ranks when its size moved by
    more than 25 %. A growing scan therefore does not reshuffle the map on every update.
 2. Siblings whose area would be below `minArea`, or beyond the first `maxPerDir`, are merged
-   into one GROUP tile; its `cat` is the category with the most bytes among them.
+   into one GROUP tile; its `cat` is the category with the most bytes among them. A single
+   small sibling is shown as itself, not as a group of one.
+   With `minSide`, every tile is at least that wide and tall, since a thin sliver hardly
+   reads as a tile (24 px is a little more than Windows' 13 × 20 px arrow pointer):
+   siblings whose area would be below `(minSide + gap)²` go to the group at once, and the
+   group takes its place among the others by its size instead of coming last. After
+   squarifying, the first sibling (in rank order) that came out too thin and every one
+   after it join the group, and the folder is laid out again. A group (or a single
+   left-over sibling), UNSCANNED or FREE tile that is still too thin is left out and the
+   others take its room. This repeats at most 12 times; a tile still too thin then is not
+   drawn and its room stays empty.
 3. Squarified treemap (Bruls et al. 2000) into the parent's inner box. Every rect is inset
    by `gap / 2`; rects smaller than 1 px in either direction are dropped.
 4. **Folded chains**: a folder whose only visible child is a folder is merged with it into

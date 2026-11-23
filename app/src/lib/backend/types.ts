@@ -40,6 +40,8 @@ export interface LayoutStyle {
   header: number;
   minHeaderW: number;
   minArea: number;
+  /** no tile narrower or shorter than this (CSS px, gap not counted); 0 = off */
+  minSide: number;
   recurse: number;
   openShare: number;
   maxDepth: number;

@@ -161,29 +161,92 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
     let total = 0;
     for (const c of items) total += c.s;
     const k = (w * h) / total;
-    const list: Item[] = [];
+    // unscanned first, then the folder's items by rank, the group of small ones, free space last
+    const head: Item[] = [];
+    const nodes: Item[] = [];
+    const tail: Item[] = [];
+    // A tile narrower or shorter than minSide is hard to see as a tile at all (rule 2). Items
+    // too small to ever be that wide go to the group at once; after a layout, the first tile
+    // that came out too thin, and every smaller one, join the group and the folder is laid out
+    // again. A group (or a lone left-over item), or a free / unscanned tile, that is itself too
+    // thin is not drawn: the others take its room. A tile still too thin after the last pass
+    // is left out and its room stays empty.
+    const side = o.minSide > 0 ? o.minSide + o.gap : 0;
+    const thin = (cw: number, ch: number) => Math.min(cw, ch) < side;
     let rest = 0;
     let restN = 0;
     let restHit = 0;
     const votes = new Map<number, number>();
+    const vote = (m: Map<number, number>, c: Item) => {
+      const ct = c.n!.kids ? CAT_NONE : c.n!.cat;
+      m.set(ct, (m.get(ct) || 0) + c.s);
+    };
     for (const c of items) {
-      if (c.special || (c.s * k >= o.minArea && list.length < o.maxPerDir)) list.push(c);
+      if (c.special === 'unscanned') head.push(c);
+      else if (c.special) tail.push(c);
+      else if (c.s * k >= Math.max(o.minArea, side * side) && nodes.length < o.maxPerDir) nodes.push(c);
       else {
         rest += c.s;
         restN++;
         restHit += hitPart(c.n!, c.s);
-        const ct = c.n!.kids ? CAT_NONE : c.n!.cat;
-        votes.set(ct, (votes.get(ct) || 0) + c.s);
+        vote(votes, c);
       }
     }
-    if (rest > 0) {
-      let best = CAT_NONE;
-      let bb = -1;
-      for (const [ct, v] of votes) if (ct !== CAT_NONE && v > bb) { bb = v; best = ct; }
-      list.push({ s: rest, rk: 0, group: { count: restN, cat: best, hit: shareOf(restHit, rest) } });
+    let cut = nodes.length;
+    let noGroup = false;
+    const gone = new Set<Item>();
+    let rs: [Item, number, number, number, number][] = [];
+    for (let pass = 0; pass < 12; pass++) {
+      let gs = rest;
+      let gn = restN;
+      let gh = restHit;
+      const gv = new Map(votes);
+      for (let i = cut; i < nodes.length; i++) {
+        gs += nodes[i].s;
+        gn++;
+        gh += hitPart(nodes[i].n!, nodes[i].s);
+        vote(gv, nodes[i]);
+      }
+      const mid = nodes.slice(0, cut);
+      let grp: Item | null = null;
+      // a group of one would hide a name for nothing
+      if (gn === 1) grp = cut < nodes.length ? nodes[cut] : items.find(c => !c.special && !nodes.includes(c))!;
+      else if (gn > 1) {
+        let best = CAT_NONE;
+        let bb = -1;
+        for (const [ct, v] of gv) if (ct !== CAT_NONE && v > bb) { bb = v; best = ct; }
+        grp = { s: gs, rk: gs, group: { count: gn, cat: best, hit: shareOf(gh, gs) } };
+      }
+      if (grp && !noGroup) {
+        // with minSide the group takes its place by size, not the strip left at the end
+        let at = side ? mid.findIndex(c => c.rk < grp.rk) : -1;
+        if (at < 0) at = mid.length;
+        mid.splice(at, 0, grp);
+      }
+      const list = [...head, ...mid, ...tail].filter(c => !gone.has(c));
+      rs = [];
+      squarify(list, x, y, w, h, rs);
+      if (!side) break;
+      let first = -1;
+      let grpThin = false;
+      let dropped = false;
+      for (const [c, , , cw, ch] of rs) {
+        if (!thin(cw, ch)) continue;
+        if (c === grp) grpThin = true;
+        else if (c.special) {
+          gone.add(c);
+          dropped = true;
+        } else {
+          const i = nodes.indexOf(c);
+          if (i >= 0 && i < cut && (first < 0 || i < first)) first = i;
+        }
+      }
+      if (first >= 0) {
+        cut = first;
+        noGroup = false;
+      } else if (grpThin && !noGroup) noGroup = true;
+      else if (!dropped) break;
     }
-    const rs: [Item, number, number, number, number][] = [];
-    squarify(list, x, y, w, h, rs);
     const g = o.gap / 2;
     const named = (rw: number, rh: number) => rw >= o.labelMinW && rh >= o.labelMinH;
     for (const [c, rx0, ry0, rw0, rh0] of rs) {
@@ -191,7 +254,7 @@ export function layoutDrive(inp: LayoutInput): { rects: Rect[]; bytesPerPx: numb
       const ry = ry0 + g;
       const rw = rw0 - 2 * g;
       const rh = rh0 - 2 * g;
-      if (rw < 1 || rh < 1) continue;
+      if (rw < 1 || rh < 1 || thin(rw0, rh0)) continue;
       const base = { x: rx, y: ry, w: rw, h: rh, depth, parent: pid, count: 0, header: 0, hit: c.n ? hitOf(c.n) : (c.group?.hit ?? 0) };
       if (c.group) {
         const id = groupId(parent.id);
