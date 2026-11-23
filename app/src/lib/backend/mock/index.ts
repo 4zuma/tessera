@@ -56,7 +56,7 @@ export class MockBackend implements Backend {
 
   constructor(platform: Partial<PlatformInfo> = {}, opts: { scanMs?: number } = {}) {
     this.scanMs = opts.scanMs ?? 4600;
-    this.platform = { elevated: false, backdrop: 'none', accent: null, version: '1.2.1', core: false, native: false, ...browserChoice(), ...platform };
+    this.platform = { elevated: false, backdrop: 'none', titleBar: 'native', accent: null, version: '1.2.1', core: false, native: false, ...browserChoice(), ...platform };
   }
 
   /* ------------------------------ helpers ------------------------------ */
@@ -432,6 +432,13 @@ export class MockBackend implements Backend {
 
   async relaunchElevated() {
     /* nothing to relaunch in the preview */
+  }
+
+  /* the preview draws a picture of a title bar */
+  async caption() {}
+  async captionButton() {}
+  async captionState() {
+    return { maximized: false, hover: false, pressed: false };
   }
 
   async on<K extends keyof BackendEvents>(event: K, cb: (payload: BackendEvents[K]) => void): Promise<Unlisten> {

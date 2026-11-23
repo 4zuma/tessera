@@ -63,6 +63,9 @@ export const en = {
 
   /* start */
   'app.startFailed': "Tessera couldn't start",
+  'caption.min': 'Minimize',
+  'caption.max': 'Maximize',
+  'caption.restore': 'Restore Down',
   'picker.title': 'Choose a drive to scan',
   'picker.sub': 'The map grows while the scan runs, so you can start exploring before it finishes.',
   'picker.space': '{free} free of {capacity} · {fs}',

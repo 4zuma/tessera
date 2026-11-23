@@ -4,13 +4,14 @@
 //! file tree stays here, the WebView only receives the rects it draws.
 //! [`platform`] covers the window itself (Mica, accent colour, elevation),
 //! [`shell_menu`] Windows' own context menu for items, [`i18n`] the UI language
-//! and the text Rust produces.
+//! and the text Rust produces, [`titlebar`] the title bar the page draws on Windows 11.
 
 mod backend;
 mod i18n;
 mod memlog;
 mod platform;
 mod shell_menu;
+mod titlebar;
 mod volumes;
 
 use tauri::Manager;
@@ -31,14 +32,14 @@ pub fn run() {
     tauri::Builder::default()
         .manage(backend::Core::new())
         .setup(|app| {
-            let (window, backdrop) = platform::build_main_window(app)?;
+            let (window, built) = platform::build_main_window(app)?;
             // the language, before anything produces text (here COM is already set up
             // on this thread, as the WebView needs it)
             i18n::choice();
             platform::trim_when_minimized(&window);
             memlog::start(app.handle());
             app.manage(platform::Info::detect(
-                backdrop,
+                &built,
                 app.package_info().version.to_string(),
             ));
             #[cfg(windows)]
@@ -76,6 +77,9 @@ pub fn run() {
             backend::empty_recycle_bin,
             backend::reveal,
             backend::shell_menu,
+            titlebar::caption,
+            titlebar::caption_button,
+            titlebar::caption_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tessera");

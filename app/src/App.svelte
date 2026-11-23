@@ -18,6 +18,8 @@
   let paneWanted = $state(true);
   const paneOpen = $derived(paneWanted && width >= 820);
   const browser = $derived(!app.platform?.native);
+  /** Windows 11 gets the app's own title bar; Windows 10 keeps Windows' one */
+  const titleBar = $derived(browser || app.platform?.titleBar === 'custom');
 
   function togglePane() {
     app.paneToggled();
@@ -52,7 +54,7 @@
 <svelte:window bind:innerWidth={width} onkeydown={e => app.onKey(e)} />
 
 <div class="window" class:framed={browser && width >= 900}>
-  {#if browser}<TitleBar />{/if}
+  {#if titleBar}<TitleBar />{/if}
   {#if app.error}
     <div class="fatal" role="alert">
       <h1>{t('app.startFailed')}</h1>

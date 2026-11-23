@@ -10,6 +10,8 @@ export interface PlatformInfo {
   elevated: boolean;
   /** the window backdrop that Rust managed to apply */
   backdrop: 'mica' | 'none';
+  /** 'custom': the page draws the title bar (Windows 11); 'native': Windows does */
+  titleBar: 'custom' | 'native';
   /** system accent colour, tuned per theme as Windows does (AccentDark1 / AccentLight2) */
   accent: { light: string; dark: string } | null;
   version: string;
@@ -122,6 +124,14 @@ export interface ScanProgress {
   errors: number;
 }
 
+/** what the page's caption buttons show (custom title bar only) */
+export interface CaptionState {
+  maximized: boolean;
+  /** the pointer is on the maximize button: Windows tells Rust, not the page (snap layouts) */
+  hover: boolean;
+  pressed: boolean;
+}
+
 export interface TreeChanged {
   rev: number;
   bytesDelta: number;
@@ -130,6 +140,7 @@ export interface TreeChanged {
 export interface BackendEvents {
   'scan-progress': ScanProgress;
   'tree-changed': TreeChanged;
+  caption: CaptionState;
 }
 
 export type Unlisten = () => void;
@@ -152,6 +163,11 @@ export interface Backend {
   /** Windows' own context menu for `ids` (one folder) at client point x, y; resolves when it closes */
   shellMenu(ids: number[], x: number, y: number, extended: boolean): Promise<ShellAction>;
   relaunchElevated(): Promise<void>;
+  /** the custom title bar's buttons */
+  caption(action: 'min' | 'max' | 'close'): Promise<void>;
+  /** where the maximize button is (CSS px, from the window's right edge) */
+  captionButton(rect: { right: number; top: number; width: number; height: number }): Promise<void>;
+  captionState(): Promise<CaptionState>;
   on<K extends keyof BackendEvents>(event: K, cb: (payload: BackendEvents[K]) => void): Promise<Unlisten>;
   /** preview-only helpers (live-update demo); absent on the real backend */
   demo?: { startDownload(): boolean };
