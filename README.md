@@ -58,6 +58,10 @@ is nothing to install.
   **More info**, then **Run anyway**.
 * Run it as administrator (or click **Restart as administrator** in Tessera) for
   the fast MFT scan. Without admin rights Tessera walks the folders instead.
+* Tessera writes no files of its own. It remembers its window size and the view
+  options you changed in the registry, under `HKEY_CURRENT_USER\Software\Tessera`,
+  and only once something differs from the default. **⋯ › Clear saved settings**
+  removes the key.
 
 ## Compared with SpaceSniffer
 

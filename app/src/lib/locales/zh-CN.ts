@@ -83,6 +83,8 @@ export const zhCN: Partial<Dict> = {
   'cmd.pane': '详情栏',
   'cmd.showPane': '显示详情栏',
   'cmd.hidePane': '隐藏详情栏',
+  'cmd.more': '更多',
+  'cmd.moreTip': '更多选项',
 
   /* 搜索框（Ctrl+F） */
   'search.placeholder': '在 {drive} 中搜索',
@@ -131,6 +133,8 @@ export const zhCN: Partial<Dict> = {
   'menu.purge': '永久删除…',
   'menu.more': '显示更多选项',
   'menu.moreMixed': 'Windows 的菜单只能用于同一个文件夹里的项目。',
+  'menu.clearSettings': '清除保存的设置',
+  'menu.settingsNote': 'Tessera 把窗口大小和视图选项记在注册表里（HKEY_CURRENT_USER\\Software\\Tessera），只记你改过的项。',
 
   'confirm.purgeTitle': '永久删除？',
   'confirm.selection': '所选项目',
@@ -158,6 +162,9 @@ export const zhCN: Partial<Dict> = {
   'toast.copiedMany': '已复制 {n} 个路径',
   'toast.path': '路径',
   'toast.shellFailed': '没能打开 Windows 菜单',
+  'toast.settingsCleared': '已清除保存的设置',
+  'toast.settingsClearedBody': '注册表里已经没有 Tessera 的东西了。下次打开时，窗口大小和视图都是默认的。',
+  'toast.settingsFailed': '没能清除保存的设置',
   'err.layoutData': '布局数据无法解析',
   'err.layout': '请求布局失败',
   'err.scanStart': '无法开始扫描',

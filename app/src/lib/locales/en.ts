@@ -98,6 +98,8 @@ export const en = {
   'cmd.pane': 'Details pane',
   'cmd.showPane': 'Show details pane',
   'cmd.hidePane': 'Hide details pane',
+  'cmd.more': 'More',
+  'cmd.moreTip': 'More options',
 
   /* search box (Ctrl+F) */
   'search.placeholder': 'Search {drive}',
@@ -151,6 +153,8 @@ export const en = {
   'menu.purge': 'Delete permanently…',
   'menu.more': 'Show more options',
   'menu.moreMixed': "Windows' menu works only for items in one folder.",
+  'menu.clearSettings': 'Clear saved settings',
+  'menu.settingsNote': 'Tessera remembers its window size and view options in the registry (HKEY_CURRENT_USER\\Software\\Tessera), only the ones you changed.',
 
   /* confirmations */
   'confirm.purgeTitle': 'Delete permanently?',
@@ -180,6 +184,9 @@ export const en = {
   'toast.copiedMany': '{n} paths copied',
   'toast.path': 'Path',
   'toast.shellFailed': "Couldn't open the Windows menu",
+  'toast.settingsCleared': 'Saved settings cleared',
+  'toast.settingsClearedBody': 'Tessera left nothing in the registry. Next time it opens with the default window size and view.',
+  'toast.settingsFailed': "Couldn't clear the saved settings",
   'err.layoutData': "Couldn't read the layout data",
   'err.layout': "Couldn't get the layout",
   'err.scanStart': "Couldn't start the scan",

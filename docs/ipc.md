@@ -36,6 +36,9 @@ All sizes are bytes. All ids are `u32` node indices into the core's arena unless
 | `caption` | `{ action: "min" \| "max" \| "close" }` | `()` – the custom title bar's buttons (`"max"` maximizes or restores) |
 | `caption_button` | `{ right, top, width, height: f64 }` | `()` – where the custom title bar's maximize button is, in CSS px (`right` = distance from the window's right edge), so Windows 11 can open its snap layouts there |
 | `caption_state` | – | `CaptionState` |
+| `settings_load` | – | `{ [name]: number \| string }` – the view options saved in `HKEY_CURRENT_USER\Software\Tessera` (REG_DWORD as numbers, REG_SZ as text), without the window's own `Window` value |
+| `settings_save` | `{ name: string, value: number \| string \| bool \| null }` | `()` – `name` is 1–32 ASCII letters and digits; `null` deletes the value (the setting is back at its default), and the key goes once it is empty |
+| `settings_clear` | – | `()` – deletes the key; the window's current place is not saved on closing unless it moves first |
 
 ```ts
 type SizeMode = "disk" | "logical";        // allocated size (default) | file length

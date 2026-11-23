@@ -85,6 +85,15 @@ export class TauriBackend implements Backend {
   captionState() {
     return invoke<CaptionState>('caption_state');
   }
+  loadSettings() {
+    return invoke<Record<string, number | string>>('settings_load');
+  }
+  saveSetting(name: string, value: number | string | null) {
+    return invoke<void>('settings_save', { name, value });
+  }
+  clearSettings() {
+    return invoke<void>('settings_clear');
+  }
   on<K extends keyof BackendEvents>(event: K, cb: (payload: BackendEvents[K]) => void): Promise<Unlisten> {
     return listen<BackendEvents[K]>(event, e => cb(e.payload));
   }
