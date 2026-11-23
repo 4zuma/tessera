@@ -139,8 +139,17 @@ if ($z1) {
   $max = Probe 'max (maximized)' 69
   MoveTo $max; Start-Sleep -Milliseconds 800; Shot '5-hover-restore'
   Click; Start-Sleep -Seconds 2
-  Write-Host "after click 2: zoomed $([W]::IsZoomed($main))"
+  $z2 = [W]::IsZoomed($main)
+  Write-Host "after click 2: zoomed $z2"
   Shot '6-after-restore'
+  if (-not $z2) {
+    $cr = New-Object W+RECT; [W]::GetClientRect($main, [ref]$cr) | Out-Null
+    $max = Probe 'max (restored again)' 69
+    MoveTo $max; Start-Sleep -Milliseconds 800; Shot '7-hover-max-again'
+    Click; Start-Sleep -Seconds 2
+    Write-Host "after click 3: zoomed $([W]::IsZoomed($main))"
+    Shot '8-after-click-3'
+  } else { Write-Host '::error::restore button did not restore' }
 }
 Stop-Process -Id $p.Id -Force
 if (-not $z1) { Write-Host '::error::maximize button did not maximize' }
