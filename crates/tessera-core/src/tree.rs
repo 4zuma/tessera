@@ -1,14 +1,17 @@
 //! The compact in-memory file tree.
 //!
-//! Every file and directory is one 32-byte [`Node`] in a chunked arena, and
-//! nodes refer to each other by 32-bit [`NodeId`] instead of pointers. Names
-//! live in a separate, compressed [`NamePool`]. Nothing is allocated per
-//! node, and the arena grows in fixed chunks, so growing it never copies the
-//! existing nodes and never over-allocates by more than one chunk.
+//! Every file and directory is one 20-byte slot in a chunked arena, and
+//! nodes refer to each other by 32-bit [`NodeId`] instead of pointers.
+//! Directories, and the few files whose sizes do not fit a slot, have a
+//! 16-byte record more in a second arena. Names live in a separate,
+//! compressed [`NamePool`]. Nothing is allocated per node, and the arenas
+//! grow in fixed chunks, so growing them never copies the existing nodes
+//! and never over-allocates by more than one chunk.
 //!
 //! Invariants (checked by [`Tree::check_invariants`] in tests):
 //! * node 0 is the root directory; it has no parent;
 //! * a directory's `size` / `logical` are the sums over its live children;
+//! * every directory is stored wide (it has a record in the second arena);
 //! * deleted nodes stay in their parent's sibling list but are skipped by
 //!   [`Tree::children`]; their descendants are implicitly deleted.
 
@@ -69,11 +72,19 @@ impl NodeFlags {
     pub const METAFILE: NodeFlags = NodeFlags(1 << 9);
     /// Not a flag: bits 12..16 hold [`Node::name_cat`]. The tree sets them
     /// whenever it stores a name and ignores them in flags handed to it.
+    /// (Bits 10 and 11 are the tree's own and always read as 0.)
     pub const NAME_CAT: NodeFlags = NodeFlags(0xF000);
 
     /// These flags with [`NodeFlags::NAME_CAT`] set to `code`.
     #[inline]
     pub(crate) const fn with_name_cat(self, code: u8) -> NodeFlags {
+        NodeFlags(self.0 & !(Self::NAME_CAT.0 | FORM) | (code as u16 & 0xF) << 12)
+    }
+
+    /// These flags with only [`NodeFlags::NAME_CAT`] replaced (for the
+    /// tree's stored flags, whose own bits stay).
+    #[inline]
+    pub(crate) const fn with_name_cat_only(self, code: u8) -> NodeFlags {
         NodeFlags(self.0 & !Self::NAME_CAT.0 | (code as u16 & 0xF) << 12)
     }
 
@@ -148,67 +159,143 @@ impl std::fmt::Debug for NodeFlags {
     }
 }
 
-/// One file or directory: exactly 32 bytes.
+/// One file or directory as the tree stores it: exactly 20 bytes.
+///
+/// A file keeps its logical length in `val` (32 bits) and two bits in
+/// `flags` ([`FORM`]) that say how its size on disk follows from that
+/// length: rounded up to the volume's cluster size (nearly every file),
+/// rounded up to 8 bytes (what NTFS reports for a file small enough to
+/// live in its MFT record), or zero. A directory, a file of 4 GiB or
+/// more and a file whose size on disk is none of these (compressed,
+/// sparse, preallocated) is *wide*: `val` is then the index of a
+/// [`Wide`] record with both sizes in full and the first child.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub(crate) struct Slot {
+    pub(crate) parent: NodeId,
+    pub(crate) next_sibling: NodeId,
+    /// Offset of the name in the [`NamePool`].
+    pub(crate) name_off: u32,
+    /// Length of the name as stored in the [`NamePool`] (compressed, so
+    /// not the length of the name itself).
+    pub(crate) name_len: u16,
+    /// The node's [`NodeFlags`] plus its [`FORM`] bits.
+    pub(crate) flags: NodeFlags,
+    val: u32,
+}
+
+/// The bits of [`Slot::flags`] that say how a node's sizes are stored.
+const FORM: u16 = 0b11 << 10;
+/// Size on disk = logical length rounded up to the cluster size.
+const FORM_CLUSTER: u16 = 0 << 10;
+/// Size on disk = logical length rounded up to 8 bytes.
+const FORM_QUAD: u16 = 1 << 10;
+/// Size on disk = 0.
+const FORM_ZERO: u16 = 2 << 10;
+/// Both sizes (and the first child) are in a [`Wide`] record.
+const FORM_WIDE: u16 = 3 << 10;
+
+impl Slot {
+    #[inline]
+    fn form(&self) -> u16 {
+        self.flags.0 & FORM
+    }
+
+    #[inline]
+    pub(crate) fn is_wide(&self) -> bool {
+        self.form() == FORM_WIDE
+    }
+
+    #[inline]
+    pub(crate) fn is_dir(&self) -> bool {
+        self.flags.contains(NodeFlags::DIR)
+    }
+
+    #[inline]
+    pub(crate) fn is_deleted(&self) -> bool {
+        self.flags.contains(NodeFlags::DELETED)
+    }
+}
+
+/// The sizes and first child of a directory or of a file that does not fit
+/// a [`Slot`]: exactly 16 bytes.
 ///
 /// The two sizes are stored in 48 bits each (up to 256 TiB). Size arithmetic
 /// wraps modulo 2^48, so adding and later removing the same amount always
 /// cancels out; a total beyond 256 TiB would read wrong, but no Windows volume
-/// gets there. Read them with [`Node::size`] and [`Node::logical`].
+/// gets there.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
-pub struct Node {
+pub(crate) struct Wide {
     size_lo: u32,
     logical_lo: u32,
-    pub parent: NodeId,
-    pub first_child: NodeId,
-    pub next_sibling: NodeId,
-    /// Offset of the name in the [`NamePool`].
-    pub name_off: u32,
+    pub(crate) first_child: NodeId,
     size_hi: u16,
     logical_hi: u16,
-    /// Length of the name as stored in the [`NamePool`] (compressed, so
-    /// not the length of the name itself).
-    pub name_len: u16,
-    pub flags: NodeFlags,
 }
 
-/// The largest size a [`Node`] holds, plus one.
+/// The largest size a node holds, plus one.
 pub const SIZE_LIMIT: u64 = 1 << 48;
 const SIZE_MASK: u64 = SIZE_LIMIT - 1;
 
-const _: () = assert!(std::mem::size_of::<Node>() == 32);
+const _: () = assert!(std::mem::size_of::<Slot>() == 20);
+const _: () = assert!(std::mem::size_of::<Wide>() == 16);
 
-impl Node {
-    /// A node with the given sizes (taken modulo [`SIZE_LIMIT`]) and links.
-    #[allow(clippy::too_many_arguments)]
+impl Wide {
+    /// A record with the given sizes (taken modulo [`SIZE_LIMIT`]).
     #[inline]
-    pub(crate) fn new(
-        size: u64,
-        logical: u64,
-        parent: NodeId,
-        first_child: NodeId,
-        next_sibling: NodeId,
-        name_off: u32,
-        name_len: u16,
-        flags: NodeFlags,
-    ) -> Node {
-        let mut n = Node {
-            size_lo: 0,
-            logical_lo: 0,
-            parent,
+    fn new(size: u64, logical: u64, first_child: NodeId) -> Wide {
+        Wide {
+            size_lo: size as u32,
+            logical_lo: logical as u32,
             first_child,
-            next_sibling,
-            name_off,
-            size_hi: 0,
-            logical_hi: 0,
-            name_len,
-            flags,
-        };
-        n.set_size(size);
-        n.set_logical(logical);
-        n
+            size_hi: (size >> 32) as u16,
+            logical_hi: (logical >> 32) as u16,
+        }
     }
 
+    #[inline]
+    fn size(&self) -> u64 {
+        (self.size_hi as u64) << 32 | self.size_lo as u64
+    }
+
+    #[inline]
+    fn logical(&self) -> u64 {
+        (self.logical_hi as u64) << 32 | self.logical_lo as u64
+    }
+
+    #[inline]
+    fn set_sizes(&mut self, size: u64, logical: u64) {
+        self.size_lo = size as u32;
+        self.size_hi = (size >> 32) as u16;
+        self.logical_lo = logical as u32;
+        self.logical_hi = (logical >> 32) as u16;
+    }
+
+    /// Adds to both sizes, wrapping modulo [`SIZE_LIMIT`] (so a negative
+    /// delta, `x.wrapping_neg()`, subtracts).
+    #[inline]
+    pub(crate) fn add_sizes(&mut self, dsize: u64, dlogical: u64) {
+        self.set_sizes(
+            self.size().wrapping_add(dsize),
+            self.logical().wrapping_add(dlogical),
+        );
+    }
+}
+
+/// One file or directory, as [`Tree::node`] hands it out (a copy: the tree
+/// stores nodes more compactly, see [`Tree::memory`]).
+#[derive(Clone, Copy, Debug)]
+pub struct Node {
+    size: u64,
+    logical: u64,
+    pub parent: NodeId,
+    pub first_child: NodeId,
+    pub next_sibling: NodeId,
+    pub flags: NodeFlags,
+}
+
+impl Node {
     /// What the node's name says about its category
     /// ([`category::name_code`](crate::category::name_code)); see
     /// [`category::of`](crate::category::of) for the category itself.
@@ -221,33 +308,13 @@ impl Node {
     /// children.
     #[inline]
     pub fn size(&self) -> u64 {
-        (self.size_hi as u64) << 32 | self.size_lo as u64
+        self.size
     }
 
     /// Logical file length. For directories, the sum over live children.
     #[inline]
     pub fn logical(&self) -> u64 {
-        (self.logical_hi as u64) << 32 | self.logical_lo as u64
-    }
-
-    #[inline]
-    pub(crate) fn set_size(&mut self, v: u64) {
-        self.size_lo = v as u32;
-        self.size_hi = (v >> 32) as u16;
-    }
-
-    #[inline]
-    pub(crate) fn set_logical(&mut self, v: u64) {
-        self.logical_lo = v as u32;
-        self.logical_hi = (v >> 32) as u16;
-    }
-
-    /// Adds to both sizes, wrapping modulo [`SIZE_LIMIT`] (so a negative
-    /// delta, `x.wrapping_neg()`, subtracts).
-    #[inline]
-    pub(crate) fn add_sizes(&mut self, dsize: u64, dlogical: u64) {
-        self.set_size(self.size().wrapping_add(dsize) & SIZE_MASK);
-        self.set_logical(self.logical().wrapping_add(dlogical) & SIZE_MASK);
+        self.logical
     }
 
     #[inline]
@@ -268,7 +335,7 @@ pub(crate) struct ChunkedVec<T> {
     len: usize,
 }
 
-const NODE_CHUNK_SHIFT: u32 = 16; // 65,536 nodes (2 MiB) per chunk
+const NODE_CHUNK_SHIFT: u32 = 16; // 65,536 nodes (1.25 MiB) per chunk
 const NODE_CHUNK: usize = 1 << NODE_CHUNK_SHIFT;
 const NODE_CHUNK_MASK: usize = NODE_CHUNK - 1;
 
@@ -419,7 +486,11 @@ impl EntryBatch {
 
 /// The whole scanned tree.
 pub struct Tree {
-    pub(crate) nodes: ChunkedVec<Node>,
+    pub(crate) nodes: ChunkedVec<Slot>,
+    /// The records of the wide nodes, in the order they became wide.
+    pub(crate) wide: ChunkedVec<Wide>,
+    /// The volume's cluster size minus one (see [`Tree::set_cluster_size`]).
+    cluster_mask: u64,
     pub(crate) names: NamePool,
     /// See [`Tree::changed_bytes`].
     pub(crate) changed: u64,
@@ -460,10 +531,17 @@ impl Journal {
 /// A tree shared between the scanner threads, the watcher and the UI.
 pub type SharedTree = Arc<RwLock<Tree>>;
 
+/// The cluster size of a default NTFS volume.
+const DEFAULT_CLUSTER: u64 = 4096;
+
 /// Memory used by a [`Tree`], in bytes.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TreeMemory {
+    /// The nodes, wide records included.
     pub nodes: usize,
+    /// How many nodes have a wide record (every directory, and the files
+    /// whose sizes do not fit a slot).
+    pub wide: usize,
     pub names: usize,
     /// What the names would take uncompressed (not part of the total).
     pub names_raw: usize,
@@ -479,24 +557,162 @@ impl Tree {
     /// Creates a tree with only the root directory. `root_name` is the full
     /// path of the scanned root as WTF-8, e.g. `C:\` or `D:\Games`.
     pub fn new(root_name: &[u8]) -> Tree {
+        let mut names = NamePool::with_dedup();
+        let root = names.push(root_name);
+        Tree::with_names(names, root, DEFAULT_CLUSTER, NodeId::NONE)
+    }
+
+    /// A tree with only the root directory, whose name is already at `root`
+    /// (offset, stored length) in `names`.
+    pub(crate) fn with_names(
+        names: NamePool,
+        root: (u32, u16),
+        cluster: u64,
+        first_child: NodeId,
+    ) -> Tree {
         let mut t = Tree {
             nodes: ChunkedVec::new(),
-            names: NamePool::with_dedup(),
+            wide: ChunkedVec::new(),
+            cluster_mask: DEFAULT_CLUSTER - 1,
+            names,
             changed: 0,
             journal: Journal::default(),
         };
-        let (name_off, name_len) = t.names.push(root_name);
-        t.nodes.push(Node::new(
+        t.set_cluster_size(cluster);
+        t.push_node(
             0,
             0,
             NodeId::NONE,
+            first_child,
             NodeId::NONE,
-            NodeId::NONE,
-            name_off,
-            name_len,
+            root,
             NodeFlags::DIR,
-        ));
+        );
         t
+    }
+
+    /// Tells the tree the cluster size (allocation unit) of the scanned
+    /// volume, a power of two. A file whose size on disk is its length
+    /// rounded up to that takes the least room, so scanners call this
+    /// before they add anything; any other file is stored correctly all the
+    /// same, only wider. Ignored (returns false) once the tree has nodes
+    /// below the root, or if `bytes` is not a power of two.
+    pub fn set_cluster_size(&mut self, bytes: u64) -> bool {
+        if self.nodes.len() > 1 || !bytes.is_power_of_two() {
+            return false;
+        }
+        self.cluster_mask = bytes - 1;
+        true
+    }
+
+    /// See [`Tree::set_cluster_size`]; 4,096 unless a scanner said otherwise.
+    pub fn cluster_size(&self) -> u64 {
+        self.cluster_mask + 1
+    }
+
+    /// How a file with these sizes fits a [`Slot`], if it does.
+    #[inline]
+    fn form_for(&self, size: u64, logical: u64) -> Option<u16> {
+        if logical > u64::from(u32::MAX) {
+            None
+        } else if size == (logical + self.cluster_mask) & !self.cluster_mask {
+            Some(FORM_CLUSTER)
+        } else if size == (logical + 7) & !7 {
+            Some(FORM_QUAD)
+        } else if size == 0 {
+            Some(FORM_ZERO)
+        } else {
+            None
+        }
+    }
+
+    /// The flags (with their [`FORM`]) and `val` of a slot for a node with
+    /// these sizes; a wide node's record is added here.
+    #[inline]
+    fn pack(
+        &mut self,
+        size: u64,
+        logical: u64,
+        first_child: NodeId,
+        flags: NodeFlags,
+    ) -> (NodeFlags, u32) {
+        let flags = flags.0 & !FORM;
+        if flags & NodeFlags::DIR.0 == 0 {
+            if let Some(form) = self.form_for(size, logical) {
+                return (NodeFlags(flags | form), logical as u32);
+            }
+        }
+        let at = self.wide.push(Wide::new(size, logical, first_child));
+        (NodeFlags(flags | FORM_WIDE), at as u32)
+    }
+
+    /// Appends a node and returns its index. Links are stored as given;
+    /// `first_child` only counts for a directory.
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    pub(crate) fn push_node(
+        &mut self,
+        size: u64,
+        logical: u64,
+        parent: NodeId,
+        first_child: NodeId,
+        next_sibling: NodeId,
+        name: (u32, u16),
+        flags: NodeFlags,
+    ) -> usize {
+        let (flags, val) = self.pack(size, logical, first_child, flags);
+        self.nodes.push(Slot {
+            parent,
+            next_sibling,
+            name_off: name.0,
+            name_len: name.1,
+            flags,
+            val,
+        })
+    }
+
+    #[inline]
+    pub(crate) fn slot(&self, id: NodeId) -> &Slot {
+        self.nodes.get(id.index())
+    }
+
+    #[inline]
+    pub(crate) fn slot_mut(&mut self, id: NodeId) -> &mut Slot {
+        self.nodes.get_mut(id.index())
+    }
+
+    /// The wide record of `id`, made first if the node has none yet.
+    #[inline]
+    pub(crate) fn wide_mut(&mut self, id: NodeId) -> &mut Wide {
+        let s = *self.slot(id);
+        let at = if s.is_wide() {
+            s.val as usize
+        } else {
+            let n = self.node(id);
+            let at = self.wide.push(Wide::new(n.size, n.logical, NodeId::NONE));
+            let s = self.slot_mut(id);
+            s.flags.0 |= FORM_WIDE;
+            s.val = at as u32;
+            at
+        };
+        self.wide.get_mut(at)
+    }
+
+    /// The head of `id`'s sibling list of children, deleted ones included.
+    #[inline]
+    pub(crate) fn first_child(&self, id: NodeId) -> NodeId {
+        let s = self.slot(id);
+        if s.is_wide() {
+            self.wide.get(s.val as usize).first_child
+        } else {
+            NodeId::NONE
+        }
+    }
+
+    /// Points `id` (a directory) at the head of its children.
+    #[inline]
+    pub(crate) fn set_first_child(&mut self, id: NodeId, child: NodeId) {
+        self.wide_mut(id).first_child = child;
     }
 
     /// Creates a tree rooted at a filesystem path.
@@ -660,20 +876,39 @@ impl Tree {
         self.nodes.len() == 0
     }
 
+    /// The node `id`: its sizes, links and flags.
     #[inline]
-    pub fn node(&self, id: NodeId) -> &Node {
-        self.nodes.get(id.index())
-    }
-
-    #[inline]
-    pub(crate) fn node_mut(&mut self, id: NodeId) -> &mut Node {
-        self.nodes.get_mut(id.index())
+    pub fn node(&self, id: NodeId) -> Node {
+        let s = self.slot(id);
+        let (size, logical, first_child) = match s.form() {
+            FORM_WIDE => {
+                let w = self.wide.get(s.val as usize);
+                (w.size(), w.logical(), w.first_child)
+            }
+            form => {
+                let logical = u64::from(s.val);
+                let size = match form {
+                    FORM_CLUSTER => (logical + self.cluster_mask) & !self.cluster_mask,
+                    FORM_QUAD => (logical + 7) & !7,
+                    _ => 0,
+                };
+                (size, logical, NodeId::NONE)
+            }
+        };
+        Node {
+            size,
+            logical,
+            parent: s.parent,
+            first_child,
+            next_sibling: s.next_sibling,
+            flags: NodeFlags(s.flags.0 & !FORM),
+        }
     }
 
     /// The node's own name as WTF-8 (for the root: the scanned path).
     #[inline]
     pub fn name(&self, id: NodeId) -> Name<'_> {
-        let n = self.node(id);
+        let n = self.slot(id);
         self.names.get(n.name_off, n.name_len)
     }
 
@@ -686,26 +921,26 @@ impl Tree {
     pub fn children(&self, id: NodeId) -> Children<'_> {
         Children {
             tree: self,
-            next: self.node(id).first_child,
+            next: self.first_child(id),
         }
     }
 
     /// The ancestors of `id`, starting with its parent and ending at the root.
     pub fn ancestors(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
-        let mut cur = self.node(id).parent;
+        let mut cur = self.slot(id).parent;
         std::iter::from_fn(move || {
             if cur.is_none() {
                 return None;
             }
             let out = cur;
-            cur = self.node(cur).parent;
+            cur = self.slot(cur).parent;
             Some(out)
         })
     }
 
     /// True if `id` or one of its ancestors is deleted.
     pub fn is_deleted(&self, id: NodeId) -> bool {
-        self.node(id).is_deleted() || self.ancestors(id).any(|a| self.node(a).is_deleted())
+        self.slot(id).is_deleted() || self.ancestors(id).any(|a| self.slot(a).is_deleted())
     }
 
     /// Full path as WTF-8, built by walking up to the root.
@@ -714,7 +949,7 @@ impl Tree {
         let mut cur = id;
         while !cur.is_none() {
             chain.push(cur);
-            cur = self.node(cur).parent;
+            cur = self.slot(cur).parent;
         }
         let mut out = Vec::with_capacity(128);
         for (i, &n) in chain.iter().rev().enumerate() {
@@ -778,7 +1013,7 @@ impl Tree {
         if n == 0 {
             return start..start;
         }
-        let old_first = self.node(parent).first_child;
+        let old_first = self.first_child(parent);
         let (mut dsize, mut dlogical) = (0u64, 0u64);
         let encoded = match &batch.encoded_by {
             Some(enc) if batch.encoded_ends.len() == batch.entries.len() => Some(enc),
@@ -805,21 +1040,19 @@ impl Tree {
             } else {
                 old_first
             };
-            self.nodes.push(Node::new(
+            self.push_node(
                 e.size,
                 e.logical,
                 parent,
                 NodeId::NONE,
                 next,
-                name_off,
-                name_len,
+                (name_off, name_len),
                 e.flags,
-            ));
+            );
             dsize = dsize.wrapping_add(e.size);
             dlogical = dlogical.wrapping_add(e.logical);
         }
-        let p = self.node_mut(parent);
-        p.first_child = NodeId(start);
+        self.set_first_child(parent, NodeId(start));
         self.add_to_ancestors(parent, dsize, dlogical);
         start..start + n
     }
@@ -839,7 +1072,7 @@ impl Tree {
     }
 
     /// Number of live children. Linear in the length of the sibling list
-    /// (the count is not stored, so that each node stays 32 bytes).
+    /// (the count is not stored, to keep the nodes small).
     pub fn child_count(&self, id: NodeId) -> usize {
         self.children(id).count()
     }
@@ -861,12 +1094,12 @@ impl Tree {
         self.changed = self.changed.wrapping_add(moved);
         let mut cur = from;
         while !cur.is_none() {
-            let n = self.node_mut(cur);
-            n.add_sizes(dsize, dlogical);
-            if n.is_deleted() {
+            let s = *self.slot(cur);
+            self.wide_mut(cur).add_sizes(dsize, dlogical);
+            if s.is_deleted() {
                 break;
             }
-            cur = n.parent;
+            cur = s.parent;
         }
     }
 
@@ -910,12 +1143,20 @@ impl Tree {
 
     /// Changes a file's sizes and updates all its ancestors by the difference.
     pub fn set_file_size(&mut self, id: NodeId, size: u64, logical: u64) {
-        let n = self.node_mut(id);
+        let n = self.node(id);
         debug_assert!(!n.is_dir(), "directory sizes are derived from children");
         let dsize = size.wrapping_sub(n.size());
         let dlogical = logical.wrapping_sub(n.logical());
-        n.set_size(size & SIZE_MASK);
-        n.set_logical(logical & SIZE_MASK);
+        let (size, logical) = (size & SIZE_MASK, logical & SIZE_MASK);
+        // a file that was ever wide stays wide: its record is there anyway
+        match self.form_for(size, logical) {
+            Some(form) if !self.slot(id).is_wide() => {
+                let s = self.slot_mut(id);
+                s.flags.0 = s.flags.0 & !FORM | form;
+                s.val = logical as u32;
+            }
+            _ => self.wide_mut(id).set_sizes(size, logical),
+        }
         let (parent, deleted) = (n.parent, n.is_deleted());
         if !deleted {
             self.add_to_ancestors(parent, dsize, dlogical);
@@ -925,15 +1166,19 @@ impl Tree {
     /// Replaces a node's flags (sizes and links are untouched).
     pub fn set_flags(&mut self, id: NodeId, flags: NodeFlags) {
         // a file's flags decide its category (NTFS metafiles)
-        let parent = self.node(id).parent;
-        self.touch(if parent.is_none() { id } else { parent });
-        let old = self.node(id).flags;
-        let mut f = flags.with_name_cat(self.node(id).name_cat());
+        let old = *self.slot(id);
+        self.touch(if old.parent.is_none() { id } else { old.parent });
+        let mut f = flags.with_name_cat((old.flags.0 >> 12) as u8);
         f.remove(NodeFlags::DELETED);
-        if old.contains(NodeFlags::DELETED) {
+        if old.is_deleted() {
             f.insert(NodeFlags::DELETED);
         }
-        self.node_mut(id).flags = f;
+        f.0 |= old.form();
+        self.slot_mut(id).flags = f;
+        if f.contains(NodeFlags::DIR) {
+            // a directory keeps its sums and children in a wide record
+            self.wide_mut(id);
+        }
     }
 
     /// Marks a node deleted and removes its bytes from all ancestors.
@@ -943,8 +1188,8 @@ impl Tree {
         if id == NodeId::ROOT || self.is_deleted(id) {
             return false;
         }
-        let n = self.node_mut(id);
-        n.flags.insert(NodeFlags::DELETED);
+        self.slot_mut(id).flags.insert(NodeFlags::DELETED);
+        let n = self.node(id);
         let (size, logical, parent) = (n.size(), n.logical(), n.parent);
         self.add_to_ancestors(parent, size.wrapping_neg(), logical.wrapping_neg());
         true
@@ -961,7 +1206,8 @@ impl Tree {
     /// Heap memory held by the tree.
     pub fn memory(&self) -> TreeMemory {
         TreeMemory {
-            nodes: self.nodes.heap_bytes(),
+            nodes: self.nodes.heap_bytes() + self.wide.heap_bytes(),
+            wide: self.wide.len(),
             names: self.names.heap_bytes(),
             names_raw: self.names.raw_bytes(),
         }
@@ -974,7 +1220,18 @@ impl Tree {
         let mut size = vec![0u64; n];
         let mut logical = vec![0u64; n];
         let mut count = vec![0u32; n];
-        for (i, node) in self.nodes.iter().enumerate() {
+        let mut wide = 0;
+        for i in 0..n {
+            let node = self.node(NodeId(i as u32));
+            let slot = self.nodes.get(i);
+            if slot.is_wide() {
+                wide += 1;
+                if slot.val as usize >= self.wide.len() {
+                    return Err(format!("node {i} has bad wide record {}", slot.val));
+                }
+            } else if node.is_dir() {
+                return Err(format!("dir {i} has no wide record"));
+            }
             if i == 0 {
                 if !node.parent.is_none() {
                     return Err("root has a parent".into());
@@ -994,8 +1251,15 @@ impl Tree {
                 count[p] += 1;
             }
         }
-        for (i, node) in self.nodes.iter().enumerate() {
+        if wide != self.wide.len() {
+            return Err(format!(
+                "{wide} wide nodes but {} wide records",
+                self.wide.len()
+            ));
+        }
+        for i in 0..n {
             let id = NodeId(i as u32);
+            let node = self.node(id);
             let listed = self.children(id).count() as u32;
             if listed != count[i] {
                 return Err(format!(
@@ -1033,7 +1297,7 @@ impl Iterator for Children<'_> {
     fn next(&mut self) -> Option<NodeId> {
         while !self.next.is_none() {
             let id = self.next;
-            let n = self.tree.node(id);
+            let n = self.tree.slot(id);
             self.next = n.next_sibling;
             if !n.is_deleted() {
                 return Some(id);
@@ -1073,8 +1337,9 @@ mod tests {
     }
 
     #[test]
-    fn node_is_32_bytes() {
-        assert_eq!(std::mem::size_of::<Node>(), 32);
+    fn a_node_takes_20_bytes_and_a_wide_one_16_more() {
+        assert_eq!(std::mem::size_of::<Slot>(), 20);
+        assert_eq!(std::mem::size_of::<Wide>(), 16);
     }
 
     #[test]
@@ -1096,6 +1361,96 @@ mod tests {
         t.set_file_size(f, 1 << 40, 5);
         assert_eq!(t.node(NodeId::ROOT).size(), 1 << 40);
         assert_eq!(t.node(NodeId::ROOT).logical(), 5);
+        t.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn every_pair_of_sizes_reads_back_and_only_odd_ones_are_wide() {
+        const G: u64 = 1 << 30;
+        // (size on disk, logical, wide?) on a volume with 4 KiB clusters
+        let cases = [
+            (0, 0, false),
+            (4096, 1, false),
+            (4096, 4096, false),
+            (8192, 4097, false),
+            (4 * G, 4 * G - 1, false),
+            // resident in the MFT record, as a directory listing reports it
+            (24, 17, false),
+            (16, 16, false),
+            // resident as the MFT scan counts it; cloud placeholders
+            (0, 700, false),
+            (0, 5 * G, true),
+            // compressed, sparse, preallocated
+            (8192, 100_000, true),
+            (65_536, 10, true),
+            (4096, 0, true),
+            // 4 GiB and more
+            (4 * G, 4 * G, true),
+            (300 * G, 300 * G - 5, true),
+        ];
+        let mut t = Tree::new(b"X:\\");
+        let mut b = EntryBatch::new();
+        for (i, &(size, logical, _)) in cases.iter().enumerate() {
+            b.push_wtf8(format!("f{i}").as_bytes(), size, logical, NodeFlags::HIDDEN);
+        }
+        b.push_wtf8(b"dir", 0, 0, NodeFlags::DIR);
+        let ids = t.add_children(NodeId::ROOT, &b);
+        let dir = NodeId(ids.end - 1);
+        for (i, &(size, logical, wide)) in cases.iter().enumerate() {
+            let id = NodeId(ids.start + i as u32);
+            let n = t.node(id);
+            assert_eq!((n.size(), n.logical()), (size, logical), "case {i}");
+            assert_eq!(t.slot(id).is_wide(), wide, "case {i}");
+            assert_eq!(n.flags, NodeFlags::HIDDEN, "case {i}");
+            assert!(n.first_child.is_none());
+        }
+        let wide = cases.iter().filter(|c| c.2).count();
+        // the root and `dir` are wide too
+        assert_eq!(t.memory().wide, wide + 2);
+        t.check_invariants().unwrap();
+
+        // every case to every other one and back, below `dir` too
+        let f = t.add_child(dir, b"f", 0, 0, NodeFlags::NONE);
+        for &(s0, l0, _) in &cases {
+            for &(s1, l1, _) in &cases {
+                t.set_file_size(f, s0, l0);
+                t.set_file_size(f, s1, l1);
+                let n = t.node(f);
+                assert_eq!((n.size(), n.logical()), (s1, l1));
+                assert_eq!(t.node(dir).size(), s1);
+                assert_eq!(t.node(dir).logical(), l1);
+            }
+        }
+        t.check_invariants().unwrap();
+        // a file that was wide once keeps its one record
+        assert_eq!(t.memory().wide, wide + 3);
+        // flags leave the sizes alone, and a file turned folder is wide
+        let g = NodeId(ids.start + 5);
+        t.set_flags(g, NodeFlags::SYSTEM);
+        assert_eq!((t.node(g).size(), t.node(g).logical()), (24, 17));
+        assert_eq!(t.node(g).flags, NodeFlags::SYSTEM);
+        let e = NodeId(ids.start);
+        t.set_flags(e, NodeFlags::DIR);
+        t.add_child(e, b"inside", 4096, 10, NodeFlags::NONE);
+        assert_eq!(t.node(e).size(), 4096);
+        assert_eq!(t.child_count(e), 1);
+        t.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn the_cluster_size_is_set_before_anything_is_added() {
+        let mut t = Tree::new(b"E:\\");
+        assert_eq!(t.cluster_size(), 4096);
+        assert!(!t.set_cluster_size(3000));
+        assert!(t.set_cluster_size(128 << 10));
+        let a = t.add_child(NodeId::ROOT, b"a", 128 << 10, 5, NodeFlags::NONE);
+        let b = t.add_child(NodeId::ROOT, b"b", 4096, 5, NodeFlags::NONE);
+        assert!(!t.slot(a).is_wide());
+        assert!(t.slot(b).is_wide());
+        assert_eq!(t.node(a).size(), 128 << 10);
+        assert_eq!(t.node(b).size(), 4096);
+        assert!(!t.set_cluster_size(4096));
+        assert_eq!(t.node(a).size(), 128 << 10);
         t.check_invariants().unwrap();
     }
 
@@ -1214,21 +1569,25 @@ mod tests {
         for i in 0..200_000u32 {
             b.push_wtf8(
                 format!("file-{i:06}.dat").as_bytes(),
-                4096,
+                u64::from(i).next_multiple_of(4096),
                 i as u64,
                 NodeFlags::NONE,
             );
         }
         t.add_children(NodeId::ROOT, &b);
         assert_eq!(t.len(), 200_001);
-        assert_eq!(t.node(NodeId::ROOT).size(), 4096 * 200_000);
+        let on_disk: u64 = (0..200_000u64).map(|i| i.next_multiple_of(4096)).sum();
+        assert_eq!(t.node(NodeId::ROOT).size(), on_disk);
+        assert_eq!(t.node(NodeId(150_001)).size(), 151_552);
+        assert_eq!(t.node(NodeId(150_001)).logical(), 150_000);
         assert_eq!(t.name(NodeId(150_001)), b"file-150000.dat");
         assert_eq!(t.children(NodeId::ROOT).count(), 200_000);
         t.check_invariants().unwrap();
         let m = t.memory();
-        // 200k nodes need 4 chunks of 65,536 nodes.
+        // 200k nodes need 4 chunks of 65,536 nodes; the root is wide.
+        assert_eq!(m.wide, 1);
         assert!(
-            m.nodes >= 200_001 * 32 && m.nodes < 5 * 65_536 * 32,
+            m.nodes >= 200_001 * 20 && m.nodes < 5 * 65_536 * 20,
             "{m:?}"
         );
     }

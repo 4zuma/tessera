@@ -110,7 +110,7 @@ fn main_cat_below(tree: &Tree, dir: NodeId, mode: SizeMode) -> u8 {
             if tree.node(c).is_dir() {
                 stack.push(c);
             } else {
-                bytes[category::of_node(tree, c) as usize] += mode.of(tree.node(c));
+                bytes[category::of_node(tree, c) as usize] += mode.of(&tree.node(c));
             }
         }
     }
@@ -140,7 +140,7 @@ fn inner_of(r: &Record, st: &LayoutStyle) -> (f32, f32, f32, f32) {
 fn check(tree: &Tree, req: &LayoutRequest, d: &Decoded, extras: u64) {
     let st = &req.style;
     let mode = req.size_mode;
-    let size = |n: u32| mode.of(tree.node(NodeId(n)));
+    let size = |n: u32| mode.of(&tree.node(NodeId(n)));
     let eps = 0.02f32;
     let mut index: HashMap<u32, usize> = HashMap::new();
     let mut kids: HashMap<u32, Vec<usize>> = HashMap::new();
@@ -255,7 +255,7 @@ fn check(tree: &Tree, req: &LayoutRequest, d: &Decoded, extras: u64) {
         };
         let total: u64 = tree
             .children(folder)
-            .map(|c| mode.of(tree.node(c)))
+            .map(|c| mode.of(&tree.node(c)))
             .sum::<u64>()
             + if parent == ids::NONE { extras } else { 0 };
         for &i in group {
@@ -476,7 +476,7 @@ fn same_picture_ignores_changes_too_small_to_see() {
             !t.node(n).is_dir() && !shown.contains(&n.0) && !shown.contains(&t.node(n).parent.0)
         })
         .expect("a file below what is drawn");
-    let n = *t.node(hidden);
+    let n = t.node(hidden);
     let grow = (bpp * 0.2) as u64; // a fifth of a px²
     t.set_file_size(hidden, n.size() + grow, n.logical() + grow);
     let b = eng.layout(&t, &req, RootExtras::default(), 3);
@@ -489,7 +489,7 @@ fn same_picture_ignores_changes_too_small_to_see() {
         .filter(|r| r.kind == 0 && r.name.is_some() && (r.id as usize) < t.len())
         .max_by_key(|r| r.size)
         .expect("a named file tile");
-    let n = *t.node(NodeId(big.id));
+    let n = t.node(NodeId(big.id));
     t.set_file_size(NodeId(big.id), n.size() * 2, n.logical() * 2);
     let c = eng.layout(&t, &req, RootExtras::default(), 4);
     assert!(!same_picture(&a, &c, 0.5));

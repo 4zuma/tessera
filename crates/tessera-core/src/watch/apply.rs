@@ -286,12 +286,14 @@ impl Tree {
             let parent = self.node(id).parent;
             self.touch(parent);
             let (off, len) = self.names.push(new_name);
-            let n = self.node_mut(id);
+            let n = self.slot_mut(id);
             n.name_off = off;
             n.name_len = len;
-            n.flags = n.flags.with_name_cat(crate::category::name_code(new_name));
+            n.flags = n
+                .flags
+                .with_name_cat_only(crate::category::name_code(new_name));
         }
-        let n = *self.node(id);
+        let n = self.node(id);
         if n.parent == new_parent {
             return true;
         }
@@ -304,18 +306,17 @@ impl Tree {
             cur = self.node(cur).next_sibling;
         }
         if prev.is_none() {
-            self.node_mut(old).first_child = n.next_sibling;
+            self.set_first_child(old, n.next_sibling);
         } else {
-            self.node_mut(prev).next_sibling = n.next_sibling;
+            self.slot_mut(prev).next_sibling = n.next_sibling;
         }
         self.add_to_ancestors(old, n.size().wrapping_neg(), n.logical().wrapping_neg());
         // Link at the head of the new parent's list.
         let first = self.node(new_parent).first_child;
-        let m = self.node_mut(id);
+        let m = self.slot_mut(id);
         m.parent = new_parent;
         m.next_sibling = first;
-        let p = self.node_mut(new_parent);
-        p.first_child = id;
+        self.set_first_child(new_parent, id);
         self.add_to_ancestors(new_parent, n.size(), n.logical());
         true
     }
@@ -464,7 +465,7 @@ impl Applier<'_> {
     }
 
     fn delete(&mut self, id: NodeId) {
-        let n = *self.tree.node(id);
+        let n = self.tree.node(id);
         if n.flags.contains(NodeFlags::METAFILE) {
             return;
         }
@@ -478,7 +479,7 @@ impl Applier<'_> {
     /// disk is of another kind (file / directory / reparse point): the node
     /// is then deleted and the caller adds a new one.
     fn update(&mut self, id: NodeId, stat: &Stat) -> bool {
-        let n = *self.tree.node(id);
+        let n = self.tree.node(id);
         if n.flags.contains(NodeFlags::METAFILE) {
             return true;
         }
@@ -573,7 +574,7 @@ impl Applier<'_> {
         if !self.tree.is_live(id) {
             return;
         }
-        let n = *self.tree.node(id);
+        let n = self.tree.node(id);
         if !n.is_dir()
             || n.flags
                 .intersects(NodeFlags(NodeFlags::REPARSE.0 | NodeFlags::METAFILE.0))
@@ -834,7 +835,7 @@ impl Applier<'_> {
                 }
                 return;
             };
-            let n = *self.tree.node(id);
+            let n = self.tree.node(id);
             if n.parent != p || self.tree.name(id) != c.name[..] {
                 match self.tree.find_child(p, &c.name) {
                     Some(other) if other != id => self.delete(other),
@@ -866,7 +867,7 @@ impl Applier<'_> {
             // Existing directories are not probed: attributes come with
             // the record (their reparse state is checked when it changes).
             Info::Unknown if self.tree.node(id).is_dir() => {
-                let n = *self.tree.node(id);
+                let n = self.tree.node(id);
                 let flags = flags_from_attributes(c.attributes, 0);
                 let merged = NodeFlags((n.flags.0 & !ATTR_FLAGS.0) | (flags.0 & ATTR_FLAGS.0));
                 if merged != n.flags {
@@ -906,7 +907,7 @@ impl Applier<'_> {
             .find(|&id| counts(id))
             .or(nodes.first().copied())?;
         for id in nodes {
-            let n = *self.tree.node(id);
+            let n = self.tree.node(id);
             let mut flags = n.flags;
             let (size, logical) = if id == keep {
                 flags.remove(NodeFlags::HARDLINK);
@@ -2001,7 +2002,7 @@ pub(crate) mod tests {
         }
         for paths in files.values() {
             let stat = fs.entries[&fold_key(paths[0])].1;
-            let nodes: Vec<&crate::Node> = paths
+            let nodes: Vec<crate::Node> = paths
                 .iter()
                 .map(|p| t.node(t.lookup_relative(p).unwrap()))
                 .collect();

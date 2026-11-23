@@ -705,9 +705,9 @@ impl Run<'_> {
                     if n.is_dir() {
                         stack.push(c);
                     } else {
-                        let cat = category::of(n);
+                        let cat = category::of(&n);
                         if let Some(t) = tally.get_mut(cat as usize) {
-                            *t += mode.of(n);
+                            *t += mode.of(&n);
                         }
                     }
                 }
@@ -736,7 +736,7 @@ impl Run<'_> {
         // The threshold comes from the folder's own size (the sum over its
         // children), so one pass over the siblings sorts them out; the
         // areas use the sum actually seen.
-        let expect = mode.of(dir).saturating_add(unscanned).saturating_add(free);
+        let expect = mode.of(&dir).saturating_add(unscanned).saturating_add(free);
         let threshold = (self.st.min_area * expect as f64 / area).ceil() as u64;
         self.s.kids.clear();
         self.s.items.clear();
@@ -750,7 +750,7 @@ impl Run<'_> {
             // by index lets the CPU run ahead of the sibling links.
             loop {
                 let n = tree.node(c);
-                let size = mode.of(n);
+                let size = mode.of(&n);
                 if size > 0 && !n.is_deleted() {
                     total = total.saturating_add(size);
                     if size >= threshold {
@@ -767,7 +767,7 @@ impl Run<'_> {
                             rank: 0,
                             node: c,
                         });
-                        let cat = category::of(n);
+                        let cat = category::of(&n);
                         if (cat as usize) < category::COUNT {
                             tally[cat as usize] += size;
                         }
@@ -796,7 +796,7 @@ impl Run<'_> {
             for k in &kids[keep..] {
                 small_n += 1;
                 small_sum = small_sum.saturating_add(k.size);
-                let cat = category::of(tree.node(k.node));
+                let cat = category::of(&tree.node(k.node));
                 if (cat as usize) < category::COUNT {
                     tally[cat as usize] += k.size;
                 }
@@ -898,7 +898,7 @@ impl Run<'_> {
                 }
                 ItemKind::Node => {
                     let n = tree.node(it.node);
-                    rec.flags = self.flags(it.node, n);
+                    rec.flags = self.flags(it.node, &n);
                     if n.is_dir() {
                         let st = &self.st;
                         let header =
@@ -929,7 +929,7 @@ impl Run<'_> {
                             rec.kind = kind::DIR_LEAF;
                         }
                     } else {
-                        rec.cat = category::of(n);
+                        rec.cat = category::of(&n);
                     }
                 }
             }
@@ -1340,7 +1340,7 @@ pub struct Nav {
 /// True if a folder's only child with a size is a folder, so that viewing
 /// it would show a single tile.
 fn single_folder_child(tree: &Tree, dir: NodeId, mode: SizeMode) -> bool {
-    let mut it = tree.children(dir).filter(|&c| mode.of(tree.node(c)) > 0);
+    let mut it = tree.children(dir).filter(|&c| mode.of(&tree.node(c)) > 0);
     matches!((it.next(), it.next()), (Some(c), None) if tree.node(c).is_dir())
 }
 

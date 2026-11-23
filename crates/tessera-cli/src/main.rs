@@ -215,6 +215,7 @@ fn cmd_scan(args: &Args) -> Result<(), String> {
         j.num("logical_size", root.logical());
         j.num("tree_bytes", tmem.total() as u64);
         j.num("node_bytes", tmem.nodes as u64);
+        j.num("wide_nodes", tmem.wide as u64);
         j.num("name_bytes", tmem.names as u64);
         j.num("name_bytes_uncompressed", tmem.names_raw as u64);
         j.num("working_set", mem.working_set);
@@ -253,9 +254,10 @@ fn cmd_scan(args: &Args) -> Result<(), String> {
         );
     }
     println!(
-        "  tree memory    {} ({} nodes, {} names; names uncompressed {})",
+        "  tree memory    {} ({} nodes, {} of them wide; {} names; names uncompressed {})",
         human(tmem.total() as u64),
         human(tmem.nodes as u64),
+        tmem.wide,
         human(tmem.names as u64),
         human(tmem.names_raw as u64)
     );

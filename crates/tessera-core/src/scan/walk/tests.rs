@@ -296,7 +296,7 @@ fn entries_are_classified() {
     let t = tree.read().unwrap();
     t.check_invariants().unwrap();
     assert_eq!(t.len(), listing.len() - 2 + 1, "'.' and '..' are skipped");
-    let get = |name: &str| *t.node(t.lookup_relative(name.as_bytes()).unwrap());
+    let get = |name: &str| t.node(t.lookup_relative(name.as_bytes()).unwrap());
     // without the category code the name sets
     let flags = |name: &str| NodeFlags(get(name).flags.0 & !NodeFlags::NAME_CAT.0);
     use NodeFlags as F;

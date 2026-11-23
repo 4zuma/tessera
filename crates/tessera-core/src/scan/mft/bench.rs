@@ -218,6 +218,7 @@ fn synthetic_mft() {
         b"C:\\",
         layout.records as usize,
         layout.in_use_count() as usize,
+        u64::from(g.cluster_size),
     );
     super::reader::stream_records(&mut src, &layout, &Tuning::default(), &mut acc, &progress)
         .unwrap();

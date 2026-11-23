@@ -779,7 +779,7 @@ fn node_details(s: &Session, id: u32, mode: SizeMode) -> Option<Details> {
     if !valid(nid) {
         return None;
     }
-    let n = *t.node(nid);
+    let n = t.node(nid);
     let path = t.path(nid);
     let size = mode.of(&n);
     let share = if nid == NodeId::ROOT {
@@ -789,7 +789,7 @@ fn node_details(s: &Session, id: u32, mode: SizeMode) -> Option<Details> {
             1.0
         }
     } else {
-        size as f64 / mode.of(t.node(n.parent)).max(1) as f64
+        size as f64 / mode.of(&t.node(n.parent)).max(1) as f64
     };
     let (files, dirs) = if n.is_dir() {
         counts(s, &t, nid)

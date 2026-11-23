@@ -504,7 +504,7 @@ fn populated_volume_matches_a_walk() {
         assert_matches_walk(&b, &seen);
         assert_metafiles(t);
 
-        let n = |p: &str| *t.node(node(t, p));
+        let n = |p: &str| t.node(node(t, p));
         assert_eq!(
             (
                 n("docs\\readme.txt").size(),

@@ -22,9 +22,13 @@ the UI is in [`ipc.md`](ipc.md).
 * **Scanning with admin rights.** On NTFS volumes Tessera reads the master
   file table directly (skipping free regions, parsing in parallel) and
   builds the same tree in a couple of seconds.
-* **Compact tree.** Every file or folder is a 32-byte node in a chunked
-  arena; names are stored once in a shared pool (identical names are
-  de-duplicated during a scan) and compressed with a symbol table. During a
+* **Compact tree.** Every file or folder is a 20-byte node in a chunked
+  arena. A file's node holds its logical size and how its size on disk
+  follows from it (rounded up to the cluster size for nearly every file);
+  folders, files of 4 GiB or more and files with any other size on disk
+  (compressed, sparse) have a 16-byte record more. Names are stored once
+  in a shared pool (identical names are de-duplicated during a scan) and
+  compressed with a symbol table. During a
   scan the table is trained on the first megabyte of names; when the scan
   ends, the names are compressed again with a table trained on a sample of
   the whole tree. Together that saves about a third. Each node keeps
