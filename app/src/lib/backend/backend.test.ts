@@ -130,6 +130,10 @@ describe('mock backend', () => {
       expect(on.length).toBeLessThan(off.length);
       // every file and folder tile is wide enough for its name
       expect(on.filter(r => (r.kind === Kind.File || r.kind === Kind.DirLeaf) && !r.name)).toEqual([]);
+      // groups, often of folders now, are tinted by what fills them (the sample's files all have a type)
+      const groups = on.filter(r => r.kind === Kind.Group);
+      expect(groups.length).toBeGreaterThan(0);
+      expect(groups.filter(r => r.cat === 255)).toEqual([]);
     }
   });
 

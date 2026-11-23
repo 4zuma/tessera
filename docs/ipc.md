@@ -191,7 +191,8 @@ These are what make the map calm while it changes, and they were tuned in the pr
    each node remembers the size it was ranked at, and only re-ranks when its size moved by
    more than 25 %. A growing scan therefore does not reshuffle the map on every update.
 2. Siblings whose area would be below `minArea`, or beyond the first `maxPerDir`, are merged
-   into one GROUP tile; its `cat` is the category with the most bytes among them. A single
+   into one GROUP tile; its `cat` is the category with the most bytes among them, a folder
+   among them counting all its bytes for its own main category (rule 6). A single
    small sibling is shown as itself, not as a group of one.
    With `minSide`, every tile is at least that wide and tall, since a thin sliver hardly
    reads as a tile (24 px is a little more than Windows' 13 × 20 px arrow pointer); with

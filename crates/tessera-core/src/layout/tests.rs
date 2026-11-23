@@ -595,6 +595,31 @@ fn hysteresis_keeps_the_order_calm() {
 }
 
 #[test]
+fn a_group_of_folders_is_tinted_by_what_fills_them() {
+    // a big file and many small folders: the folders become one group
+    let mut t = Tree::new(b"R:\\");
+    t.add_child(NodeId::ROOT, b"big.iso", 1 << 30, 1 << 30, NodeFlags::NONE);
+    for i in 0..40 {
+        let d = t.add_child(
+            NodeId::ROOT,
+            format!("app{i}").as_bytes(),
+            0,
+            0,
+            NodeFlags::DIR,
+        );
+        let sub = t.add_child(d, b"bin", 0, 0, NodeFlags::DIR);
+        // each folder holds more bytes of programs than of images
+        t.add_child(sub, b"tool.exe", 3 << 20, 3 << 20, NodeFlags::NONE);
+        t.add_child(d, b"logo.png", 2 << 20, 2 << 20, NodeFlags::NONE);
+    }
+    let req = LayoutRequest::new(NodeId::ROOT, 800.0, 600.0);
+    let d = lay(&t, &req);
+    let group = d.records.iter().find(|r| r.kind == kind::GROUP).unwrap();
+    assert!(group.count > 1);
+    assert_eq!(group.cat, category::APP);
+}
+
+#[test]
 fn small_and_surplus_children_are_grouped() {
     let mut t = Tree::new(b"R:\\");
     let d = t.add_child(NodeId::ROOT, b"dir", 0, 0, NodeFlags::DIR);
