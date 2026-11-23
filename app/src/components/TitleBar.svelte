@@ -16,6 +16,7 @@
   const native = $derived(!!app.platform?.native);
 
   let active = $state(true);
+  let bar: HTMLElement | undefined = $state();
   let maxBtn: HTMLButtonElement | undefined = $state();
 
   /** where the maximize button is, for the snap layouts flyout (Rust watches that spot) */
@@ -23,7 +24,8 @@
   function report() {
     if (!native || !maxBtn) return;
     const r = maxBtn.getBoundingClientRect();
-    const rect = { right: window.innerWidth - r.right, top: r.top, width: r.width, height: r.height };
+    const right = document.documentElement.clientWidth - r.right;
+    const rect = { right, top: r.top, width: r.width, height: r.height };
     const key = JSON.stringify(rect);
     if (key === sent) return;
     sent = key;
@@ -33,15 +35,20 @@
   onMount(() => {
     active = document.hasFocus();
   });
-  // the buttons come once the platform is known, which can be after the first frame
+  // The buttons come once the platform is known, and the page can still be in the preview's
+  // frame then; whenever the bar changes size, the button may have moved, so say so again.
   $effect(() => {
-    if (maxBtn && native) report();
+    if (!maxBtn || !native || !bar) return;
+    report();
+    const watch = new ResizeObserver(report);
+    watch.observe(bar);
+    return () => watch.disconnect();
   });
 </script>
 
-<svelte:window onfocus={() => (active = true)} onblur={() => (active = false)} onresize={report} />
+<svelte:window onfocus={() => (active = true)} onblur={() => (active = false)} />
 
-<header class="tb" class:native class:inactive={!active}>
+<header class="tb" class:native class:inactive={!active} bind:this={bar}>
   <div class="l">
     <Logo />
     <span class="t">Tessera</span>
